@@ -37,17 +37,16 @@ Tracker for decisions deferred or unresolved. Each entry: the question, why it's
 
 ## Q2. Project working name
 
-**Status:** Open. Name brainstorm in progress; selection deferred.
+**Status:** Resolved 2026-05-27. Working name: **Cairn**. See [decisions/D0001-project-name.md](decisions/D0001-project-name.md).
 
-**Context.** Working title `[Project Name TBD]` appears throughout the design brief. Naming constraints (from handoff): avoid telegraphing use case, work across languages, available domain/package, no collision with adjacent projects.
+**Outstanding follow-ups** (separate from the working-name decision):
 
-**What it blocks.**
+- Domain availability check (.org, .com).
+- Package-namespace check (npm, PyPI, Maven, F-Droid).
+- GitHub organization name availability.
+- USPTO and EUIPO trademark search before any public launch.
 
-- External conversations (funders, NGO partners). Internal work can continue with placeholder.
-- Repository/package naming when code work begins.
-- Domain registration timing.
-
-**Next step.** Review candidate name list (see name-candidates.md in this directory when generated). Pick a working name; defer formal trademark/collision check until shortlisting.
+These checks gate the transition from working name to committed name, not from placeholder to working name.
 
 ---
 

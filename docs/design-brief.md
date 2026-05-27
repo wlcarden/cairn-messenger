@@ -1,4 +1,4 @@
-# [Project Name TBD] — Design Brief
+# Cairn — Design Brief
 
 **Status:** Working draft
 **Author:** [Author]

@@ -106,8 +106,10 @@ Working brainstorm against the constraints captured in handoff.md:173 — avoid 
 
 **Most balanced:** Coppice and Cairn meet the most criteria with the fewest concerns. Tessera has the strongest conceptual fit but the highest collision risk; if that risk is acceptable, it's the most architecturally evocative name in the set.
 
-## Next step
+## Outcome
 
-Pick a top 2-3 from this list; run domain availability (.org and .com), npm/PyPI/Maven name checks, USPTO/EUIPO trademark search, and GitHub organization name availability. Move the chosen name to a decision document in `decisions/` and rename `[Project Name TBD]` throughout the design brief.
+**Selected (2026-05-27): Cairn.** Decision recorded in [decisions/D0001-project-name.md](decisions/D0001-project-name.md).
 
-If none of these resonate, this list is not exhaustive — other directions worth exploring: classical-language compound words (e.g., _Polis_ + suffix), invented words assembled from morphemes, place names from less-trademarked geographies, mythology from less-extracted traditions.
+Coppice was the runner-up. Tessera was the strongest architectural fit but ruled out for collision with the Tessera NFT fractionalization protocol in a closely-adjacent identity-token space.
+
+This file is retained as the rationale audit trail for the choice — useful if the working name needs to be revisited following collision verification or other downstream signals.
