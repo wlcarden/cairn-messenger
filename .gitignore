@@ -1,0 +1,20 @@
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Drafts and scratch
+*.draft.md
+scratch/
+.scratch/
+
+# Build artifacts (placeholder for future code)
+target/
+build/
+dist/
+node_modules/
+__pycache__/
+*.pyc
