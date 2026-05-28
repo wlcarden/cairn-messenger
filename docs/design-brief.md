@@ -634,48 +634,107 @@ Contents to write:
 
 ## 8. Operational and Governance Plan
 
-_Purpose: describe how the project is run, signed, audited, and sustained._
-
-Contents to write:
+This section describes how the project is operated, signed, audited, and sustained. Where Sections 2-7 establish architecture and scope, this section establishes the operational commitments that bind the project's daily practice. The register is deliberately conditional rather than aspirational: the project commits to what it unilaterally controls (documentation discipline, licensing, release-mechanism architecture, disclosure policy); it states intent subject to conditions for items dependent on funding, partner outreach, or external grant cycles. Specific partner organizations are listed as candidates rather than confirmed partners except where prior conversations have established a relationship.
 
 ### 8.1 Development team
 
-- Solo developer initially
-- Recruitment plan for collaborators (contributors via OSS contribution, hired contractors via grant funding)
-- When and how the team scales
+**v1 implementation is solo.** v1 ships as the work of one developer. Section 9.1 acknowledges the single-point-of-failure risk this concentrates, and Section 9.4 documents the operational mitigations the project commits to (documentation discipline, public source from day one, decisions/ pattern, successor-handover preparation). The structural commitment is that the project state is recoverable by any successor if the developer becomes unavailable; there is no developer-only knowledge that would be lost.
 
-### 8.2 Release security
+**Team scaling is conditional on funding.** When and how the team grows depends on grant outcomes (Q3) and pilot feedback. The project's intent, subject to funding, is to add roles in approximately this order:
 
-- Sigstore identity-based signing as primary mechanism
-- Reproducible builds as required practice
-- External reviewer pool: 2-3 people who do not write code but rebuild and attest each release
-- Transparency log of all releases
-- Plan for handling signing identity compromise
+- **Part-time cryptographic consulting** (rolling review during implementation). The Section 5 adversarial review surfaced the gap that v1 ships substantial original cryptographic engineering (capability tokens, trust-graph operation envelope, share format, recovery-flow memory hygiene) with a self-audit posture inappropriate for the threat tier. Rolling cryptographic consulting at $5-10K/month for 3-6 months of design-and-implementation phase is the project's preferred mitigation; this is contingent on Q3 funding.
+- **UX-focused engineer** (Section 5.6 implementation effort is 30-50% of v1 total per the engineering review). Engaging an engineer specifically for the Signal-familiar surface, trust-badge rendering, recovery flow walkthroughs, and calibrated security-communication work would meaningfully accelerate v1.
+- **Documentation and community-management role** (Section 5.7 acknowledges substantial documentation work; pilot facilitation requires partner-organization coordination). Likely a part-time contracted role.
+
+Hires and contractor engagements prioritize institutional and geographic diversity. The project does not commit to specific compensation ranges in the design brief; compensation is set against market rates for security-focused engineering when grant funding permits and at below-market levels (with explicit acknowledgment to candidates) before funding closes. Hire commitments do not bind external candidates to availability the project cannot guarantee.
+
+**Volunteer contribution path.** OSS-style contribution through the GitHub workflow is open from day one, subject to the contribution governance in 8.3. Volunteer contributors do not replace funded engineering for security-critical components; they extend the project's capacity for UX work, documentation, localization, and integration testing where pre-merge review by the developer (and external reviewers for security-relevant code) is feasible.
+
+### 8.2 Release security operational policy
+
+Section 5.5 specifies the release-security architecture (two-layer signing, source-review attestation in v1 transitioning to binary-equivalence verification in v1.5, 5+ reviewer pool with 3-of-5 attestation threshold, Sigsum-anchored attestations, multi-channel distribution). Section 8.2 specifies the operational policy that runs that architecture.
+
+**Release cadence.** The v1 pilot ships releases on a roughly quarterly cadence. The quarterly tempo matches reasonable reviewer-pool availability for volunteer reviewers reviewing source for each release; it gives the project time to accumulate fixes and improvements between releases without forcing rushed review; and it lets users plan around predictable release windows. Post-pilot cadence is revisited based on reviewer-pool growth and the project's accumulated update backlog.
+
+**Emergency-release path.** Security-critical patches that cannot wait for quarterly cadence use an expedited process: 2-of-5 reviewer attestation threshold for the emergency release, with the full 3-of-5 threshold verified in a follow-up release within 4 weeks. The expedited path requires a documented security justification (the specific vulnerability addressed, why it cannot wait for standard cadence, the security impact bound). Emergency releases are clearly labeled as such in the transparency log so users can audit which releases went through which process.
+
+**Reviewer compensation.** Reviewers receive honoraria per release in recognition of the time their work requires. Specific honorarium amounts are conditional on funding (Q3); the project's commitment is that reviewer time is compensated fairly relative to security-engineering market rates for the equivalent work, with the amount specified in the project's published partnership terms once funding closes. Honoraria are budgeted as ongoing operational cost in Section 10, not as a one-time setup expense.
+
+**Reviewer onboarding.** The project maintains a Docker- or Nix-pinned reviewer toolkit that reproduces the build environment a reviewer needs to perform their function. In v1 the toolkit supports source review (a checked-out source tree at a tagged release commit, with tooling for running the project's own property-based tests and fuzz tests against the source); in v1.5 the toolkit additionally supports binary-equivalence verification when reproducible builds land. The project's commitment is to maintain the toolkit current with every release and to support reviewers in resolving toolkit issues; the toolkit itself is open source so review of the review process is itself possible.
+
+**Reviewer rotation.** The project targets an 18-month rotation cadence with overlap between outgoing and incoming reviewers so attestation continuity is not disrupted. Rotation is conditional on the reviewer pool being recruitable; if the recruited pool is smaller than 5+ or rotation is impractical, the project commits to making the constraint visible rather than silently shipping with degraded review properties.
+
+**Public release artifacts.** Each release publishes: the Sigstore-signed artifact, the Rekor entry, the reviewer attestations (Sigsum-anchored), public release notes including security-relevant changes, and a CHANGELOG that explicitly distinguishes security-relevant changes from feature/UX changes. The transparency log preserves this record indefinitely.
+
+**Incident response.** Section 5.5 documents the Sigstore-identity-compromise and APK-key-compromise response plans. Section 9.4 documents the broader incident response posture. The operational specifics — runbooks, escalation contacts, communication channels — live in `docs/runbooks/` once that directory is established (likely concurrent with v1 alpha).
 
 ### 8.3 Code and contribution governance
 
-- Open source license: Apache 2.0 (permissive, maximizes downstream reuse by allied projects)
-- Code review: external reviewers for security-critical changes, less formal for UX/UI
-- Contribution process: standard GitHub-style with security-aware review
+**License: Apache 2.0.** The project is released under Apache 2.0 — a permissive license that maximizes downstream reuse by allied projects, allows adoption by enterprise users (relevant for the v4+ established-organization tier), and does not impose copyleft constraints that would inhibit partner organizations from incorporating components into their own tooling. The license choice was made at project inception (referenced in handoff materials and consistent with the partner ecosystem the project operates in).
+
+**Contribution intake: Developer Certificate of Origin.** Contributors sign off on commits using DCO ([developercertificate.org](https://developercertificate.org)) rather than a Contributor License Agreement. The DCO is lighter touch — no separate signing infrastructure, sign-off is a one-line addition to commit messages — and sufficient for IP-cleanliness. The project does not require copyright assignment.
+
+**Commit signing.** Sigstore-anchored commit signatures are required for any commit touching cryptographic primitives, identity tier code, trust graph operations, recovery flow, capability-token handling, or release-security tooling. Commits touching UI, documentation, build tooling not in the security path, or localization may be unsigned with maintainer countersignature. The line between security-critical and non-security-critical commits is documented in the contribution guide and re-evaluated during the project's quarterly review cycle.
+
+**Code review.** External-reviewer-pool review is required for security-critical changes — the same pool from Section 5.5, or a subset designated for code review specifically. Maintainer review is sufficient for non-security changes. Cryptographic changes additionally require sign-off from the rolling cryptographic consultant (when that role is filled per 8.1). The project does not merge security-critical changes without external review even under deadline pressure; this is one of the few commitments in Section 8 that is unconditional.
+
+**Code of conduct.** The project adopts Contributor Covenant v2.1 as the baseline, with project-specific additions for the threat-tier context: no doxxing of contributors, careful handling of pilot user information, explicit discouragement of speculation about user identities or operational specifics. Enforcement is by a small project-internal team (developer + 1-2 maintainers when available) with the option to refer disputes to a partner organization's conduct process when the project is too small to handle them internally.
+
+**Maintainer succession.** Documented in operations runbook concurrent with v1 alpha (per 8.2). The Section 9.4 sunset plan is the long-term backstop if succession itself fails.
 
 ### 8.4 Path to foundation
 
-- Project initially operated by developer
-- Foundation incorporation when justified by funding scale and operational maturity (estimated 18-24 months out)
-- Examples to draw from: Signal Foundation, Tor Project, Briar Project
+**Intent: incorporate as a non-profit foundation approximately 18-24 months post-v1 launch.** Incorporation is contingent on funding scale and operational maturity (Q3, Q4 resolved; pilot completion; partner relationships established). The intent is to transition project ownership from the developer (a natural person) to a non-profit entity with the legal protections, governance structure, and operational independence appropriate to the project's mission.
+
+**Candidate jurisdictions.** Selection deferred to the incorporation timing; the candidates considered now are:
+
+- **US 501(c)(3) public charity.** Strongest donor tax-deductibility in the largest individual-donor market; mature legal framework; well-understood operational requirements. The disadvantage: U.S. jurisdiction is one whose legal process is already in the project's trust placement (Section 3.4, Sigstore OIDC trust root). A U.S.-incorporated foundation operating Cairn would compound that placement; partners and users would have a single jurisdictional concentration to evaluate.
+- **Dutch Stichting (Signal Foundation precedent).** Strong donor protections, lower jurisdictional adverse-action risk relative to the U.S. for the target user populations, EU regulatory framework with mature data-protection law. Signal Foundation's choice of U.S. 501(c)(3) is not necessarily the right precedent for Cairn given the latter's smaller scale and the partner organizations Cairn anticipates working with operate predominantly outside the U.S.
+- **Swiss Verein or non-profit Aktiengesellschaft (Briar Project AG model).** Historically privacy-friendly jurisdiction, neutral political stance, strong banking and donor-management infrastructure. Lower donor tax-deductibility outside Switzerland.
+- **UK Community Interest Company or charity.** Simpler incorporation relative to charity status, English-language governance familiar to many partner organizations, post-Brexit regulatory framework with some uncertainty.
+
+**Selection criteria when incorporation approaches** (~18-24 months post-v1):
+
+- Jurisdictional legal protections, especially around source-data subpoenas, donor identity disclosure, and the project's ability to refuse cooperation in adversarial-jurisdiction processes.
+- Long-term board governance stability and the cost of operating non-profit infrastructure in the candidate jurisdiction.
+- Tax friendliness for international donations (the donor base is anticipated to be largely outside any single jurisdiction).
+- Precedent and operational experience of similar projects (Tor Project, Signal Foundation, Briar Project) in each jurisdiction.
+
+**Board composition criteria.** When the foundation is incorporated, the project's intent is a board including (at minimum): a technical advisor with cryptographic expertise; a representative from a partner organization in the user-facing-support role (Front Line Defenders, Tactical Tech, or equivalent); a community representative drawn from pilot users or pilot-adjacent users with operational experience of the threat tier; and an executive director or equivalent operational role (compensated when funded). The board does not own the trust graph, the signing identities, or operate user-facing infrastructure — those remain at the architectural layer consistent with the minimal-project-operated-infrastructure principle in 4.2.
 
 ### 8.5 Audit and assurance
 
-- Self-audit and automated tooling for v1 development
-- External cryptographic review before public beta (post-pilot)
-- Continuous review during ongoing development
-- Bug bounty program once project has resources
+**v1 self-audit and tooling.** During implementation, the project commits to: property-based testing for the trust-graph CRDT (per [D0006](decisions/D0006-cryptographic-envelope.md) cascade semantics) and operation envelope; fuzz testing for COSE/CBOR parsers, the Shamir reconstruction code, and the capability-token verifier; known-answer tests for cryptographic primitives (matching test vectors from RFC 8032, RFC 9052, and equivalent standards); differential testing against the SimpleX reference implementation where Cairn reuses its protocol semantics; continuous integration enforcing all of the above on every commit; static analysis via Clippy and equivalent Kotlin tooling.
+
+**Rolling cryptographic consultation during implementation.** Per 8.1, the project's preferred funding allocation includes part-time cryptographic consulting through the implementation phase. The consultant reviews design decisions as they are made rather than evaluating finished code, which is the leverage point the Section 5 review identified.
+
+**Pre-beta external cryptographic review.** Contracted after pilot completion, before broader release. Budget: $20-50K estimated (Section 10). Candidate firms identified for evaluation: Trail of Bits, NCC Group, Cure53, Quarkslab, Open Tech Audit Working Group. Specific firm selection deferred to engagement timing (Q7). The audit's scope includes the cryptographic primitives, the trust-graph operation handling, the recovery flow, the capability-token construction, and the release-security stack; it explicitly does not duplicate the upstream-project audits (SimpleX, Briar, Sigstore, Sigsum each have their own audit history).
+
+**Continuous review post-launch.** External code review for security-critical changes (per 8.3). Annual review-pool engagement renewal. Trust-roots health reporting per Section 9.4. A second external cryptographic audit approximately 18-24 months after the first (timing depends on the rate of cryptographic-relevant changes and the pilot-feedback evidence).
+
+**Audit-report publication.** Full audit reports published on the project's transparency log alongside releases. Remediation status is tracked publicly through a documented issue-resolution log. The project does not publish audit reports that are partially-remediated without explicit acknowledgment of unresolved findings.
+
+**Bug bounty: v2+ candidate.** A meaningful bug bounty requires meaningful funding (industry-typical small-project bounty pools start at $10K-$50K; pools at the project's threat tier are typically $100K+) and dedicated triage capacity. v1 does not have either. Until then the project operates a documented security disclosure policy with PGP-encrypted contact, 90-day default disclosure timeline, public acknowledgment of good-faith researchers, and a commitment not to pursue legal action against disclosed-in-good-faith research. A bounty program is a candidate for v2+ when funding and team scale permit.
 
 ### 8.6 Partnership approach
 
-- Initial outreach: Tactical Tech, Front Line Defenders, Access Now, Citizen Lab, Open Technology Fund
-- Roles partners might play: technical review, pilot facilitation, threat intel, localization, end-user training
-- Relationship structure: collaborative rather than vendor/customer
+The project's relationship with partner organizations is collaborative rather than vendor/customer. Partners contribute to the project's mission; the project contributes to partners' work supporting their user communities. The partnership commitments below describe the project's intentions and the role categories the project will seek partners for; they are not confirmed partnership arrangements. Q5 (NGO partner outreach) tracks the conversations that will turn these intentions into agreements. The brief makes no commitments on behalf of partner organizations that have not been consulted.
+
+**Role categories the project seeks partners for.**
+
+- **Technical reviewers** (Section 5.5 release attestation, 5+ pool with 3-of-5 threshold). Recruitment criteria: institutional independence from the developer, geographic and jurisdictional diversity, demonstrated technical capacity to evaluate cryptographic and Android implementation code. Candidate organizations include academic security-research groups (UC Berkeley, ETH Zurich, KU Leuven, Citizen Lab's technical staff), NGO-affiliated security teams (EFF Threat Lab, Access Now's security helpline technical staff, Tactical Tech's analytic team), and individuals with established public records in the field.
+- **Sigsum witnesses** (Section 5.2 trust-graph audit and Section 5.5 release log cosignature). Recruitment criteria: independent of reviewers where feasible (to mitigate the shared-witness-pool concentration acknowledged in 3.4), operational capacity to maintain witness cosignature over multi-year timelines, alignment with the project's mission. Candidate organizations overlap with the reviewer pool but with explicit intent to assemble non-overlapping subsets.
+- **Pilot facilitation** (Section 5.6 in-person provisioning, user onboarding, recovery-flow walkthroughs). v1 pilot facilitator is the developer; broader deployment depends on partner organizations operating as facilitator networks. Candidate organizations: Tactical Tech (Security in-a-Box training infrastructure), Front Line Defenders (protection casework expertise), Access Now Digital Security Helpline (24/7 in nine languages, two-hour response SLA — a natural channel for facilitating pilot users in the helpline's existing user base).
+- **Threat intelligence** (incident reporting, forensic analysis of compromise events affecting Cairn users). The project does not duplicate the forensic capacity of Citizen Lab, Amnesty International Security Lab, or similar; partnership intent is bidirectional information-sharing where compromise events affect Cairn users and the project's data could inform threat-intel research.
+- **Localization** (Q6 — native-speaker security trainers as translators, with security-critical UI text requiring domain-expert translation review). Candidate organizations: Tactical Tech's localization network, Front Line Defenders' translation infrastructure, individual translators recruited through partner organizations who maintain native-language trainer networks.
+- **User training and onboarding** (front-line support for users facing the threat tier, post-onboarding). Front Line Defenders, Access Now Digital Security Helpline, regional civil-society security organizations (CDR, SHARE Foundation, EngageMedia, others depending on regional pilot scope).
+- **Threat intel reception and processing.** The project receives incident reports from partner organizations and integrates the findings into release-security responses and into the trust-roots health reporting in 9.4.
+
+**Specific partner-role assignments emerge from outreach.** The candidate organizations listed above are organizations whose mission and capacity match the role category; assignment to a specific role at a specific organization happens through Q5 outreach, not through the design brief. Some organizations may decline, suggest alternative role configurations, or propose partnership shapes the project has not anticipated; the brief preserves the project's flexibility to respond rather than committing the project to inflexible role assignments before conversations begin.
+
+**Partnership terms the project commits to.** Clear documentation of what partners contribute and receive; honoraria budgeted as ongoing operational cost (Section 10) for roles requiring sustained time commitment; public acknowledgment of partner contributions on the project's documentation and release artifacts; partnership agreements that preserve partner organizations' editorial and operational independence — the project does not require partners to endorse positions, decline working with other projects, or limit their public communication about Cairn.
+
+**The honest framing.** The partnership picture above is the project's intent. It depends on conversations the project has not yet held, on funding (Q3) that has not yet closed, and on partner organizations' own capacity and priorities, which the project does not control. Partner relationships are the project's largest source of operational risk after the solo-developer SPOF (Section 9.1); they are also the project's strongest path to operational sustainability. The conversations that turn this intent into binding agreements begin once the design brief is sharable.
 
 ---
 
