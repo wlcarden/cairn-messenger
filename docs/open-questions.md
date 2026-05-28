@@ -198,6 +198,64 @@ These checks gate the transition from working name to committed name, not from p
 
 ---
 
+## Q13. Volunteer-baseline operational ceiling and slippage tolerance
+
+**Status:** Open by design (informed by pilot feedback).
+
+**Context.** [D0008](decisions/D0008-volunteer-baseline-cadence.md) accepts release slippage as the expected behavior of the volunteer baseline (expected median 4-6 months between releases vs. target quarterly post-honoraria). The actual ceiling — how long a release can wait while remaining acceptable to pilot users and reviewers — is empirically determined and not specified in the brief.
+
+**What it blocks.** Operational policy on when slippage becomes "the project is too slow" and triggers either a cadence redesign, scope cut, or partner-organization escalation for reviewer recruitment. Pilot user expectations on operational rhythm.
+
+**Next step.** Track release intervals during the v1 pilot. If median sustainably exceeds 6 months for non-security-critical releases or 4 weeks for security-critical releases, revisit either the cadence assumption (D0008) or the reviewer-pool size assumption (Section 8.6 / Q10).
+
+---
+
+## Q14. Partner advisory authority for sudden-developer-unavailability contingency
+
+**Status:** Open. Mechanism committed via [D0009](decisions/D0009-sudden-unavailability.md); specific partner identity deferred.
+
+**Context.** A named partner organization holds pre-arranged authority to publish a project status advisory if the developer's dead-man's-switch check-in misses by 60 days. Selection criteria: organizational stability over years; institutional independence from the developer; operational capacity for short-notice public advisory; jurisdictional placement that does not concentrate advisory authority in the developer's own legal-process exposure.
+
+**What it blocks.** Section 3.4's named trust placement for the partner advisory authority cannot be concrete until selection happens. The pre-staged advisory script cannot be partner-rehearsed.
+
+**Next step.** Q5 outreach. Candidate organizations to evaluate: Software Freedom Conservancy, Open Tech Fund (as notification recipient and channel rather than as advisory holder per Section 9.4 successor list correction), Front Line Defenders, Tactical Tech. The role is meaningful and requires explicit partner agreement; the conversation belongs in initial partnership outreach rather than as a downstream task.
+
+---
+
+## Q15. Fiscal sponsor for pre-incorporation grant intake
+
+**Status:** Open. Mechanism committed via [D0010](decisions/D0010-foundation-jurisdiction.md); specific sponsor deferred.
+
+**Context.** The 18-24 month interval between brief completion and foundation incorporation requires a fiscal sponsor for grant intake (OTF and similar funders cannot grant directly to a natural person under most program structures). Candidate fiscal sponsors:
+
+- Software Freedom Conservancy (established 501(c)(3); maintainer-autonomy preserving)
+- Open Collective Foundation / Open Source Collective (lower overhead; smaller initial grants)
+- Code for Science & Society (mission-aligned for civil-society security tools)
+- NumFOCUS (security and scientific computing focus)
+- NLnet Foundation (Netherlands-based; serves as both grantmaker and de facto sponsor for European arrangements)
+
+**What it blocks.** Grant intake from any funder during the pre-incorporation window. The fiscal-sponsor question is a precondition for OTF or backup-foundation grant applications.
+
+**Next step.** Initial conversations with 2-3 candidate fiscal sponsors during Q5 outreach phase. Selection criteria: alignment with project mission, overhead structure, prior experience with the funders the project intends to apply to, jurisdictional considerations matching the eventual foundation jurisdiction (per D0010 placeholder).
+
+---
+
+## Q16. Safe Harbor template selection (post-incorporation)
+
+**Status:** Open. Mechanism committed via [D0012](decisions/D0012-researcher-safe-harbor.md); template selection deferred to foundation incorporation.
+
+**Context.** At foundation incorporation (~18-24 months post-v1), the project formalizes researcher protection through a Safe Harbor commitment based on a standard template. Candidate templates:
+
+- **disclose.io** — industry-standard Safe Harbor template; widely adopted across security-tools projects; reviewable language for researchers.
+- **Bugcrowd "We Will Not Sue" template** — established in commercial bug-bounty practice.
+- **EFF Coders' Rights Project model language** — aligned with civil-society audience.
+
+**What it blocks.** Formal researcher legal protection. v1 pilot phase operates on stated intent (per D0012); formalization lands at incorporation.
+
+**Next step.** Template selection during foundation governance setup. Coordination with foundation legal counsel (per Q15 fiscal-sponsor and D0010 jurisdiction work). Template adaptation to the chosen foundation jurisdiction's legal framework.
+
+---
+
 ## Conventions
 
 - New questions append to the bottom with the next sequential ID.
