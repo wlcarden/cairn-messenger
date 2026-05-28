@@ -227,30 +227,56 @@ The v1 release addresses the threat model with explicit boundaries on what is an
 
 ## 4. Solution Overview
 
-_Purpose: high-level architecture sketch that orients the reader before the detailed architecture section. Aim for 1-2 pages._
-
-Contents to write:
-
 ### 4.1 Architecture in three layers
 
-- Endpoint: GrapheneOS Pixel device, hardened, with the v1 app
-- Transport: Tor as the network anonymization layer, with protocol-layer obfuscation as needed for jurisdiction-specific DPI
-- Comms: SimpleX as primary spine for everyday messaging, Briar for highest-sensitivity peer-to-peer fallback
+The product is structured as three layers, each with distinct trust placements and threat coverage. The layers are described here at the orientation level; Section 5 elaborates each into reviewer-quality detail.
+
+**Endpoint layer.** A GrapheneOS-on-Pixel device running the Cairn application. The endpoint holds the user's operational identity (in the device's StrongBox-backed hardware element where Ed25519 is supported on the target Pixel generation, TEE-backed otherwise) and the device-scoped capability tokens that authorize specific operations. The application itself is a Rust core plus a Kotlin UI shell (per [D0003](decisions/D0003-implementation-language.md)) — security-relevant logic in Rust with explicit secret-material lifetime control, user-facing surface in Kotlin. The trust placement: the user trusts the GrapheneOS image, the Pixel hardware, and that the Cairn application itself was installed through a verified provenance chain (Section 5.5).
+
+**Transport layer.** Tor as the network anonymization layer for all traffic, with pluggable transports for jurisdictions where Tor itself is subject to active DPI blocking. Tor's role is to complicate traffic analysis and network-level surveillance for the threat tier without claiming to eliminate them; the limits are named explicitly in Section 3.4. v1 ships SimpleX messaging over Tor; v1.5 adds Briar (peer-to-peer over Tor) as the highest-sensitivity tier per [D0004](decisions/D0004-v1-scope-cuts.md). Pluggable-transport selection is an ongoing engineering commitment rather than a one-time decision — DPI evasion is a continuously-being-solved problem (Section 5.4).
+
+**Communications layer.** SimpleX is the v1 messaging substrate — identifier-less, queue-based, with no persistent user identity at the protocol level (Section 5.4). Briar joins as the highest-sensitivity tier in v1.5. Above the messaging protocols, Cairn adds the layers that make the integrated product more than the sum of its protocols:
+
+- The three-tier identity model (master → operational → device, per Section 5.1) that bounds compromise across the device's normal operation.
+- The cryptographic trust graph (Section 5.2) that propagates attestations, revocations, introductions, and key rotations across the user's social network, anchored in Sigsum commitments.
+- The Shamir-based social recovery model (Section 5.3) that lets the user recover identity without centralized trustees, with peer-verification mechanisms — pre-shared challenges and a 48-hour cooling-off window per [D0005](decisions/D0005-peer-verification.md) — that defeat impersonation attacks.
+- The release-security stack (Section 5.5): two-layer signing (long-lived APK key plus per-release Sigstore attestation), external reviewer pool of 5+ with 3-of-5 attestation threshold, multi-channel distribution.
+
+The layers compose into a product whose security properties are visible at the architectural level: the user's master identity is never on the device in routine operation; the operational identity is hardware-gated and rotatable; messaging metadata is minimized at the protocol layer; release integrity is verified at the user's client.
 
 ### 4.2 Key design principles
 
-- Minimal project-operated infrastructure (the trust-graph propagation path and the user's daily messaging do not depend on project infrastructure; the release-security stack, partner-cosigned witness set, and project-coordinated distribution channels remain project-coordinated, with their consequences accepted explicitly in Section 3.4 trust roots rather than denied)
-- Self-sovereign cryptographic identity, no central registry of users
-- Trust managed via a graph of signed attestations, not via a PKI or trusted authority
-- Forward secrecy and ephemeral message retention at every layer
-- Graceful degradation under adversarial network conditions
-- UX targeted at users who are not technical specialists; security discipline lives in defaults rather than in user configuration
+The architecture above expresses several principles that recur throughout Section 5 and that funders, partners, and reviewers should expect to see honored consistently.
+
+**Minimal project-operated infrastructure.** The trust-graph propagation path and the user's daily messaging do not depend on project infrastructure; a Cairn deployment continues to function for its existing users if the project disappears. The release-security stack, partner-cosigned witness set, and project-coordinated distribution channels remain project-coordinated, with their consequences acknowledged in Section 3.4 trust roots rather than denied. The principle is "minimal" rather than "none": the project does not claim to have eliminated its own role from the user's trust placement, only to have constrained that role to specific, named, audit-friendly surfaces.
+
+**Self-sovereign cryptographic identity.** No central registry of users. The user's identity is a cryptographic keypair under the user's control, with the master Shamir-split among recovery peers. Establishing trust between users happens through cryptographic attestation rather than through a project-controlled authority. The architecture refuses to introduce a PKI root or single-issuer hierarchical attestation (Section 5.2 alternatives).
+
+**Trust managed as a graph rather than a hierarchy.** Trust paths are computed against signed attestations, revocations, and introductions in a transparency-log-anchored graph. Each user's evaluation is relative to their own attestation set — there is no canonical answer to "is this party trusted." This matches the actual structure of trust in the user populations the product targets (where social networks are denser and more fluid than institutional hierarchies) while keeping the structure cryptographically auditable.
+
+**Bounded compromise through tier separation.** No single credential gives an adversary access to everything. The master identity is off-device in routine operation; the operational identity is hardware-gated and rotatable; device-scoped capability tokens are short-lived. Compromise at one tier bounds rather than collapses the user's cryptographic position. The honest framing is "bounded-window exposure, not zero exposure" — specific about what the design protects, specific about what it does not.
+
+**Forward secrecy where the protocol permits, named where it doesn't.** On-wire message content is forward-secret via SimpleX's double-ratchet derivative (and Briar's BTP/BSP in v1.5). At-rest message history on the device remains decryptable under unlock; the distinction is named in Section 3.5 and Section 5.4 rather than papered over. Forward secrecy is a property of the protocols Cairn integrates, not a property Cairn invents.
+
+**UX in service of facilitator-supported discipline.** The threat model assumes the user's facilitators and trainers understand the tradeoffs, not the user themselves (Section 3.1 audience note). The UX makes security-relevant defaults invisible to users who do not engage with them, and makes informed choices possible for users who do. Calibrated language replaces absolute-sounding claims ("verified through chain of attestations" rather than "secure"). Configuration surfaces are narrow enough that misconfiguration is rare; the v1 pilot model relies on the facilitator presence as the operational unit of discipline (Section 5.6).
+
+**Honest about limits.** Section 3 specifies what the threat model covers and what it does not; Section 5 specifies what each architectural choice protects and what it does not; the brief acknowledges the residual surfaces — HUMINT, Tool-use, evil-maid, Recovery network surface, and the surfaces Section 5 itself introduces (trust-graph propagation metadata, transparency-log metadata, in-person facilitator as trust placement) — rather than claiming the architecture closes them. The expectation set with funders and partners matches the operational reality the pilot users will experience.
 
 ### 4.3 Differentiation
 
-- Where the product sits relative to Signal, Matrix, Wickr, SimpleX, Briar
-- What it adds: integration, identity, trust graph, operational discipline, per-jurisdiction profiles, eventual hardware tier
-- Why this combination doesn't exist today
+What makes Cairn structurally different from the products surveyed in Section 2.3 and Section 5.4 is not a novel protocol or a novel primitive. It is the _integration_. The differentiation is most legible if expressed as four architectural commitments that no current product in the landscape makes together.
+
+**The protocol layer is delegated; the discipline layer is built.** SimpleX, Briar, Tor, Sigstore, and Sigsum are the cryptographic and protocol substrates — projects with explicit missions to build and maintain those tools. Cairn does not reimplement any of them; it integrates them. The contribution is the layer above: identity, trust graph, recovery, release security, and UX. This is the inverse of how most products in the space are scoped — most are "a protocol with a UI"; Cairn is "an operational discipline with an integration of protocols." The framing matters because it determines where the project's engineering effort lands, which audiences the project partners with, and which projects the security of Cairn depends on.
+
+**Trust is graph-shaped and publicly auditable.** Most existing tools either trust a single party (Signal Foundation; Wickr's AWS deployment; a Matrix homeserver), trust a peer-to-peer flood (PGP-style web of trust without a transparency log), or trust nothing (Briar's pure peer-to-peer model, where each pair of users handles verification themselves). Cairn's trust graph is signed-operation-based with public auditability via Sigsum commitments and witness cosignatures. The graph is the user's tool for evaluating trust at the moment of interaction; the public log is the project's commitment to auditability without claiming to be the trust authority. The architectural choice is what supports the operational property in Section 5.6 that "verified through chain of attestations" is a calibrated claim a user can act on.
+
+**Recovery is social without being centralized.** Shamir-among-peers is the architectural answer to the user populations Cairn targets — populations without access to friendly-jurisdiction trustees, populations whose threat tier includes adversaries who can pressure providers under legal process. The peer-verification mechanism ([D0005](decisions/D0005-peer-verification.md)) defeats the attack chain that compelled unlock would otherwise open: unlock → peer enumeration → impersonation. The cost is the recovery network surface in Section 3.3 — a surface the architecture acknowledges as the price of refusing centralized trustees, rather than denying.
+
+**Release security is multi-party and publicly verifiable.** Most consumer messaging tools rely on a single signing identity (the developer's private key) whose compromise affects every release indefinitely. Cairn's release stack — Sigstore identity-based per-release signing on top of the long-lived APK key, an external reviewer pool of 5+ with 3-of-5 attestation threshold, Sigsum-anchored attestations, multi-channel distribution — exposes provenance to multiple independent verifiers. The user does not have to trust the developer's word that a release is genuine; the user (or anyone) can check the public record.
+
+**These commitments compound rather than add.** The three-tier identity model in Section 5.1 only works because the trust graph in Section 5.2 propagates revocations and rotations. The trust graph in Section 5.2 only works because the release security in Section 5.5 ensures the client verifying the graph is itself genuine. The release security in Section 5.5 only works because the operational discipline in Section 5.6 makes users likely to actually verify. Removing any of these layers does not produce a degraded Cairn; it produces a product whose security properties do not hold against the threat tier in Section 3. The combination is the integration; the integration is what the audience in Section 2.2 needs and what the existing landscape (Section 2.3) does not supply.
+
+Cairn's claim is not that it has invented a new approach to secure messaging — the components are standard. Cairn's claim is that no one has put them together for this audience, and that the integration is itself the product.
 
 ---
 
