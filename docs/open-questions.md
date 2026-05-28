@@ -109,20 +109,22 @@ These checks gate the transition from working name to committed name, not from p
 
 ## Q8. Specific technical library / approach choices
 
-**Status:** Partially resolved. Language stack decided ([D0003](decisions/D0003-implementation-language.md) — Rust core + Kotlin UI). v1 scope cuts decided ([D0004](decisions/D0004-v1-scope-cuts.md)) — local CRDT permanently dropped; Sigsum integration shape now constrained by Rust-core decision. Remaining technical choices still deferred to system design spec.
+**Status:** Partially resolved. Architectural shape decided across D0003 (language stack), D0004 (scope cuts), D0006 (cryptographic envelope). Remaining items are library-selection within the decided architecture, deferred to system design spec.
 
-**Resolved.**
+**Resolved at the architectural level.**
 
 - ~~Android codebase architecture~~ → Rust core + Kotlin UI per [D0003](decisions/D0003-implementation-language.md). UniFFI for bindings.
 - ~~CRDT library for trust graph operations~~ → Not needed; v1 queries Sigsum directly, v1.5 adds caching, full CRDT not planned per [D0004](decisions/D0004-v1-scope-cuts.md).
+- ~~COSE structure choice~~ → `COSE_Sign1` with deterministic CBOR encoding per [D0006](decisions/D0006-cryptographic-envelope.md); Rust reference uses [`coset`](https://crates.io/crates/coset).
+- ~~Push notification on/off default posture~~ → Default off in v1 per Section 5.4 (polling at user-configurable intervals); UnifiedPush as the architectural commitment for users who opt in.
 
-**Still deferred to system design spec.**
+**Still deferred to system design spec (library-level choices, not architectural).**
 
-- COSE library (Rust: [`coset`](https://crates.io/crates/coset) is the leading candidate; specific structure choice — `COSE_Sign1` vs `COSE_Sign` — to be locked down with the eight-field schema specification).
-- Sigsum client implementation (Rust-native build using existing Merkle and signature primitives; reference architecture from `sigsum-go`).
-- Push notification mechanism (UnifiedPush is the leading candidate; specific distributor selection and on/off default posture for v1 deferred — see Section 5 review finding F25).
-- Tor on Android approach (`arti` Rust-native vs. embedded C `tor` vs. Orbot coupling).
-- Persistent storage architecture and migration framework (see Section 5 review finding F24).
+- Specific Sigsum client implementation in Rust (reference architecture from `sigsum-go`; primitives from RustCrypto ecosystem).
+- Tor on Android approach (`arti` Rust-native preferred per [D0003](decisions/D0003-implementation-language.md), with embedded C `tor` and Orbot coupling as fallback options).
+- Persistent storage library (Room vs. SQLDelight vs. direct SQLite via Rust; see Section 5.7 for architecture-level commitments).
+- UnifiedPush distributor recommendation for users who opt in (NTFY self-hosted, NTFY.sh public instance, or alternative).
+- Specific Shamir Secret Sharing implementation (`vsss-rs` is a candidate; SLIP-39 adaptation is the alternative if a standard share format is preferred).
 
 **What it blocks.** Full system design spec; specific engineering work in each affected subsystem.
 
@@ -139,6 +141,60 @@ These checks gate the transition from working name to committed name, not from p
 **What it blocks.** v1 scope finalization in Section 6. v1.x roadmap commitments in Section 7.
 
 **Next step.** Make explicit go/no-go decision when Section 6 is being finalized. Default toward deferral unless pilot users push strongly for it.
+
+---
+
+## Q10. Witness pool and reviewer pool composition
+
+**Status:** Open. Pools enumerated as trust roots in Section 3.4; specific organizations and individuals not yet identified.
+
+**Context.** Two distinct pools recruited from a partially overlapping set of partner organizations:
+
+- **Sigsum witnesses** (Section 5.2 trust-graph audit + Section 5.5 release audit, with the shared-witness-pool concentration acknowledged in 3.4): cosign log state so log tampering is detectable. The candidate pool draws from NGO and academic partners (Citizen Lab, Tactical Tech, Front Line Defenders, Access Now, EFF, plus academic security-research groups).
+- **External reviewer pool** (Section 5.5): 5+ reviewers, 3-of-5 attestation threshold, geographic/institutional diversity required. In v1 they read source for each release; in v1.5 they verify binary equivalence.
+
+**What it blocks.**
+
+- Section 3.4's trust-root commitments cannot be fully concrete until specific organizations are named.
+- Section 5.5's "recruitment criteria, threshold for shipping, rotation, and compensation" cannot move from policy to practice without identified people.
+- v1 release cadence (releases wait for 3-of-5 attestation) depends on the pool being recruited and operationally available.
+
+**Next step.** Begins after Q3 (funding) provides enough certainty to offer reviewer honoraria, and after Q5 (NGO partner outreach) opens the partnership conversation. Recruit witnesses and reviewers from non-overlapping subsets of partner organizations where possible to reduce the correlation acknowledged in 3.4.
+
+---
+
+## Q11. OIDC provider for Sigstore identity binding
+
+**Status:** Open. Architectural commitment made (use an OIDC provider for Sigstore release attestation); specific provider choice for v1 pilot deferred with provisional preference for a U.S.-based provider in pilot per Section 5.5.
+
+**Context.** Sigstore's Fulcio binds each release signing certificate to a verified OIDC identity. The OIDC provider becomes a trust root (named explicitly in Section 3.4). The provider's jurisdiction matters: a U.S.-based provider is reachable by U.S. legal process; a provider in another jurisdiction shifts the trust placement accordingly.
+
+**What it blocks.**
+
+- Section 3.4 trust-root entry for the OIDC provider remains generic.
+- Operational defenses (hardware-security-key requirement on the OIDC provider, alerts on token issuance, Rekor audit cadence) cannot be fully operationalized until a specific provider is chosen.
+- Partner organizations and pilot users in jurisdictions where the chosen provider's home jurisdiction is itself an adversary need to be informed of the trust placement; the user-facing documentation depends on knowing which provider.
+
+**Next step.** Choose a v1 pilot OIDC provider (U.S.-based: Google, GitHub, Microsoft are candidates; non-U.S.: limited options in 2026, mostly self-hosted Keycloak-style deployments). Acknowledge the jurisdiction in partner conversations. v1.5 may transition if pilot experience or partner feedback indicates the v1 jurisdiction choice is operationally inappropriate.
+
+---
+
+## Q12. Pilot-feedback-tunable parameters
+
+**Status:** Open by design. Several v1 parameters are set conservatively for pilot release with the explicit understanding that pilot evidence will revisit them.
+
+**Context.** Parameters chosen with stated rationale but not validated against real-world pilot use:
+
+- **Recovery cooling-off window** (48 hours per [D0005](decisions/D0005-peer-verification.md)). May prove too long if recovery delays significantly degrade user trust, or too short against determined adversaries.
+- **Stale-flag escalation period** (90 days per [D0006](decisions/D0006-cryptographic-envelope.md)). May prove too long if cascade quarantines linger past their useful signal, or too short if users need more time to triage.
+- **Push notification default** (off per Section 5.4). May prove too restrictive if polling latency makes the app operationally unusable for the pilot audience.
+- **Polling interval** (default 15 minutes per Section 5.4). Same tunability concern.
+- **Shamir threshold** (3-of-5 default per Section 5.3). User-configurable at provisioning; the default may need adjustment based on pilot peer-network properties.
+- **Token validity period** (hours to days per Section 5.1). Specific value not pinned; the tradeoff is passphrase-reprompt frequency vs. post-revocation compromise window.
+
+**What it blocks.** Nothing in v1 launch; these are tunable post-pilot via release updates.
+
+**Next step.** Capture pilot feedback systematically against each parameter; revisit in v1.5 with explicit decisions for any that pilot evidence justifies changing. Section 6.3 (pilot deployment plan) should specify how this feedback is collected.
 
 ---
 
