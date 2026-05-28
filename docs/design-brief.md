@@ -681,38 +681,118 @@ Contents to write:
 
 ## 9. Risks and Limitations
 
-_Purpose: honest acknowledgment of what could go wrong and what the product doesn't protect against. Reviewers respect honesty here._
-
-Contents to write:
-
 ### 9.1 Project risks
 
-- Solo developer is a single point of failure for the project itself
-- Funding may not materialize at the scale needed
-- Pilot users may not validate the architecture
-- An architectural mistake in v1 could constrain future versions
+The product cannot ship if the project does not function. The project's own risks — distinct from the product's design choices — are named here so funders, partners, and pilot users can evaluate them before committing.
+
+**Solo-developer single-point-of-failure.** The v1 implementation is the work of one developer. Illness, burnout, family obligation, accident, or any other interruption that takes the developer offline for a sustained period stops v1 development. This is the most concentrated risk in the project's structure. Mitigations live in Section 9.4 (sustainability commitments, documentation discipline, partner relationships) but the fundamental constraint remains: at v1 scale, the developer is the project. v2+ scale assumes team growth (Section 8.1 placeholder); v1 does not.
+
+**Funding may not materialize at the scale or timing needed.** The project's funding strategy (Q3 in [open-questions.md](open-questions.md)) targets the Open Technology Fund as primary, with foundation backups (Ford, Open Society, Mozilla, Knight, Omidyar) and European democracy funds as secondary candidates. Grant cycles operate on multi-month timescales; rejection from a primary candidate may push the start of funded development by 6-12 months. Self-funding through brief completion is the bridging strategy but is not indefinitely sustainable.
+
+**Pilot may not validate the architecture.** The pilot deployment (10-15 users in 1-2 local groups per Section 6.3) is the project's only direct evidence about whether the architectural choices work for the audience they target. Specific failure modes that would constitute a pilot non-validation: users find the recovery flow operationally unworkable (the 48-hour cooling-off window, the peer-challenge protocol, the in-person verification requirement); pilot peers cannot or will not sustain their roles as share-holders across the pilot period; the facilitator-led provisioning model does not scale even at pilot scale; the trust-graph UX is unintelligible despite the calibrated language; the polling-default for push notifications proves too costly for routine operation. If any of these surface in the pilot, the project must choose between scope cuts (reducing the architecture to match what works), redesign (reworking the failing piece), or honest sunset (acknowledging the design does not meet its stated goals).
+
+**An architectural mistake in v1 could constrain future versions.** The forward-compatibility design choices in Section 6.4 are intended to prevent this — protocol versioning, extensible scope strings, storage versioning — but the Section 5 adversarial review surfaced multiple cases where forward-compatibility claims required explicit decisions ([D0007](decisions/D0007-multi-device.md) demoted the multi-device claim; [D0006](decisions/D0006-cryptographic-envelope.md) added schema fields that v1 deployments cannot retroactively gain). Another such case may emerge during implementation or pilot, and the v1 design that has already shipped may not be cleanly extensible. Mitigations: continued adversarial review at each section, partner technical review before v1 ships, and willingness to break v1 backward compatibility for v1.5 if the alternative is shipping a broken architecture forward.
+
+**Reviewer and witness pools may not form or may erode.** The release-security stack and the trust-graph audit both depend on partner organizations participating as reviewers and Sigsum witnesses (Section 5.5, 5.2; Q10 in open-questions). Recruitment is contingent on Q3 (funding for honoraria) and Q5 (NGO partner outreach) resolving. Erosion is a longer-term risk: reviewers who attest one release but not the next, witnesses who stop cosigning the log state, partners who shift focus. The release-cadence dependence on 3-of-5 attestation means erosion translates directly to release delays.
+
+**Brief-to-funded-development timeline may slip.** Section 10.4 estimates roughly 6 months from brief completion to funded development. If partner outreach is slower than expected, if external review surfaces material that requires substantive revisions, or if funding cycles do not align with the project's readiness, this timeline extends — and the longer the gap, the higher the risk that early commitments (pilot users, reviewer pool, funding window) drift out of alignment.
 
 ### 9.2 Product limitations
 
-- v1 does not survive internet shutdowns (mesh comes in v3)
-- v1 does not support the borrowed-laptop workflow (USB comes in v2)
-- Addressable user base in v1 is meaningfully smaller than the full target audience due to GrapheneOS/Pixel requirement
-- Social recovery depends on the user's peer network being available and uncompromised
-- Forward compatibility decisions might prove incorrect; some v2+ features may require breaking changes
+The product does not do everything the audience may want or need. The limitations below are honest about what v1 ships and what is deferred to subsequent versions or indefinitely.
+
+**v1 does not survive internet shutdowns.** The v3 mesh radio integration (Meshtastic, MeshCore) is the architectural answer to state-imposed connectivity disruption. v1 and v1.5 require functional internet access — without it, neither SimpleX nor Briar (v1.5) can operate. For populations in jurisdictions with recurring connectivity disruption — a recognized adversarial tactic in several regions the audience operates in — v1 is not the right tool until v3 ships, roughly 18-24 months post-v1.
+
+**v1 does not support the borrowed-laptop workflow.** The v2 USB-bootable form factor is the architectural answer to scenarios where the user does not have continuous custody of trusted hardware. For users who travel without a primary device, who must work from shared computers, or who have specific operational reasons not to carry a phone, v1 is not the right tool until v2 ships, roughly 12-18 months post-v1.
+
+**The addressable user base in v1 is meaningfully smaller than the full target audience.** The GrapheneOS-on-Pixel requirement narrows the v1 audience to users who already use Pixel hardware (or can be supplied with one through the pilot) and who have or can install GrapheneOS. Globally, this is a minority of mobile-device users in the threat tier Section 2 targets. The product is honest about this constraint (Section 2.2): v1 is not "secure messaging for journalists" — it is "secure messaging for journalists using GrapheneOS-Pixel, onboarded in person." The audience expands across v1.5 (Briar tier, full architecture), v2 (iOS support, USB form factor), and v3 (mesh radio), but never to "anyone with any device."
+
+**Social recovery depends on the user's peer network having specific properties.** The Shamir-3-of-5 model assumes the user has at least five people they trust to act as recovery peers — geographically distributed, socially distant from each other, capable of refusing coercion under pressure. Users without such a network can still use the product but cannot use the recovery mechanism in its intended form. The fresh-identity-with-in-person-reintroduction path (Section 5.3) is the fallback, accepting loss of historical state. For users in extremely isolated operational contexts — a single journalist with no peer network of similar threat tier — this is a real limitation.
+
+**Recovery requires online connectivity to Sigsum in v1.** The v1 trust-graph evaluation queries Sigsum directly (per [D0004](decisions/D0004-v1-scope-cuts.md)); a user offline at the moment of recovery cannot evaluate new attestations they have not yet seen. v1.5 adds local caching that mitigates the most common case but does not address full-offline recovery. The CRDT that would have supported full-offline operation is not planned (per D0004); users requiring offline trust evaluation should consider the product not appropriate for their use case at v1 or any planned version.
+
+**v1 ships English-only.** Localization (Q6 in open-questions) extends post-pilot, with the i18n architectural slot present in v1 (string resources, Section 5.7). Users for whom English is not operationally accessible cannot use the v1 product safely — security-critical UI text being read in a second language is its own failure mode. v1.5 begins localization to languages indicated by pilot user demographics; broader language coverage extends across v1.5 and v2.
+
+**Push notifications are off by default in v1.** The polling default (Section 5.4) trades latency and battery cost for the metadata-channel reduction that disabling push provides. For users whose operational rhythm requires near-real-time message delivery, this is a meaningful UX cost. v1.5 may revisit the default based on pilot feedback (Q12).
+
+**Forward-compatibility decisions might prove incorrect.** Section 6.4 lists the forward-compatibility commitments; the Section 5 review surfaced two of them (multi-device awareness, CRDT) requiring explicit demotion or removal. Another such case may emerge in v1.5 or v2 implementation. The mitigation is willingness to break compatibility cleanly when the alternative is shipping a broken extension forward.
 
 ### 9.3 Security limitations
 
-- No protection against compromise of GrapheneOS itself
-- No protection against compromise of the user's Pixel hardware
-- No protection against the developer's signing identity being compromised (multi-sig later)
-- No protection against deliberate compromise of recovery peers above the Shamir threshold
-- No protection against pattern-of-life metadata leakage outside the product (other apps, device location, etc.)
+What the architecture does not protect against, named explicitly. The limits cluster into three categories: trust-root compromises, residual attack surfaces named in Section 3.3 as not closed by the architecture, and threat-model out-of-scope items.
+
+**Trust-root compromises.** The architecture depends on the trust roots named in Section 3.4. Each is a place where compromise breaks security guarantees the architecture otherwise provides:
+
+- **GrapheneOS itself.** A backdoored or compromised GrapheneOS image undermines hardware-backed key storage, verified boot, and the platform isolation Cairn's security properties depend on. Cairn cannot detect such a compromise; the user trusts the GrapheneOS supply chain and the platform's own integrity properties.
+- **Pixel hardware.** A device with a compromised secure element — through forensic-extraction tooling that achieves bypass, through a supply-chain attack against a specific device, through a vendor-side firmware update issued under coercion — collapses the operational-identity tier's protection (Section 5.1). The hardware element holds the operational key, and if its policy enforcement can be bypassed the key is extractable.
+- **Long-lived APK signing key.** A compromise of this key, held in a hardware security token by the developer, lets the adversary sign releases the client cannot distinguish from legitimate. APK Signature Scheme v3 key rotation is the recovery path but is multi-release and operationally heavy (Section 5.5).
+- **Sigstore OIDC provider.** The OIDC provider can issue tokens for the developer's identity under legal process in its jurisdiction or under coercion of its personnel (Q11). v1 uses a U.S.-based provider in pilot; the trust placement effectively includes U.S. legal process.
+- **Reviewer pool.** Compromise of three of the five reviewers (the attestation threshold) defeats the multi-party signing verification (Section 5.5). The pool is recruited for institutional and geographic diversity (Q10), which raises the cost of three-of-five compromise but does not preclude it.
+- **Sigsum witness pool.** Compromise of the witness pool, or systemic cosignature collusion, defeats the log-state integrity check that supports both the trust-graph audit (Section 5.2) and the release-binary audit (Section 5.5). The shared-witness-pool concentration is acknowledged in Section 3.4.
+- **Build supply chain.** A compromised Rust toolchain, Kotlin compiler, NDK, or third-party dependency can inject malicious code that reproducible builds (in v1.5) would catch only if independent builders rebuild from clean toolchains. v1's source-review attestation does not catch this class of attack.
+- **The user.** Voluntary credential disclosure, active sabotage by the user against their own network, sharing of recovery peer phrases — none of these are addressable by architecture.
+
+**Residual attack surfaces.** Section 3.3 names surfaces the architecture acknowledges but does not close:
+
+- **HUMINT against the user's network.** The dominant compromise vector in real cases. The trust graph's design contributes mitigation (scoped attestations, soft-cascade quarantine, stricter re-attestation behavior per [D0006](decisions/D0006-cryptographic-envelope.md)) but does not eliminate the surface.
+- **Tool-use surface.** Running GrapheneOS, using Tor, installing Cairn — each is itself observable in some jurisdictions and constitutes pretext for further scrutiny. The architecture cannot mitigate this; the user accepts being identifiable by the time they are using the product.
+- **Evil-maid attacks.** A device tampered while unattended; the tier model does not detect or defend (Section 5.1 acknowledges this explicitly).
+- **Recovery network surface.** An adversary who identifies and compromises three of five recovery peers, plus obtains the peer challenges, can reach the master. The peer-verification mechanism ([D0005](decisions/D0005-peer-verification.md)) is the principal defense; the surface is acknowledged as the architectural cost of refusing centralized trustees.
+- **Forced peer designation at provisioning.** A user coerced at the ceremony to designate adversary-chosen peers. The pilot's in-person facilitator model is the primary mitigation; broader deployments will need ceremony-design choices not yet specified.
+- **Trust-graph propagation metadata.** Even with commitment-only logging, propagation events have distinctive temporal fingerprints. The architecture mitigates through size-bin padding (Section 5.2) but does not eliminate the channel.
+- **Public transparency-log metadata.** Even commitments expose timing and structure of operations; while the operations themselves are not in the log, the existence and pattern of operations is.
+- **Distribution and supply-chain surface (pilot).** The developer-as-facilitator role concentrates trust in one person during pilot device preparation. v2+ deployment models must address this through mechanisms not yet specified.
+- **Reconstruction window during recovery and provisioning.** The master seed exists in active memory during these moments; an implant resident on the device can capture it. The Rust core's memory hygiene ([D0003](decisions/D0003-implementation-language.md)) bounds this surface as far as software can, but the window cannot be eliminated.
+- **Coercion during the rotation flow.** A sophisticated adversary can compel the user to initiate rotation, exposing the master during reconstruction. The peer-verification mechanism (D0005) is the principal defense.
+
+**Threat-model out-of-scope items.** Section 3.5 names these explicitly; they are listed here so 9.3 is complete as a single reference:
+
+- **TEMPEST-class electromagnetic emanation attacks.** Out of scope; require physical mitigations beyond software's reach.
+- **Targeted nation-state SIGINT against the development pipeline.** A residual risk worth monitoring but not within the architecture's defensive scope (Section 3.2 acknowledges).
+- **Pattern-of-life metadata leakage outside the product.** Other applications on the device, device location services, app-store side channels — the architecture cannot control what the user does outside the Cairn application.
+- **Coordinated compromise across enough independent parties** to defeat the multi-party-attestation defense (developer + 3 reviewers + witness quorum simultaneously).
+- **Post-quantum cryptanalysis.** Ed25519 and Curve25519 are vulnerable to Shor's algorithm on a sufficiently capable quantum computer. v1 does not include PQ primitives; the protocol-versioning fields enable later migration. The "harvest now, decrypt later" concern is acknowledged in Section 3.4.
+- **Duress-profile concealment.** Indefinitely out of scope per [D0002](decisions/D0002-duress-profile.md). The architectural answer to compelled unlock is tier separation plus the recovery flow, not concealment.
 
 ### 9.4 Mitigations and monitoring
 
-- For each significant risk: what reduces likelihood, what reduces impact if it occurs
-- Process for receiving and acting on vulnerability reports
-- Plan for sunset/migration if the project becomes unsustainable
+For each significant risk above, the project commits to specific mitigations and monitoring practices. These are not claims to have eliminated the risk; they are commitments about how the project will reduce likelihood or impact, and how it will know if a risk has materialized.
+
+**Mitigations for project risks.**
+
+- _Solo-developer SPOF._ The project commits to documenting all architectural decisions (the decisions/ directory pattern this brief establishes), maintaining the design brief as a living document, and making all source code and infrastructure configuration publicly inspectable from day one. If the developer becomes unavailable, the project state is recoverable by any successor. The recruitment plan in Section 8.1 addresses scaling beyond solo; v1 does not.
+- _Funding non-materialization._ Parallel grant applications across OTF and 2-3 backup foundations are the primary mitigation. Self-funding through brief completion bridges the gap if grants slip. Project sunset is the worst case: if funding does not materialize within 18 months of brief completion, the project's design documentation remains a public artifact others can adopt.
+- _Pilot non-validation._ Continuous adversarial review at each section drafting (the pattern established in this brief); willingness to apply scope cuts (D0004 is the precedent); pilot feedback collection through an in-app channel; partner-organization debriefs at 3-month and 6-month marks. If specific pilot outcomes trigger redesign, the project commits to publishing the findings even when unfavorable.
+- _Architectural mistakes constraining future versions._ Forward-compatibility design (Section 6.4); willingness to break v1 backward compatibility for v1.5 if the alternative is forward-broken architecture; external technical review at v1 feature-complete.
+- _Reviewer/witness pool erosion._ Pool sizing 5+ rather than the minimum 3 (Section 5.5); rotation cadence and onboarding documentation; partner-organization relationships (Q5, Q10) that supply replacement candidates; honoraria budgeted as ongoing operational cost.
+
+**Mitigations for product limitations.** The roadmap is the primary mitigation — v1.5 closes some gaps, v2 closes others, v3 closes the internet-shutdown gap. Specifically:
+
+- _Internet shutdowns_ → v3 mesh integration.
+- _Borrowed-laptop scenarios_ → v2 USB form factor.
+- _GrapheneOS-Pixel-only_ → v2 iOS support; v2+ broader Android support remains rejected because the security baseline depends on the platform.
+- _Social-recovery network properties_ → fresh-identity path as fallback; v1.5 may include facilitator-mediated peer-network bootstrapping for users without sufficient existing networks.
+- _Online recovery dependency_ → v1.5 local caching of fetched attestations.
+- _English-only_ → v1.5 begins localization; i18n slot present in v1.
+- _Push-off default_ → pilot feedback drives revisitation in v1.5 (Q12).
+
+**Mitigations for security limitations.** The architecture's defenses are described in Section 5; the mitigations here are operational practices rather than additional architecture.
+
+- _Trust-root health monitoring._ The project commits to publishing a "trust-roots health" report annually or whenever incident evidence suggests one of the roots has degraded — GrapheneOS security posture, Pixel forensic-extraction news, Sigstore/Sigsum incidents, reviewer-pool composition. The report is a public artifact partners and users can consult.
+- _Vulnerability disclosure._ A documented security disclosure policy with PGP-encrypted contact, a 90-day default disclosure timeline, and acknowledgment commitments for good-faith researchers. The project does not pursue legal action against disclosed-in-good-faith research.
+- _Incident response._ Pre-staged response plans for each named compromise scenario. Section 5.5 documents the Sigstore-identity and APK-key compromise plans; v1.5 documents equivalents for reviewer-pool and witness-pool compromise. The plans live in `docs/runbooks/` once that directory is established.
+- _Pattern-of-life acknowledgment._ User and facilitator documentation explicitly names that the product cannot defend against metadata leakage from other applications on the device; operational guidance includes recommendations for device-level isolation and external-app discipline.
+- _Post-quantum monitoring._ The project tracks PQ-capable hardware development and NIST PQ standardization. When credible "harvest now" capability emerges or when PQ primitives stabilize sufficiently for the threat tier, the protocol-versioning fields support a migration that does not break v1 deployments.
+
+**Sunset and migration plan.** If the project becomes unsustainable — funding ends, the developer is no longer available, partner organizations withdraw, or the architecture proves unworkable in pilot — the project commits to a specific sunset process:
+
+- A public announcement at least six months before any infrastructure is taken down.
+- Documentation handed to a candidate successor organization (Open Technology Fund, Tor Project Foundation, or partner NGO depending on circumstances).
+- Guidance to users on migration to the most-comparable alternative tools available at the time of sunset.
+- Preservation of the source code, decision documentation, and pilot findings as public archives (likely via Software Heritage and equivalent long-lived archival infrastructure).
+- A final security advisory if any unresolved issues are known at sunset, so successor projects can address them.
+
+The sunset is the worst case; the commitment is that the worst case is not silent. Section 8.4 (when drafted) covers the foundation-incorporation path that is the project's mitigation against needing sunset at all.
 
 ---
 
