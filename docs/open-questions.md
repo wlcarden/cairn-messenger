@@ -109,19 +109,24 @@ These checks gate the transition from working name to committed name, not from p
 
 ## Q8. Specific technical library / approach choices
 
-**Status:** Open. Deferred to architecture specification phase.
+**Status:** Partially resolved. Language stack decided ([D0003](decisions/D0003-implementation-language.md) — Rust core + Kotlin UI). v1 scope cuts decided ([D0004](decisions/D0004-v1-scope-cuts.md)) — local CRDT permanently dropped; Sigsum integration shape now constrained by Rust-core decision. Remaining technical choices still deferred to system design spec.
 
-Captured here to remain visible:
+**Resolved.**
 
-- Android codebase architecture (Kotlin native is current preference; alternatives: Kotlin Multiplatform, Rust core + Kotlin UI).
-- CRDT library for trust graph operations.
-- COSE library (for capability tokens).
-- Sigsum integration approach (direct integration vs. via a higher-level library).
-- Push notification mechanism (GrapheneOS has no Google Play Services by default; UnifiedPush is the leading candidate, but server choice matters for metadata leakage).
+- ~~Android codebase architecture~~ → Rust core + Kotlin UI per [D0003](decisions/D0003-implementation-language.md). UniFFI for bindings.
+- ~~CRDT library for trust graph operations~~ → Not needed; v1 queries Sigsum directly, v1.5 adds caching, full CRDT not planned per [D0004](decisions/D0004-v1-scope-cuts.md).
 
-**What it blocks.** Section 5 (Architecture Detail) beyond conceptual level; the full system design spec.
+**Still deferred to system design spec.**
 
-**Next step.** Resolve during Section 5 drafting on a per-subsystem basis. Each choice becomes a decision document in `decisions/`.
+- COSE library (Rust: [`coset`](https://crates.io/crates/coset) is the leading candidate; specific structure choice — `COSE_Sign1` vs `COSE_Sign` — to be locked down with the eight-field schema specification).
+- Sigsum client implementation (Rust-native build using existing Merkle and signature primitives; reference architecture from `sigsum-go`).
+- Push notification mechanism (UnifiedPush is the leading candidate; specific distributor selection and on/off default posture for v1 deferred — see Section 5 review finding F25).
+- Tor on Android approach (`arti` Rust-native vs. embedded C `tor` vs. Orbot coupling).
+- Persistent storage architecture and migration framework (see Section 5 review finding F24).
+
+**What it blocks.** Full system design spec; specific engineering work in each affected subsystem.
+
+**Next step.** Each remaining item is resolved when the system design spec for the relevant subsystem is drafted. Significant choices become decision documents in `decisions/`.
 
 ---
 
