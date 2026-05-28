@@ -6,32 +6,9 @@ Tracker for decisions deferred or unresolved. Each entry: the question, why it's
 
 ## Q1. Is the duress profile in v1 scope?
 
-**Status:** Open. Flagged for deferred resolution.
+**Status:** Resolved 2026-05-27. No duress-profile concealment in v1 or any planned version; duress-wipe pattern deferred to v1.5; tier-separated identity model documented as the architectural answer to compelled unlock. See [decisions/D0002-duress-profile.md](decisions/D0002-duress-profile.md).
 
-**Context.** Section 3.5 of the design brief (in-scope mitigations) claimed "Duress profile support for compelled-unlock scenarios" as a v1 feature, and Section 5.6 (UX Principles) repeats the claim. The architectural decisions captured in handoff.md (Key Architectural Decisions Made) do not include duress profile as a designed feature. The adversarial review on Section 3 flagged this inconsistency.
-
-**What it blocks.**
-
-- Section 5 (Architecture Detail) drafting: 5.6 currently restates the duress claim. If duress is in v1, the section must specify the mechanism (separate keystore? alternate passphrase opens an alternate identity? what's visible to the adversary?). If duress is out, the claim must be removed.
-- Pilot user expectations: telling pilots they have duress protection when the architecture doesn't deliver it is worse than not offering it.
-- Threat model honesty: 3.5 currently lists duress as covered.
-
-**Architectural questions that resolving this raises.**
-
-- Does the duress unlock present a fake/empty trust graph view, or a separately provisioned innocuous-looking identity?
-- Does it require a separate cryptographic identity (with its own Shamir-split master)?
-- How is the duress passphrase stored such that the primary unlock cannot reveal it (and vice versa)?
-- What's the leak surface? Filesystem metadata, app-level storage size, network traffic patterns, hardware element occupancy — each can reveal that a duress profile exists.
-- How does this interact with the multi-profile system already planned?
-
-**Candidate resolutions.**
-
-- **In-scope, fully designed.** Adds meaningful work to v1; needs explicit architecture spec; pilot users get the feature.
-- **In-scope, minimal version.** A second passphrase opens a separately-provisioned profile with no trust graph view; full duress design deferred to v1.x. Risk: minimal duress is worse than none if it leaks.
-- **Out of scope, v1.x or v2 candidate.** Removes the claim from 3.5 and 5.6; documented as planned but not delivered in v1. Honest with pilot users.
-- **Out of scope, indefinitely.** Acknowledges that duress profiles are extremely hard to implement without observable leak surfaces, and that under real coercion the better answer is identity rotation post-event.
-
-**Next step.** Decide before Section 5 drafting begins. Likely converges with broader discussion of what compelled-unlock realistically looks like in the target threat environments.
+**Resolution summary.** Section 3.5 of the design brief now includes a "Bounded exposure under compelled unlock" paragraph articulating the architectural answer (master Shamir-split off-device; operational identity exposed but revocable; post-coercion recovery via the social-recovery process). Section 5.6 replaces the duress-profile bullet with a compelled-unlock guidance bullet. Sections 6.2 and 7.1 include the v1.5 duress-wipe commitment. Indefinite out-of-scope language explains why concealment-style duress profiles cannot be made undetectable against the threat tier this product addresses, and why detected concealment carries its own legal risks in some jurisdictions.
 
 ---
 

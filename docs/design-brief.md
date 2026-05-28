@@ -149,9 +149,11 @@ The v1 release addresses the threat model with explicit boundaries on what is an
 
 **In scope for v1.** End-to-end encryption of message content. Metadata minimization through SimpleX's identifier-less architecture and Briar's pure peer-to-peer mode. Forward secrecy via per-conversation session key rotation. Cryptographic attestation of identity through the trust graph. Recovery from device loss via social recovery. Auditability of attestations and revocations through the Sigsum transparency log. Protection of the cryptographic identity through hardware-backed key storage on Pixel. Protection against passive network surveillance through Tor as the transport layer. Significant resistance to forensic examination of the device through encrypted at-rest storage tied to passphrase and the hardware element — contingent on a strong passphrase and an intact hardware element at the moment of seizure.
 
-**Explicitly out of scope for v1, with future-version coverage.** Operation during state-imposed internet shutdowns is not supported in v1; this is the primary motivation for the v3 mesh radio integration, which provides offline local communication via LoRa-based protocols. Sensitive work on borrowed laptops is not supported in v1; this is the primary motivation for the v2 bootable USB form factor, which provides a portable cryptographic identity and amnesic operating environment. iOS users are not supported in v1; this is addressed in v2 if funding permits. Non-Pixel Android devices are not supported in v1 and not planned to be supported — this product remains anchored to the GrapheneOS-on-Pixel security baseline.
+**Bounded exposure under compelled unlock.** The product does not include a duress-profile concealment feature. The architectural answer to compelled unlock is the tier-separated identity model: the master cryptographic identity is Shamir-split among recovery peers and is not present on the device, so even full unlock under coercion does not yield the master identity, the ability to issue master-level attestations, or the recovery shares themselves. What unlock yields is the operational identity, the on-device message history, and the contact list. The operational response to any coercion event is revocation of the exposed operational identity, recovery via the social-recovery process, and reissuance of a new operational identity — bounding the compromise to material at the time of seizure rather than to the user's project-level cryptographic position. This is in-scope for v1 as an architectural property, not as a separate feature.
 
-**Indefinitely out of scope.** Compromise of GrapheneOS itself, compromise of Pixel hardware, TEMPEST-class electromagnetic emanation attacks, and supply-chain attacks against devices delivered to specific users are not within the scope of any planned version of this product. Some of these are out of scope because they require physical mitigations beyond software's reach; others are out of scope because they constitute the trust roots the product is built on, and addressing them would require building a different product from the ground up.
+**Explicitly out of scope for v1, with future-version coverage.** Operation during state-imposed internet shutdowns is not supported in v1; this is the primary motivation for the v3 mesh radio integration, which provides offline local communication via LoRa-based protocols. Sensitive work on borrowed laptops is not supported in v1; this is the primary motivation for the v2 bootable USB form factor, which provides a portable cryptographic identity and amnesic operating environment. iOS users are not supported in v1; this is addressed in v2 if funding permits. Non-Pixel Android devices are not supported in v1 and not planned to be supported — this product remains anchored to the GrapheneOS-on-Pixel security baseline. A duress-wipe feature — a designated passphrase that destroys on-device key material rather than concealing alternate content — is deferred to v1.5; this pattern is observably destructive and matches the existing GrapheneOS duress-PIN model.
+
+**Indefinitely out of scope.** Compromise of GrapheneOS itself, compromise of Pixel hardware, TEMPEST-class electromagnetic emanation attacks, and supply-chain attacks against devices delivered to specific users are not within the scope of any planned version of this product. Some of these are out of scope because they require physical mitigations beyond software's reach; others are out of scope because they constitute the trust roots the product is built on, and addressing them would require building a different product from the ground up. Duress-profile concealment — opening a fake or curated identity under a duress passphrase — is also indefinitely out of scope, because the implementation cannot be made undetectable against the threat tier this product addresses, and detected concealment carries its own legal and physical risks in jurisdictions with compelled-decryption regimes. The v1.5 duress-wipe alternative addresses the same user need through observable destruction rather than concealment; see [Decision D0002](decisions/D0002-duress-profile.md).
 
 ---
 
@@ -258,7 +260,7 @@ Contents to write:
 - Trust badges and verification indicators surfaced subtly
 - Profile compartmentation for users who want it, invisible for those who don't
 - Optional "extra-private mode" toggle per conversation (Briar channel)
-- Duress profile support: designated passphrase opens innocuous-looking profile
+- Compelled-unlock guidance: in-app post-coercion recovery flow (revoke exposed operational identity, recover master via social recovery, reissue) surfaced as a first-class action rather than buried in settings. No duress-profile concealment in v1 or any planned version; duress-wipe (destruction-on-duress-passphrase, modeled on GrapheneOS's duress PIN) deferred to v1.5. See [Decision D0002](decisions/D0002-duress-profile.md).
 - Recovery accessible without requiring expertise; multiple recovery paths
 - Honest communication of limitations rather than absolute security claims
 
@@ -291,6 +293,7 @@ Contents to write:
 - Established-org enterprise tier with formal admin/governance (v4+)
 - Voice/video calling (v1.x if time permits, v2 if not)
 - Broader localization beyond English (v1.x post-pilot)
+- Duress-wipe pattern (v1.5; no duress-profile concealment in any planned version — see [D0002](../decisions/D0002-duress-profile.md))
 
 ### 6.3 Pilot deployment plan
 
@@ -322,7 +325,7 @@ Contents to write:
 ### 7.1 Release sequence
 
 - v1 (target: 9-12 months from start of full-time work): scope per Section 6
-- v1.5 (6 months post-v1): iteration on pilot feedback, UX refinements, possible voice/video, possible expanded localization
+- v1.5 (6 months post-v1): iteration on pilot feedback, UX refinements, duress-wipe pattern (per [D0002](../decisions/D0002-duress-profile.md)), possible voice/video, possible expanded localization
 - v2 (12-18 months post-v1): USB-bootable variant, iOS app
 - v3 (18-24 months post-v1): mesh radio integration (Meshtastic/MeshCore), addresses internet-shutdown threat
 - v4+ (longer term): established-org features, optional Matrix federation for enterprise users, hardware partnerships for pre-keyed devices
