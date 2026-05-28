@@ -1015,37 +1015,161 @@ The sunset is the worst case; the commitment is that the worst case is not silen
 
 ## 10. Funding and Resourcing
 
-_Purpose: realistic picture of what's needed and where it could come from._
+_Purpose: identify what the project can deliver at the volunteer baseline, what specifically requires external funding, and what sequence of funding events unlocks broader release._
 
-Contents to write:
+The section is organized as a phase-gated cost model rather than a flat v1 budget. Phases distinguish the project's unilateral commitments (what gets built without external dollars) from its conditional commitments (what depends on grant cycles, subsidy programs, or partner co-funding). The structure inverts the conventional design-brief budget — instead of presenting a total figure that requires complete funding to deliver, it presents specific funding events with named items each event unlocks. Readers asking "what does my dollar unlock?" can match against the phase descriptions; readers asking "what is the project committed to regardless?" find that in Phase A. The funding-stance background — self-funded volunteer baseline as the operating reality, partnership and grant funding as the trajectory rather than the precondition — is established in Sections 8 and 9.1 and is referenced here rather than re-derived.
 
-### 10.1 Development cost estimate
+### 10.1 Phase A — Volunteer baseline (no external funding)
 
-- Solo developer time to v1: 9-12 months full-time or equivalent
-- Pilot hardware: $5-12K
-- External audit before beta: $20-50K
-- External reviewer compensation: nominal (in-kind for many, small honoraria for some)
-- Total v1 budget estimate: $30-75K plus 9-12 months of developer time
+Phase A is what the project delivers at the volunteer baseline with no external grant or subsidy required. The work proceeds as the developer's time allows; the brief does not commit to a calendar schedule for Phase A completion because the operating reality is an "as available" cadence consistent with [D0008](decisions/D0008-volunteer-baseline-cadence.md). Funders and partners reading the brief should treat Phase A items as the project's unilateral commitment; Phase A completes when it completes, and the brief does not characterize that timeline in months or person-years because doing so would imply a guarantee the volunteer baseline cannot back.
 
-### 10.2 Potential funding sources
+**Deliverables in Phase A.**
 
-- Open Technology Fund (US, but operationally independent, has funded Signal and Tor)
-- European democracy and digital rights funds (SIDA, GIZ, EIDHR, Dutch Foreign Ministry)
-- Private foundations: Ford, Open Society, Mozilla, Omidyar, Knight
-- Self-funding from developer for early stages
+- Architecture documentation, threat model, decisions records, open-questions tracker (largely complete at brief publication).
+- Rust core implementation per [D0003](decisions/D0003-implementation-language.md): cryptographic primitives wrapper (`zeroize`/`secrecy`/`subtle`), capability-token construction and verification per [D0006](decisions/D0006-cryptographic-envelope.md), trust-graph operation envelope and CRDT, Shamir Secret Sharing reconstruction with memory hygiene, recovery flow primitives.
+- Kotlin Android UI via UniFFI: Signal-familiar surfaces (Section 5.6), recovery flow walkthroughs, trust-badge rendering, calibrated security-communication patterns.
+- Internal testing on developer-owned hardware: property-based tests for the trust-graph CRDT, fuzz tests for COSE/CBOR parsing and Shamir reconstruction, known-answer tests for primitives, differential tests against the SimpleX reference where Cairn reuses semantics.
+- CI/CD setup using GitHub Actions on the free tier.
+- Reviewer-pool recruitment outreach (Section 8.2 volunteer-attestation baseline): conversations, candidate evaluation, onboarding through the documented reviewer toolkit.
+- Partner-organization outreach (Section 8.6): conversations leading toward pilot facilitation, threat intelligence, and localization arrangements. No funding required for conversations themselves.
+- Self-audit and tooling per Section 8.5: property-based testing, fuzz testing, known-answer tests, differential tests, static analysis. The pre-pilot external audit (D0011) is gated to Phase B; the self-audit work is Phase A.
 
-### 10.3 Post-v1 sustainability
+**Costs absorbed personally in Phase A.**
 
-- Continued grant funding for core development
-- Established-org tier as paid offering subsidizing grassroots use
-- Possible hardware partnerships in v3+ (pre-keyed USBs, mesh radio kits)
-- Donations channel for individual supporters
+- Developer's time, at "as available" cadence consistent with [D0008](decisions/D0008-volunteer-baseline-cadence.md).
+- Existing developer hardware for implementation work.
+- Small infrastructure: domain registration (~$15-50/year), GitHub free tier for source hosting and CI, free-tier static documentation hosting.
+- Two to four GrapheneOS-capable Pixel devices retained by the project for developer testing and a small loaner pool for partner-facilitated pilot training (~$1,500-3,000 one-time). The bulk of pilot deployment is BYOD: pilot users source their own GrapheneOS-capable Pixel devices through the standard channels documented in Section 5 and the user-onboarding documentation.
+- Total absorbed in Phase A: approximately $1,500-3,500 across the duration, primarily hardware. The developer's time is the dominant resource, and the brief does not assign a dollar figure to it because the project's posture is that the developer's contribution is volunteer until grant funding makes a maintainer-compensation question concrete (Phase D aspiration; see 10.4 and Section 8.1).
 
-### 10.4 Timeline to first funded development
+**What Phase A cannot deliver.**
 
-- Design brief completion and review: 2-3 months
-- Initial funding conversations: 3-6 months
-- Funded development start: roughly 6 months from design brief completion
+- The pre-pilot cryptographic-primitives audit per [D0011](decisions/D0011-audit-budget-and-timing.md). Phase A's self-audit reduces but does not eliminate the residual cryptographic-correctness risk that pilot deployment carries; the audit is the first material funding event.
+- Pre-incorporation legal consultation per [D0010](decisions/D0010-foundation-jurisdiction.md) at the depth required for foundation jurisdiction selection.
+- Reviewer honoraria. Section 8.2's volunteer-attestation model is the Phase A operating reality; honoraria require grant funding (Phase B/C).
+- Specialized consulting (cryptographic, UX, documentation) beyond the developer's own capacity. The team-scaling intent in Section 8.1 is funding-gated.
+- Pilot deployment at scale beyond the developer's own facilitation capacity. Broader pilot facilitation depends on partner-organization arrangements; the partner arrangements depend on partner-side funding evaluations the project does not control.
+
+**Phase A risk.** Developer burnout extends Phase A indefinitely or terminates it prematurely. The mitigations are documentation discipline (so the work is recoverable to a successor), the [D0009](decisions/D0009-sudden-unavailability.md) sudden-unavailability handling, and surfacing the funding state transparently to the reviewer pool and partner conversations rather than implying a non-volunteer baseline exists.
+
+### 10.2 Phase B — First-dollar threshold (pilot readiness)
+
+Phase B is the smallest funding event that unlocks pilot readiness. The two structural items are pre-incorporation legal consultation (which precedes any grant-routing arrangement) and the pre-pilot cryptographic-primitives audit (which precedes any pilot user receiving a Cairn build). Phase B is where the brief's commitments transition from unilateral to conditional.
+
+**Phase B line items.**
+
+- _Pre-incorporation legal consultation_ per [D0010](decisions/D0010-foundation-jurisdiction.md): $1,500-9,000 for an initial engagement with non-profit counsel covering fiscal-sponsor selection support, jurisdictional shortlist evaluation, and IP-ownership/assignment considerations for the natural-person-to-foundation transition. Lower bound reflects approximately 5 hours of senior non-profit counsel time at $300/hour; upper bound reflects 15 hours at $600/hour. The consultation is small enough that the developer may absorb it personally if grant timing requires; the brief identifies it as Phase B by category because it is the first item where external professional services are engaged.
+- _Fiscal-sponsor setup_ per [D0010](decisions/D0010-foundation-jurisdiction.md) and Q15 in [open-questions.md](open-questions.md): typically free-to-low at lower-overhead sponsors (Open Collective Foundation, Code for Science & Society); fiscal-sponsorship fees (typically 5-15% of routed grants) are paid as a percentage of subsequent grants rather than as an up-front cost.
+- _Pre-pilot cryptographic-primitives audit_ per [D0011](decisions/D0011-audit-budget-and-timing.md): $15-30K at subsidy-tier rates (Open Tech Fund Secure Audit program, Cure53 mission-org rates), $30-50K at unsubsidized small-engagement rates. The bound depends on which subsidy program closes for Cairn; the project commits to applying to named programs as the first funding route per Section 8.5.
+- _Initial infrastructure operational costs_ for the pilot phase: domain registrar (already in Phase A), email/PGP infrastructure for disclosure handling (free), continued static hosting (free); incremental cost approximately $0-500/year.
+
+**Phase B totals.**
+
+- Floor: approximately $17,000 (legal consultation lower bound + subsidized pre-pilot audit lower bound + ongoing infrastructure).
+- Ceiling: approximately $60,000 (legal consultation upper bound + unsubsidized pre-pilot audit upper bound + infrastructure).
+
+The floor figure is the smallest grant outcome that materially advances the project. A single subsidy-program close (OTF Secure Audit, NLnet NGI Zero Trust, Mozilla Open Source Audit Awards, or a Cure53 mission-rate engagement) at the lower end of its typical range covers Phase B and unlocks the pilot.
+
+**Adjacent aspirational item.** Section 8.1 identifies part-time rolling cryptographic consulting at $5-10K/month for 3-6 months of design-and-implementation phase ($15,000-60,000 total) as an aspirational addition during this funding window. The brief names it as a Phase B aspiration rather than a Phase B commitment: if a partnership or grant funding event closes that supports both the pre-pilot audit and rolling consulting, the project pursues both; if the funding only covers the audit, the audit takes priority and the rolling consulting is deferred. Section 9.1 acknowledges the residual engineering risk during the self-audit period.
+
+**What Phase B unlocks.** Pilot deployment with the cryptographic core externally audited. Pilot users receive a build whose primitives have third-party assurance even though the broader integration is reviewed at the integration-boundary granularity per the consent framing in D0011. Foundation incorporation work begins in earnest; the project moves from "natural person operating informally" to "natural person operating with fiscal-sponsor grant routing and an incorporation trajectory."
+
+**Phase B contingency.** If Phase B funding does not close, Phase A continues. The project does not deploy a pilot without the pre-pilot audit, per D0011's no-skip-the-audit posture. The honest consequence is pilot deferral, not pilot-without-audit.
+
+### 10.3 Phase C — Pre-broader-release funding
+
+Phase C funds the items required between pilot completion and broader-than-pilot release. The two largest items are the pre-beta full audit and foundation incorporation; the brief also identifies reviewer honoraria and an optional UX engineer as Phase C items.
+
+**Phase C line items.**
+
+- _Pre-beta full audit_ per [D0011](decisions/D0011-audit-budget-and-timing.md): $60,000-150,000 reflecting market rates at named firms (Trail of Bits, NCC Group, Cure53, Quarkslab). Lower bound conditional on subsidy programs (OTF Secure Audit at the audit-grant tier, Cure53 mission-org rates extended from the pre-pilot engagement, Trail of Bits civic-tech rates); upper bound is unsubsidized engagement at standard rates for a 4-6 week engagement.
+- _Reviewer honoraria_ for the post-pilot operational period per Section 8.2: approximately $40,000-100,000 per year at the honoraria operating model, scaled by the number of releases the year produces. Honoraria sized to be "fair relative to security-engineering market rates for the equivalent work" per Section 8.2; the brief estimates $2,000-5,000 per reviewer per release at 8-20 hours of review per release, multiplied across the five-reviewer pool and the release cadence the funded operational model supports (quarterly target per [D0008](decisions/D0008-volunteer-baseline-cadence.md)). The estimate is structural rather than committed; specific honoraria figures depend on grant scope and are stated in partnership terms when funding closes.
+- _Foundation incorporation_ per [D0010](decisions/D0010-foundation-jurisdiction.md): $5,000-25,000 initial depending on jurisdiction (US 501(c)(3) at the higher end, UK CIC at the lower end, Dutch Stichting and Swiss Verein in the middle). Includes legal counsel for the incorporation filing, registration fees, initial board-governance documents, and IP-assignment transfer mechanics.
+- _Optional: UX-focused engineer_ per Section 8.1: $30,000-60,000 for a 3-6 month engagement focused on the Section 5.6 implementation surface — Signal-familiar UI patterns, trust-badge rendering, recovery flow walkthroughs, calibrated security-communication work. The engineering review identified this surface as 30-50% of v1 implementation effort; engaging a specialist accelerates pre-broader-release work. The item is optional in the sense that the developer can complete the work solo at slower cadence; it is not optional in the sense that the work itself is in scope.
+- _Pilot deployment hardware_: minimal incremental cost under the BYOD pilot model. Pilot users source their own GrapheneOS-capable Pixel devices through the standard channels. The two-to-four-device project pool from Phase A continues as the developer-testing and partner-loaner inventory; no significant Phase C hardware budget is required for the pilot itself.
+
+**Phase C totals.**
+
+- Floor: approximately $105,000 (subsidized full audit lower bound + a partial-year of minimum honoraria + minimum foundation incorporation + no UX engineer).
+- Ceiling: approximately $335,000 (unsubsidized full audit upper bound + full annual honoraria upper bound + maximum foundation incorporation + UX engineer engagement).
+
+**What Phase C unlocks.** Broader-than-pilot release. The project enters a foundation-governed operational posture with the structural mitigations the foundation enables: formalized Safe Harbor per [D0012](decisions/D0012-researcher-safe-harbor.md), board-bound governance per Section 8.4, formal partner advisory authority per [D0009](decisions/D0009-sudden-unavailability.md), and the reviewer-honoraria operating model per Section 8.2. The conditional commitments in Section 8 become structurally enforceable rather than personally undertaken.
+
+**Phase C contingency.** If Phase C funding closes at the lower bound only, the audit scope narrows per D0011 with explicit acknowledgment, the UX engineer is not engaged, and broader release is deferred until subsequent funding closes. If Phase C funding does not close at all, the pilot continues at the Phase B-funded posture and broader release is deferred indefinitely. The no-skip-the-audit commitment from Section 8.5 means broader release is gated on the pre-beta audit closing, not on a "we tried" disclaimer.
+
+### 10.4 Phase D — Steady-state operations
+
+Phase D is what the project costs annually once the foundation is operating and the v1 broader release has shipped. The figures are projected ranges rather than committed budget; the brief identifies categories and approximate scale.
+
+**Phase D annual line items.**
+
+- _Recurring audit cycle_ per [D0011](decisions/D0011-audit-budget-and-timing.md): a second external cryptographic audit approximately 18-24 months after the first, amortized to roughly $40,000-100,000 per year depending on the rate of cryptographic-relevant changes and the prior audit's findings.
+- _Reviewer honoraria_ at the operational model per Section 8.2: approximately $40,000-100,000 per year at the quarterly cadence target.
+- _Foundation overhead_: $10,000-30,000 per year for board governance, accounting, fiscal infrastructure, regulatory compliance, jurisdiction-specific tax filings. Range depends on incorporation jurisdiction per D0010.
+- _Infrastructure_: $1,000-3,000 per year for domain, static hosting, log-operator participation (if the project operates its own Sigsum log, the higher end; if the project participates in public logs, the lower end).
+- _Localization and translation honoraria_ tracking Q6 in [open-questions.md](open-questions.md): grant-scoped; approximately $5,000-20,000 per year for a small number of target languages with native-speaker security-trainer translators.
+
+**Phase D annual totals (without maintainer compensation).**
+
+- Floor: approximately $90,000-100,000 per year (audit amortization at the subsidized rate + minimum honoraria + minimum foundation overhead + infrastructure + minimum localization).
+- Ceiling: approximately $250,000 per year (audit amortization at the unsubsidized rate + maximum honoraria + maximum foundation overhead + maximum localization).
+
+**Maintainer compensation: aspirational.** Section 8.1 identifies that compensation for the developer (and eventual additional engineers and operational roles) is the project's intent when grant funding sustainably supports it. The brief does not budget maintainer compensation as a committed Phase D line item; the funding configuration that sustainably supports paid maintainer time has not closed and is identified here as the project's aspiration rather than its plan. A funded maintainer line at security-engineering market rates would add approximately $150,000-250,000 per year per FTE (US-equivalent rates; jurisdiction-dependent). The project does not commit to that range in the brief, and Phase D figures above are stated without it so funders evaluating sustainability see the non-maintainer-comp operational floor and ceiling honestly.
+
+### 10.5 Funding sources
+
+The project's funding source roster reflects the named subsidy programs in [D0011](decisions/D0011-audit-budget-and-timing.md) and the broader civil-society grant landscape relevant to the project's mission.
+
+- **Self/personal.** Phase A and as long as feasible into Phase B if the developer can absorb the initial legal consultation. Developer time and the small absorbed costs identified in 10.1. The brief does not assume the developer's personal contribution extends indefinitely; the [D0009](decisions/D0009-sudden-unavailability.md) and Section 9.1 framings acknowledge the personal-resource boundary.
+- **Subsidy programs** (named in D0011, the first route for audit funding):
+  - Open Tech Fund Secure Audit program — mission-aligned audit subsidies; the program's criteria closely match the project's audience and threat model.
+  - Cure53 mission-organization rates — applies to civil-society security tools at reduced rates relative to commercial engagement; relevant for both audit stages.
+  - Mozilla Open Source Audit Awards — periodic funding for open-source security audits; cycles vary.
+  - NLnet NGI Zero Trust calls — European funding instrument with audit allocations and broader development funding; NLnet also functions as a fiscal-sponsor option for European-jurisdiction arrangements per D0010.
+- **Direct grant programs** (Phase B/C/D funding beyond audit-specific subsidies):
+  - Open Tech Fund main grants (broader than the audit subsidy line).
+  - Ford Foundation (civil-society and digital-rights focus).
+  - Open Society Foundations (regional foundation network; relevant jurisdictions and program areas vary).
+  - Mozilla Open Source Support (MOSS) and successor programs.
+  - European democracy and digital-rights instruments (SIDA, GIZ, EIDHR, Dutch Ministry of Foreign Affairs human-rights funds).
+  - NLnet main funded calls (NGI series beyond NGI Zero Trust).
+  - Knight Foundation (some program alignment for journalist-focused security tooling).
+- **Partner co-funding.** Where Cairn integration with a partner organization's tooling benefits both projects, partner organizations may co-fund the integration work. Co-funding arrangements emerge from Section 8.6 partnership conversations and are not assumed in the brief's budget.
+- **Individual donations.** Post-foundation incorporation: a structured donation channel through the foundation. Pre-incorporation: routed through the fiscal sponsor if the sponsor's structure supports individual contributions in addition to grants.
+- **Hardware partnerships** (v3+ aspiration per the roadmap): pre-keyed device distribution, mesh-radio integration kits, established-organization tier as a paid offering subsidizing grassroots use. These are out of scope for v1 funding decisions and are identified for completeness rather than as a budgeted source.
+
+### 10.6 Funding strategy and sequencing
+
+The project's funding pursuit follows a specific sequence consistent with the phase gating:
+
+1. **Partner-organization outreach precedes formal grant applications.** Per Section 8.6, the partnership picture depends on conversations that have not yet been held; partner endorsement strengthens grant applications and partner co-funding arrangements emerge from these conversations. Phase A includes the outreach.
+2. **Pre-incorporation legal consultation (Phase B item) gates fiscal-sponsor selection.** The project does not route a first grant intake without the fiscal-sponsor arrangement in place. The legal consultation may be self-absorbed if the developer can sustain the cost, or grant-funded if a smaller flexible grant closes first.
+3. **Subsidy programs are pursued first for audit funding.** Audit subsidies have specific mission alignment (the project's threat tier and audience match the subsidy programs' criteria closely) and lower overhead than direct grants. The project applies to multiple programs in parallel; grant cycles vary from 3-9 months across the named programs.
+4. **Direct grants are pursued in parallel for broader Phase C and Phase D funding.** Direct grants typically support multi-year operational funding rather than single audit engagements; the application work is more substantial and the cycles longer.
+5. **Phase A does not depend on Phase B funding closing.** The developer continues Phase A indefinitely if Phase B funding does not close. The brief does not promise Phase A completion on a Phase-B-funded schedule; the volunteer-baseline cadence in [D0008](decisions/D0008-volunteer-baseline-cadence.md) governs Phase A regardless of grant outcomes.
+
+### 10.7 Funding risks
+
+Section 9.1 frames the project's funding risk as two-horizon: short-horizon risk (Phase B funding does not close, pilot deferred) and long-horizon risk (Phase D sustainability does not materialize, project sunsets per Section 9.4). This subsection enumerates specific failure modes by phase.
+
+- **Subsidy programs do not close for the pre-pilot audit.** Phase A continues; pilot deployment is deferred until the audit lands. The project does not deploy a pilot without the pre-pilot audit. Mitigation: parallel applications to multiple subsidy programs; partner-organization endorsement; iterative resubmission across cycles.
+- **All Phase B funding fails for an extended period.** Phase A continues for as long as the developer can sustain it; the [D0009](decisions/D0009-sudden-unavailability.md) sudden-unavailability handling and the Section 9.4 sunset process catch the worst case.
+- **Phase C funding closes only at the lower bound.** Per D0011: the audit scope narrows with explicit acknowledgment; the UX engineer is not engaged; broader release is deferred until subsequent funding closes. The conditional-not-unconditional posture in Section 8 means the brief does not promise broader release on a Phase-C-funded timeline.
+- **Reviewer honoraria cannot be funded indefinitely.** Per Section 8.2 and [D0008](decisions/D0008-volunteer-baseline-cadence.md), the project reverts to the volunteer-attestation baseline with surfaced transparency; release cadence reverts to the median-4-6-month "as-quorum-forms" pattern. Reviewer-pool composition may shift as some volunteer-baseline reviewers depart and the recruitment pool changes; the surfacing commitment in 8.2 lets the pool evaluate this trajectory at recruitment.
+- **Currency-of-incorporation jurisdiction (D0010) affects donor pool depth.** Some jurisdictions support broader international donor tax-deductibility through tax treaties; some have narrower donor bases. The jurisdictional choice (legal-consultation-mediated) factors this into the selection criteria per D0010.
+- **Foundation incorporation funding does not close.** The natural-person-operated structure continues longer; the structural mitigations the foundation enables (formalized Safe Harbor per [D0012](decisions/D0012-researcher-safe-harbor.md), board-bound governance per 8.4, formal partner advisory authority per [D0009](decisions/D0009-sudden-unavailability.md)) remain at the stated-intent posture rather than becoming legally enforceable. The brief is honest about this dependency throughout Section 8.
+
+### 10.8 What this section does not promise
+
+The brief does not promise:
+
+- Specific dollar amounts of funding will close.
+- Specific timelines tied to funding events. The phase descriptions are "what unlocks what," not "by when."
+- That the project reaches Phase C or D. Reaching them depends on partner-organization outreach, grant cycles, pilot success, and external funding decisions the project does not control.
+- A specific maintainer compensation arrangement. The Phase D aspiration is identified; the funding configuration that supports it has not closed.
+- A specific fiscal sponsor (per D0010, Q15), audit firm (Q7), or jurisdiction of incorporation (Q4). These are tracked as open questions to resolve through outreach and consultation.
+
+Funders evaluating the brief should treat Phase A items as the project's unilateral commitment (developer time, no funding required), Phase B as the smallest grant outcome that materially advances the project, Phase C as the funding event that unlocks broader release, and Phase D as the ongoing operational picture once the foundation is operating. The brief's purpose at the funding level is to give partners and funders an honest map of what dollars do for the project; it is not a fundraising target with a deadline attached.
 
 ---
 
