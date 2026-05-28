@@ -550,85 +550,148 @@ The reproducible-build pipeline that lands in v1.5 must reproduce both the Rust 
 
 ## 6. v1 Scope
 
-_Purpose: explicit definition of what ships in v1, what's deferred, and why. This is the section funders and partners care most about._
-
-Contents to write:
-
 ### 6.1 What ships in v1
 
-- Android app for GrapheneOS Pixel only
-- SimpleX integration as the v1 messaging substrate (Briar deferred to v1.5 per [D0004](../decisions/D0004-v1-scope-cuts.md))
-- Trust graph anchored in Sigsum: attestations, revocations, introductions, key rotations queried from the log directly (no local CRDT; local caching deferred to v1.5)
-- Social recovery via Shamir Secret Sharing among peer-designated contacts
-- Provisioning ceremony via in-person QR pairing (facilitated by the developer in pilot; per [D0004](../decisions/D0004-v1-scope-cuts.md))
-- Single-profile UI in v1 (multi-profile compartmentation UX deferred to v1.5)
-- Sigstore identity-based signing with external source-code review (binary reproducibility deferred to v1.5)
-- Documentation for users and pilot administrators, including the post-coercion recovery flow as written guidance (in-app first-class flow deferred to v1.5)
-- Rust core + Kotlin UI implementation architecture (see [D0003](../decisions/D0003-implementation-language.md))
+The v1 release is deliberately scoped to what one developer can ship soundly in 9-12 months, given the architectural commitments in Section 5 and the scope cuts recorded in [D0004](decisions/D0004-v1-scope-cuts.md). v1 is not the architectural endpoint; it is the smallest cut of the architecture that delivers a defensible product to the v1 audience (Section 2.2) and provides the foundation from which v1.5 completes the design.
+
+**Platform.** Android-only, running on GrapheneOS on Pixel hardware. Other platforms (iOS, non-Pixel Android) are explicitly deferred or rejected (see 6.2).
+
+**Messaging substrate.** SimpleX is the v1 messaging substrate — identifier-less queues, no persistent user identity at the protocol level, double-ratchet-derivative forward secrecy for on-wire content. Briar is deferred to v1.5 per [D0004](decisions/D0004-v1-scope-cuts.md); v1 sensitivity tiering is operational (user discipline over what is sent through SimpleX) rather than mechanical (protocol selection). Section 5.4 covers the protocol-level discussion.
+
+**Identity, trust, and recovery.** The three-tier identity model from Section 5.1 ships in full: master Ed25519 seed Shamir-split among recovery peers, operational keypair hardware-gated in the device's secure element, COSE-formatted capability tokens for device-scoped operations. The trust graph from Section 5.2 ships with five operation types (attestation, attestation withdrawal, key compromise revocation, introduction, key rotation) and commitment-only Sigsum anchoring; trust evaluation queries Sigsum directly in v1 with no local CRDT per D0004. Social recovery from Section 5.3 ships with the pre-shared peer challenge plus 48-hour delay-and-confirm mechanism from [D0005](decisions/D0005-peer-verification.md).
+
+**Provisioning.** In-person QR-code-based provisioning ceremony, conducted in v1 by the developer as facilitator for pilot users. The facilitator walks the user through identity generation, recovery peer designation, pre-shared challenge establishment, and the initial trust-graph seeding. Broader-deployment provisioning models (facilitator networks, post-pilot remote onboarding) are not committed in v1.
+
+**UI surface.** Signal-familiar messaging surface in Kotlin: threads, contact list, voice notes, attachments, group chats. Trust badges and verification indicators per Section 5.6. Single-profile only in v1; multi-profile compartmentation UI is deferred to v1.5. No per-conversation extra-private mode toggle (depends on Briar landing). Compelled-unlock guidance ships as written documentation rather than an in-app first-class flow.
+
+**Release security.** Two-layer signing per Section 5.5: a long-lived APK signing key for Android signature continuity, plus Sigstore identity-based signing for per-release attestation. External source-code review by a recruited reviewer pool with the 5+ membership and 3-of-5 attestation threshold targets specified in 5.5 and 8.6; in v1 reviewers review source rather than verify binary equivalence (reproducible builds are v1.5 work).
+
+**Documentation.** User guide, facilitator handbook for the in-person provisioning ceremony, peer-recovery handbook for share-holders, written post-coercion recovery guidance, troubleshooting reference, and a security-model overview suitable for technically literate users. Partner organizations are natural collaborators for the user-facing and facilitator documentation (Section 8.6).
+
+**Implementation architecture.** Rust core plus Kotlin UI per [D0003](decisions/D0003-implementation-language.md), with UniFFI bindings between them. Security-relevant logic, secret-material handling, protocol integrations, and storage encryption all live in the Rust core; the Kotlin layer handles UI, Android lifecycle integration, and display-only data structures.
 
 ### 6.2 What's explicitly deferred
 
-- USB-bootable variant (v2)
-- iOS support (v2)
-- Non-Pixel Android support (likely never; product remains GrapheneOS-Pixel-anchored)
-- Mesh radio integration (v3, Meshtastic/MeshCore)
-- Established-org enterprise tier with formal admin/governance (v4+)
-- Voice/video calling (v1.x if time permits, v2 if not)
-- Broader localization beyond English (v1.x post-pilot)
-- Duress-wipe pattern (v1.5; no duress-profile concealment in any planned version — see [D0002](../decisions/D0002-duress-profile.md))
-- Briar integration as the highest-sensitivity tier (v1.5; per [D0004](../decisions/D0004-v1-scope-cuts.md))
-- Per-conversation extra-private mode toggle (v1.5; depends on Briar landing)
-- Multi-profile compartmentation UX (v1.5; single-profile-only in v1)
-- In-app post-coercion recovery flow (v1.5; documentation-only in v1)
-- Reproducible Android builds (v1.5; v1 ships with Sigstore-anchored signing and external source-code review per [D0004](../decisions/D0004-v1-scope-cuts.md))
-- Local trust-graph caching for offline tolerance (v1.5)
-- Local CRDT for trust-graph state: **not planned for any version** (v2+ candidate only if pilot evidence justifies; per [D0004](../decisions/D0004-v1-scope-cuts.md))
+The v1 architecture deliberately defers several capabilities to subsequent versions or indefinitely. Each deferral is documented with its target version (or indefinite status) so funders, partner organizations, and pilot users have an honest picture of the v1 boundary.
+
+**Deferred to v1.5** (the "complete the v1 architecture" release, ~6 months post-v1).
+
+- Briar integration as the highest-sensitivity tier (per [D0004](decisions/D0004-v1-scope-cuts.md)). Includes the per-conversation extra-private mode toggle that depends on Briar landing.
+- Reproducible Android builds, transitioning reviewer attestations from source review (v1) to binary-equivalence verification (v1.5).
+- Local caching of fetched trust-graph operations for offline tolerance (per D0004; the full local CRDT remains not planned).
+- Multi-profile compartmentation UX (v1 ships single-profile-only).
+- In-app post-coercion recovery flow as a first-class action (v1 ships documentation only; per [D0002](decisions/D0002-duress-profile.md)).
+- Duress-wipe pattern (destruction-on-duress-passphrase, modeled on GrapheneOS's duress PIN; per D0002).
+
+**Deferred to v2** (~12-18 months post-v1).
+
+- USB-bootable form factor, providing portable cryptographic identity and amnesic operating environment for borrowed-laptop scenarios.
+- iOS support, opening the platform to users who cannot or will not move to GrapheneOS-Pixel.
+
+**Deferred to v3** (~18-24 months post-v1).
+
+- Mesh radio integration (Meshtastic, MeshCore), addressing internet-shutdown scenarios.
+
+**Deferred to v4 and beyond.**
+
+- Established-organization tier with formal administrator and governance controls, intended as the subsidy mechanism for the grassroots use case the rest of the roadmap supports.
+- Optional Matrix federation for enterprise users.
+- Hardware partnerships for pre-keyed devices.
+
+**Deferred case-by-case to v1.x or later.**
+
+- Voice and video calling (SimpleX supports them; integration depends on time during the implementation period and on pilot priorities).
+- Broader localization beyond English (post-pilot, depending on pilot user demographics; the i18n architectural slot is present in v1 per Section 5.7).
+
+**Indefinitely out of scope.**
+
+- Non-Pixel Android support. The product remains anchored to the GrapheneOS-on-Pixel security baseline; weakening the platform requirement would weaken the architecture's guarantees in ways the threat tier does not tolerate.
+- Duress-profile concealment (as distinct from duress-wipe). Per [D0002](decisions/D0002-duress-profile.md): detected concealment is itself prosecutable in compelled-decryption jurisdictions; the tier-separated identity model is the architectural answer to compelled unlock.
+- Local CRDT for trust-graph state. Per D0004, v1 queries Sigsum directly; v1.5 adds caching; the full CRDT is a v2+ candidate only if pilot evidence justifies the engineering investment.
 
 ### 6.3 Pilot deployment plan
 
-- 10-15 users in 1-2 local groups, identified through developer's existing network
-- Devices provided by the project: GrapheneOS pre-installed on Pixel hardware, app pre-installed, identity not yet provisioned
-- In-person provisioning ceremony conducted by developer for initial users
-- 6-month pilot period before broader release
-- Feedback mechanism: dedicated support channel within the product itself
-- Budget estimate: $5-12K hardware plus developer time
+The v1 pilot is the project's first direct evidence about whether the architectural choices work for the audience they target. It is also the moment at which the project's operational discipline (Section 8) meets real users in real conditions.
+
+**Scale and composition.** The pilot targets 10–15 users in one or two local groups already known to the developer. The specific groups are not named in this design document; identification and final commitment depends on conversations the developer holds with candidate communities during the design-brief phase (tracked as Q4 in [open-questions.md](open-questions.md)). The constraint is intentional — at pilot scale the developer can sustain the facilitator role personally (Section 5.6, Section 8.6), and operational issues surface quickly enough to inform v1.5 design without overwhelming the project's capacity to respond.
+
+**Device provisioning.** The project provides devices for pilot users: GrapheneOS-installed Pixel hardware with the Cairn application pre-installed and the identity not yet provisioned (identity provisioning happens with the user present at the in-person ceremony). The device-preparation workflow concentrates trust in the developer per the Distribution and supply-chain surface in Section 3.3; the operational mitigation is the reproducible-build pipeline that lands in v1.5, plus the source-review attestation in v1.
+
+**Provisioning ceremony.** Conducted in person by the developer for each pilot user. The ceremony covers identity generation, recovery peer designation, pre-shared challenge establishment with each peer, initial trust-graph seeding, and walkthrough of the post-coercion recovery guidance (per Section 5.6, Section 8.6).
+
+**Pilot duration.** Six months of active use before any broader release decision. Six months is long enough for pilot users to experience the architectural commitments under realistic operational conditions — including at least one quarterly release cycle, attestation rotation, and possibly a recovery scenario or peer-rotation event — and short enough that observations from the early pilot can inform v1.5 design before that work begins in earnest.
+
+**Feedback collection.** A dedicated in-app support channel (cross-ref Section 5.7 acknowledgments on crash reporting and feedback) gives pilot users a direct channel to report operational issues. Partner organization debriefs at the 3-month and 6-month marks (per Section 8.6) provide external perspective on the pilot's progress. Pilot users are explicitly told that their operational feedback shapes v1.5 design and that they will be publicly acknowledged in the v1.5 release notes if they choose to be.
+
+**Budget and funding posture.** Estimated pilot hardware cost: $5–12K (10–15 Pixel devices at current market prices). Consistent with the project's self-funded-MVP posture, the developer covers pilot hardware out of pocket through v1 launch; partner contributions and grant funding when secured supplement rather than fund the pilot baseline. The pilot does not depend on external funding to proceed. Section 10 (when drafted) covers funding strategy in detail; for the pilot specifically, the operational stance is that MVP and pilot delivery happen on the developer's own time and resources, with partnerships and funding strengthening the project's posture rather than gating it.
 
 ### 6.4 Forward-compatibility design choices in v1
 
-- Protocol versioning fields in all signed messages from day one
-- Capability tokens with arbitrary scope strings (not hardcoded permissions)
-- Multi-device pairing flow specified for v2 but not built in v1 (per [D0007](../decisions/D0007-multi-device.md)); v1 capability tokens support multiple device keys per operational identity at the schema level; v1 client behavior is single-device-per-identity; v2 may require protocol extension that v1 clients accept as forward-compatible
-- Device-to-device pairing flow specified generically (same flow used for v2 USB, v3 mesh)
-- Trust graph operation types designed for extension
-- Storage schemas with version fields and migration framework
-- Build system designed to produce multiple artifacts even though v1 ships only one
+Several v1 design choices are made explicitly to keep future-version work non-breaking for v1 deployments. These are the architectural commitments that bound what v1.5 and v2 can change without forcing v1 users into a hard migration.
+
+**Protocol versioning fields in all signed messages from day one.** Every signed message — capability token, trust-graph operation, message envelope — carries a protocol version. Old clients receiving messages with unknown versions either reject them with a clear error or, for the trust-graph case, retain them verbatim for forwarding to peers that may understand them. The forward-compatibility property is unambiguous from v1.
+
+**Capability tokens with arbitrary scope strings.** Scope vocabulary is not enumerated at v1; capability tokens carry scope strings (`messaging-send`, `trust-graph-attest`, `recovery-receive`, and so on). Later versions can introduce new scopes (`mesh-relay` in v3, `usb-attached-device` in v2) without breaking compatibility — older clients simply do not recognize the new scope and decline operations requiring it.
+
+**Multi-device pairing specified for v2 but not built in v1** (per [D0007](decisions/D0007-multi-device.md)). v1 capability tokens support multiple device keys per operational identity at the schema level; v1 client behavior is single-device-per-identity. v2 may introduce additional protocol operations (e.g., `device_attestation`) that link multiple device keys to one operational identity in the trust graph; v1 clients accept the new operation types as forward-compatible and ignore them for local computation per the protocol-versioning property above.
+
+**Device-to-device pairing flow specified generically.** The same pairing flow used for the v1 provisioning ceremony (in-person QR exchange, with the operational identity signing the new device's capability token) is the flow used for v2 USB pairing and v3 mesh-node enrollment. The architectural slot exists at v1; the user-facing surfaces and protocol-side handling of new device types are added in v2 and v3 without changing the v1 pairing semantics.
+
+**Trust graph operation types designed for extension.** The five v1 operation types (per Section 5.2) carry a stable schema with a protocol version field; new operation types added in later versions are unknown-but-retained by v1 clients. The cascade quarantine semantics, the prior-hash chains, and the Sigsum commitment-only logging all support new operation types without v1 changes.
+
+**Storage schemas with version fields and migration framework.** Persistent storage (per Section 5.7) uses explicit schema versioning with migration tests that round-trip data through each migration step. v1.5 and later versions can extend the schema (adding fields, adding tables) with v1 clients gracefully handling the unknown content as long as later versions hold to the documented forward-compatibility rules.
+
+**Build system designed to produce multiple artifacts even though v1 ships only one.** The v1 build pipeline produces the GrapheneOS-Pixel APK. The same pipeline is designed to accept additional targets — the v2 USB image, the v2 iOS bundle, the v3 mesh-node firmware — without restructuring. This is mostly engineering hygiene rather than a feature commitment: keeping cross-compilation paths clean from day one, separating platform-specific code from the Rust core.
 
 ---
 
 ## 7. Roadmap
 
-_Purpose: credible picture of trajectory beyond v1. Funders and partners need to see this._
-
-Contents to write:
+The roadmap describes the project's planned release trajectory beyond v1. Each release has a stated scope, a target timing, and explicit dependencies on the releases that precede it. Timing estimates are conditional on funding outcomes (Section 10, when drafted) and on pilot feedback shaping v1.5 priorities. The forward-compatibility design choices in Section 6.4 are intended to bound the migration work each release imposes on v1 deployments to additive changes rather than breaking ones.
 
 ### 7.1 Release sequence
 
-- v1 (target: 9-12 months from start of full-time work): scope per Section 6
-- v1.5 (6 months post-v1): iteration on pilot feedback plus the items deferred from v1 per [D0004](../decisions/D0004-v1-scope-cuts.md) — Briar integration as the highest-sensitivity tier, per-conversation extra-private mode toggle, multi-profile compartmentation UX, in-app post-coercion recovery flow, reproducible Android builds, local trust-graph caching for offline tolerance, duress-wipe pattern (per [D0002](../decisions/D0002-duress-profile.md)); possible voice/video and possible expanded localization if pilot priorities warrant. v1.5 is the "complete the v1 architecture" release.
-- v2 (12-18 months post-v1): USB-bootable variant, iOS app
-- v3 (18-24 months post-v1): mesh radio integration (Meshtastic/MeshCore), addresses internet-shutdown threat
-- v4+ (longer term): established-org features, optional Matrix federation for enterprise users, hardware partnerships for pre-keyed devices
+**v1** (target 9–12 months from start of full-time development). Scope per Section 6.1: SimpleX-only messaging, single-profile UI, source-review release security, documentation-form post-coercion guidance, Rust core plus Kotlin UI implementation. Audience: pilot users running GrapheneOS on Pixel, onboarded in person by the developer-as-facilitator.
+
+**v1.5** (target ~6 months post-v1). The "complete the v1 architecture" release. Adds Briar as the highest-sensitivity tier and the per-conversation extra-private mode toggle that depends on it. Adds reproducible Android builds, with reviewer attestations transitioning from source review to binary-equivalence verification. Adds local caching of trust-graph operations for offline tolerance. Adds the in-app first-class compelled-unlock recovery flow. Adds multi-profile compartmentation UX. Adds the duress-wipe pattern per [D0002](decisions/D0002-duress-profile.md). May add voice and video calling (SimpleX supports them; depends on pilot priorities) and may begin localization to languages indicated by pilot user demographics.
+
+**v2** (target ~12-18 months post-v1). USB-bootable form factor and iOS support. The USB form factor provides portable cryptographic identity for borrowed-laptop scenarios, with the multi-device protocol extension from [D0007](decisions/D0007-multi-device.md) deployed at this version per Section 6.4 forward-compatibility commitments. iOS support extends the platform to users who cannot or will not move to GrapheneOS-Pixel; the security baseline iOS allows is documented as part of v2 work.
+
+**v3** (target ~18-24 months post-v1). Mesh radio integration via Meshtastic and MeshCore, addressing internet-shutdown scenarios. The integration is protocol-agnostic — supporting both Meshtastic's flood-routing model and MeshCore's intelligent-routing model — so users can follow local mesh community conventions. v3 includes the trust-graph extension to handle mesh-relay capability scopes and the introduction of mesh-node device types in the multi-device model established in v2.
+
+**v4 and beyond** (longer-term horizon). Established-organization tier with formal admin and governance controls, intended as the subsidy mechanism for the grassroots use case the rest of the roadmap supports. Optional Matrix federation for enterprise users — the rejection of Matrix as a primary protocol in Section 5.4 does not preclude offering it as an opt-in channel for organizations that maintain their own homeservers. Hardware partnerships for pre-keyed devices may emerge as the user base grows and as device manufacturers consider security-tooling pre-installation.
 
 ### 7.2 Dependencies between releases
 
-- How v1 design choices enable v2 (capability tokens, multi-device protocol, generic pairing flow)
-- How v2 enables v3 (USB establishes the additional-device pattern that mesh radios follow)
-- What requires architectural revisitation (probably nothing through v3, possibly some changes for established-org tier in v4)
+The architectural commitments in v1 are designed so each subsequent version extends the architecture without breaking v1 deployments. The specific dependencies:
+
+**v1 enables v1.5.** The Briar integration in v1.5 reuses the v1 identity model, capability-token format, and trust-graph operation envelope; the operational identity signs Briar-channel attestations the same way it signs SimpleX-channel ones. The local trust-graph caching in v1.5 sits atop the Sigsum commitment-only logging already present in v1. The in-app post-coercion flow in v1.5 walks the user through the same revoke-recover-reissue sequence that v1 documents in written form. The duress-wipe pattern in v1.5 builds on the v1 secure-element key management; no architectural change is needed, only a new code path that destroys the key material on a duress passphrase.
+
+**v1 and v1.5 enable v2.** The capability-token schema's multi-device support per [D0007](decisions/D0007-multi-device.md) is the architectural slot for v2's USB form factor. The v1 device-to-device pairing flow (Section 6.4) is the pairing flow USB uses. The Rust core per [D0003](decisions/D0003-implementation-language.md) cross-compiles to whatever platform the USB-bootable image targets; v1's Kotlin UI is replaced with a USB-environment-appropriate UI shell — likely a minimal terminal or framebuffer UI — without changing the core. iOS support reuses the Rust core with a Swift UI replacing Kotlin.
+
+**v2 enables v3.** USB establishes the multi-device pattern (one operational identity, multiple device keys, multiple devices) that mesh radios extend to mesh nodes. The mesh-relay capability scope sits in the v1 forward-compatible scope vocabulary; the trust-graph extension to handle mesh device types reuses the v2 multi-device-attestation operation type.
+
+**What requires architectural revisitation.** Through v3, no significant revisitation of v1 architecture is anticipated; the forward-compatibility design choices in Section 6.4 should bound the migration work to additive changes. v4's established-organization tier likely requires architectural extension for admin operations (organizational policies, audit logs of administrative actions, group governance) that v1 does not need to anticipate. Optional Matrix federation in v4 is explicitly an opt-in channel that does not change the primary protocol stack; it depends on v4's organizational tier providing the governance surface a Matrix federation participant needs.
 
 ### 7.3 Out-of-scope indefinitely
 
-- Things the project does not intend to do (compete with Signal for mass-market, build custom crypto primitives, run user-facing infrastructure)
-- Things that depend on conditions outside the project's control (broader hardware availability, regulatory changes)
+The project does not intend to do certain things, and naming them is part of the architectural commitment to honest scope. The list distinguishes things the project chooses not to do (architectural decisions under the project's control) from things that depend on external conditions the project does not control.
+
+**Architectural choices not to do.**
+
+- _Compete with Signal for mass-market secure messaging._ The threat tier Cairn addresses is meaningfully smaller than Signal's audience; the architectural cost of meeting that threat tier (GrapheneOS dependency, in-person provisioning, peer-based recovery) is disproportionate for users at lower threat tiers. Cairn is not the right tool for casual privacy, and the project does not pursue use cases where Signal is the better fit.
+- _Build custom cryptographic primitives._ The cryptographic primitives Cairn uses are off-the-shelf — Ed25519, Curve25519, ChaCha20-Poly1305, Shamir Secret Sharing, COSE structures, Sigsum, Sigstore. The project's contribution is integration and operational discipline, not primitive invention (Section 4.3). Custom primitives would multiply the audit burden without producing security properties the existing primitives lack.
+- _Run user-facing infrastructure that users must depend on._ The minimal-project-operated-infrastructure principle in Section 4.2 constrains the project to operating only infrastructure whose loss is recoverable: release distribution, Sigsum witness participation, project documentation. The user's daily messaging operates over substrates the project does not own.
+- _Duress-profile concealment._ Per [D0002](decisions/D0002-duress-profile.md); the architectural answer to compelled unlock is tier separation, not concealment.
+- _Compromise of GrapheneOS or Pixel hardware._ Section 3.5 names these as indefinitely out of scope; addressing them would require building a different product from the ground up. Cairn's security baseline depends on the platform's integrity, named explicitly in Section 3.4 trust roots.
+
+**Conditions outside the project's control.**
+
+- _Broader hardware availability._ The GrapheneOS-Pixel requirement narrows the v1 audience meaningfully (Section 2.2). Expansion of the addressable audience depends on Pixel hardware availability in target deployment regions, on GrapheneOS continuing to support the Pixel platform, and on alternative hardened-mobile-OS-with-secure-element options reaching the security baseline GrapheneOS provides. None of these are within the project's influence.
+- _Regulatory changes in target jurisdictions._ Compelled-decryption laws (Section 3.3 references RIPA, Australia's TOLA Act, France's Article 434-15-2), platform-level encryption mandates, and regulations affecting Tor or pluggable-transport availability all shape what Cairn can deliver to users in specific jurisdictions. The project tracks these developments through partner relationships (Section 8.6 threat-intel category) but does not commit to specific responses to specific regulatory changes.
+- _Reviewer pool composition over time._ Recruitment is the project's responsibility (Section 8.6); retention depends on partner organizations' own priorities and capacity over multi-year timelines.
+
+The roadmap commits the project to specific extensions of the v1 architecture across v1.5, v2, and v3. The honest framing of v4 and beyond is that the project will reach v4 only if the prior versions have delivered enough operational value to attract the funding and organizational commitment that established-organization-tier work requires. The roadmap is a plan, not a guarantee; the architectural commitments in Section 6.4 ensure that the plan's deferrals do not foreclose later work even if specific timing estimates slip.
 
 ---
 
