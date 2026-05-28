@@ -1487,19 +1487,159 @@ _Purpose: define terminology used in the brief for readers whose primary experti
 
 ## Appendix C: References
 
-_Purpose: cite the prior work this design draws on, threat intelligence sources, and related projects._
+_Purpose: cite the prior work, standards, threat intelligence, and external projects the brief draws on. The reference list is organized by category and is non-exhaustive — it captures the principal sources the brief's claims rest against rather than every adjacent citation. A reader using this appendix to verify specific brief claims should consult the inline cross-references in §§3–10 first; this appendix is the consolidated catalog._
 
-Sources to include:
+### C.1 Cryptographic standards and primitives
 
-- Cryptographic protocol references (Signal protocol, Olm/Megolm, SimpleX double-ratchet, FROST)
-- Threat research (Citizen Lab on Pegasus, Graphite, Predator, Cellebrite usage)
-- Community resources (Tactical Tech Security in-a-Box, EFF SSD, Access Now Helpline, Front Line Defenders)
-- Related projects (Signal, Element, Wickr, Session, Wire, Cwtch, Veilid)
-- Standards and protocols (Sigstore, TUF, COSE, Ed25519)
-- Reproducible builds and supply chain security (Debian RB, NixOS, Sigsum, Rekor)
+- **RFC 8032 — Edwards-curve Digital Signature Algorithm (EdDSA).** Defines Ed25519 and Ed448 signatures. <https://datatracker.ietf.org/doc/html/rfc8032>
+- **RFC 7748 — Elliptic Curves for Security.** Defines Curve25519 and Curve448. <https://datatracker.ietf.org/doc/html/rfc7748>
+- **RFC 8439 — ChaCha20 and Poly1305 for IETF Protocols.** Defines the AEAD construction Cairn uses for symmetric authenticated encryption. <https://datatracker.ietf.org/doc/html/rfc8439>
+- **RFC 8949 — Concise Binary Object Representation (CBOR).** Section 4.2.1 defines the deterministic encoding rules Cairn relies on for signed-CBOR reproducibility. <https://datatracker.ietf.org/doc/html/rfc8949>
+- **RFC 9052 — CBOR Object Signing and Encryption (COSE) Structures and Process.** Cairn's capability tokens and trust-graph operation envelopes are COSE_Sign1 structures. <https://datatracker.ietf.org/doc/html/rfc9052>
+- **RFC 9420 — The Messaging Layer Security (MLS) Protocol.** Referenced as the standard Matrix is migrating to and as the protocol Wire uses. <https://datatracker.ietf.org/doc/html/rfc9420>
+- **Shamir, A. (1979). "How to share a secret."** _Communications of the ACM_ 22(11): 612–613. The foundational paper for Shamir Secret Sharing. <https://doi.org/10.1145/359168.359176>
+- **SLIP-39 — Shamir's Secret-Sharing for Mnemonic Codes.** A standardized share format Cairn evaluates as an alternative to custom share formatting. <https://github.com/satoshilabs/slips/blob/master/slip-0039.md>
+
+### C.2 Protocol references
+
+- **Signal Protocol specifications.** Documentation for the X3DH key agreement and double-ratchet algorithm Cairn's messaging protocol descends from via SimpleX. <https://signal.org/docs/>
+- **SimpleX protocol documentation.** The identifier-less queue protocol Cairn uses as the v1 messaging substrate. <https://github.com/simplex-chat/simplex-chat/blob/master/docs/protocol/simplex-messaging.md>
+- **Briar protocol documentation.** Peer-to-peer-over-Tor messaging protocol Cairn integrates as the v1.5 highest-sensitivity tier. <https://code.briarproject.org/briar/briar/-/wikis/home>
+- **Briar Mailbox.** Store-and-forward extension to Briar (stable 2023) acknowledged in §2.3's Briar characterization. <https://briarproject.org/manual/mailbox/>
+- **Cwtch.** Peer-to-peer-over-Tor messaging with untrusted-group-server pattern; comparator considered in §5.4. <https://cwtch.im>
+- **Matrix specification and MLS migration (MSC4191 and related MSCs).** Matrix protocol documentation and the in-progress MLS migration tracked in §2.3. <https://spec.matrix.org/> and <https://github.com/matrix-org/matrix-spec-proposals>
+- **WhatsApp Auditable Key Directory (AKD).** WhatsApp's transparency-log-anchored key directory implementation, referenced in §4.3 as prior art for transparency-logged key state. <https://engineering.fb.com/2023/04/13/security/whatsapp-key-transparency/>
+- **iMessage Contact Key Verification (CKV).** Apple's transparency-log-anchored contact key verification, referenced in §4.3 as prior art for transparency-logged key state. <https://security.apple.com/blog/imessage-contact-key-verification/>
+- **CONIKS: Bringing Key Transparency to End Users (Melara et al., 2015).** Academic origin for transparency-log-anchored key directories. <https://www.usenix.org/conference/usenixsecurity15/technical-sessions/presentation/melara>
+
+### C.3 Sigstore, Sigsum, and supply-chain provenance
+
+- **Sigstore project.** Identity-based signing infrastructure (Fulcio for OIDC-bound certificate issuance; Rekor for transparency logging; cosign for signing operations). <https://www.sigstore.dev>
+- **Sigstore specifications.** Specifications for the Fulcio certificate format, Rekor entry formats, and cosign verification semantics. <https://docs.sigstore.dev>
+- **Sigsum project.** Witness-cosigned transparency log infrastructure with minimalist operational requirements. <https://www.sigsum.org>
+- **Sigsum project documentation and witness-pool design.** <https://git.glasklar.is/sigsum/project/documentation>
+- **The Update Framework (TUF).** Reference framework for secure software update systems; considered in §5.5 architectural alternatives. <https://theupdateframework.io>
+- **Reproducible Builds.** The project, methodologies, and tooling for reproducible-build verification. <https://reproducible-builds.org>
+- **APK Signature Scheme v3.** Android's APK signing format that supports key rotation, referenced in §5.5 for the long-lived APK key compromise-recovery process. <https://source.android.com/docs/security/features/apksigning/v3>
+
+### C.4 Tor, anonymization, and pluggable transports
+
+- **The Tor Project.** Documentation, specifications, and ongoing roadmap for the Tor anonymization network. <https://www.torproject.org>
+- **Tor Pluggable Transports.** Specifications and implementations of DPI-evasion transport layers (obfs4, meek, snowflake, webtunnel). <https://www.pluggabletransports.info>
+- **Arti — A Rust Tor implementation.** The Rust-native Tor client implementation Cairn prefers per D0003. <https://gitlab.torproject.org/tpo/core/arti>
+
+### C.5 GrapheneOS, Android hardening, and hardware
+
+- **GrapheneOS.** Project documentation including security model, attestation, and hardened components. <https://grapheneos.org>
+- **GrapheneOS threat model and security features.** <https://grapheneos.org/features>
+- **CalyxOS.** Alternative privacy-focused Android distribution evaluated in §2.3 and Q26. <https://calyxos.org>
+- **Pixel security documentation (Google).** Titan M2 secure-element documentation; StrongBox-backed Keystore documentation. <https://www.gstatic.com/pixel/security-docs/>
+- **Android Keystore — Hardware-Backed Keystore documentation.** <https://source.android.com/docs/security/features/keystore>
+
+### C.6 Threat research and adversary documentation
+
+- **Citizen Lab — Pegasus targeting reports.** A multi-year corpus of investigations into mercenary-spyware deployments against civil-society targets. <https://citizenlab.ca/category/research/targeted-threats/>
+- **Citizen Lab — Predator targeting reports.** Investigations into Intellexa's Predator spyware deployment, including the Greek "Predatorgate" reporting. <https://citizenlab.ca/2023/10/predator-in-the-wires-ahmed-eltantawy-targeted-with-predator-spyware-after-announcing-presidential-ambitions/>
+- **Amnesty International Security Lab.** Forensic documentation of mercenary-spyware targeting, including the Pegasus Project consortium with Forbidden Stories. <https://securitylab.amnesty.org>
+- **The Pegasus Project (Forbidden Stories consortium).** Coordinated investigative reporting on Pegasus targeting across multiple jurisdictions. <https://forbiddenstories.org/case/the-pegasus-project/>
+- **Access Now Digital Security Helpline.** Civil-society incident response and threat-intelligence resource. <https://www.accessnow.org/help/>
+- **EFF Threat Lab.** Research on spyware and surveillance targeting civil society. <https://www.eff.org/issues/security>
+- **Cellebrite — public documentation and product specifications.** Forensic-extraction tools referenced in §2.1 threat tier. <https://cellebrite.com>
+- **MSAB (XRY product line) — public documentation.** Forensic-extraction tools. <https://www.msab.com>
+
+### C.7 Civil-society security toolkits and methodologies
+
+- **Tactical Tech.** Toolkits, training, and research on digital security for civil society; Security in-a-Box. <https://tacticaltech.org> and <https://securityinabox.org>
+- **Front Line Defenders.** Protection-work guidance and casework support for at-risk human-rights defenders. <https://www.frontlinedefenders.org>
+- **Access Now.** Policy, digital-security helpline, and grants programmes. <https://www.accessnow.org>
+- **EFF Surveillance Self-Defense.** Digital-security guidance for at-risk users. <https://ssd.eff.org>
+- **Citizen Lab research-ethics framework.** Academic-research-style protocols for working with at-risk subjects; one of the candidate frameworks for D0013 pilot consent and exit protocol selection. <https://citizenlab.ca>
+- **Internews — Protection-tech evaluation guidance.** Civil-society-tooling evaluation methodology referenced in D0013 framework selection. <https://internews.org>
+- **SecureDrop.** Source-protection submission system operated by Freedom of the Press Foundation. <https://securedrop.org>
+
+### C.8 Implementation libraries and tools
+
+- **Rust crates referenced in D0003 / D0006:**
+  - **`coset`** — COSE implementation for Rust. <https://crates.io/crates/coset>
+  - **`zeroize`** — Secret-material lifetime control. <https://crates.io/crates/zeroize>
+  - **`secrecy`** — Wrapping types for secret-material handling. <https://crates.io/crates/secrecy>
+  - **`subtle`** — Constant-time primitives. <https://crates.io/crates/subtle>
+  - **`vsss-rs`** — Shamir Secret Sharing implementation candidate. <https://crates.io/crates/vsss-rs>
+- **UniFFI.** Mozilla's binding-generation framework for Rust↔ {Kotlin, Swift, Python} interop. <https://mozilla.github.io/uniffi-rs/>
+- **`arti`** — Rust-native Tor client implementation. See C.4.
+
+### C.9 Audit firms (cited as candidates in D0011)
+
+- **Trail of Bits.** US-based information-security firm with cryptographic-primitive audit practice; public reports at <https://github.com/trailofbits/publications>
+- **NCC Group.** UK-headquartered global information-security firm with cryptography services practice. <https://www.nccgroup.com/research>
+- **Cure53.** Berlin-based information-security firm with civil-society audit history at mission-org rates. <https://cure53.de>
+- **Quarkslab.** French information-security firm with cryptographic-primitive audit experience. <https://www.quarkslab.com>
+
+### C.10 Funders and grant programmes
+
+- **Open Technology Fund — Secure Audit programme.** <https://www.opentech.fund/funds/secure-audit/>
+- **Open Technology Fund — main grant programmes.** <https://www.opentech.fund>
+- **NLnet Foundation — NGI Zero Trust.** <https://nlnet.nl/NGI0Entrust/>
+- **NLnet Foundation — NGI Zero programmes and main funded calls.** <https://nlnet.nl>
+- **Mozilla Open Source Support (MOSS).** <https://www.mozilla.org/en-US/moss/>
+- **Mozilla Open Source Audit Awards (OSAA history).** <https://blog.mozilla.org/security/category/audits/>
+- **Ford Foundation — Technology and Society programme.** <https://www.fordfoundation.org/work/our-grants/build/global-trustworthy-internet/>
+- **Open Society Foundations — Information and Digital Rights.** <https://www.opensocietyfoundations.org/what-we-do/themes/information-and-digital-rights>
+- **Knight Foundation — Journalism programmes.** <https://knightfoundation.org/program/journalism/>
+- **Sloan Foundation — Better Software for Science programme** (referenced in §10.5 multi-year engineering-capacity grant category). <https://sloan.org/programs/digital-technology/better-software-for-science>
+- **Chan Zuckerberg Initiative — Essential Open Source Software for Science.** <https://chanzuckerberg.com/eoss/>
+- **Internet Society Foundation.** <https://www.isocfoundation.org>
+
+### C.11 Fiscal sponsors and foundation infrastructure (cited as candidates in D0010)
+
+- **Software Freedom Conservancy.** <https://sfconservancy.org>
+- **Open Collective Foundation / Open Source Collective.** <https://opencollective.com> and <https://oscollective.org>
+- **Code for Science & Society.** <https://codeforscience.org>
+- **NumFOCUS.** <https://numfocus.org>
+- **NLnet Foundation** (operates grantee-sponsorship in addition to grantmaking). See C.10.
+
+### C.12 Researcher protection templates (cited as candidates in Q16 / D0012)
+
+- **disclose.io.** Open-source Safe Harbor template widely adopted across security-tools projects. <https://disclose.io>
+- **Bugcrowd "We Will Not Sue" disclosure terms.** <https://www.bugcrowd.com/resources/standard-disclosure-terms/>
+- **EFF Coders' Rights Project.** <https://www.eff.org/issues/coders/legal-defense-toolkit>
+
+### C.13 Distribution channels
+
+- **F-Droid.** Community-operated app distribution and reproducible-build infrastructure for open-source Android. <https://f-droid.org>
+- **Accrescent.** Alternative Android distribution channel focused on application authenticity. <https://accrescent.app>
+
+### C.14 Regulatory frameworks referenced
+
+- **US Export Administration Regulations (EAR).** Encryption-export framework. <https://www.bis.doc.gov/index.php/regulations/export-administration-regulations-ear>
+- **EU Dual Use Regulation (EU 2021/821).** European encryption-export framework. <https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX%3A02021R0821>
+- **Wassenaar Arrangement.** Multilateral export-control regime including encryption and intrusion-software controls. <https://www.wassenaar.org>
+- **UK Regulation of Investigatory Powers Act 2000 (RIPA).** Compelled-decryption provisions Cairn references in §3.3. <https://www.legislation.gov.uk/ukpga/2000/23/contents>
+- **Australia Telecommunications and Other Legislation Amendment (Assistance and Access) Act 2018 (TOLA).** Industry-assistance regime Cairn references in §3.3. <https://www.legislation.gov.au/Details/C2018A00148>
+- **France Article 434-15-2 of the Code pénal.** Compelled-disclosure provision Cairn references in §3.3. <https://www.legifrance.gouv.fr/codes/article_lc/LEGIARTI000030939438/>
+
+### C.15 Reproducible-build, supply-chain, and signing references
+
+- **Reproducible Builds project.** See C.3.
+- **Debian Reproducible Builds.** <https://wiki.debian.org/ReproducibleBuilds>
+- **NixOS reproducibility tracking.** <https://nixos.org/manual/nixos/stable/#sec-reproducibility>
+- **Briar reproducible-build documentation.** <https://code.briarproject.org/briar/briar-reproducer>
+- **Signal Android reproducible-build documentation.** <https://github.com/signalapp/Signal-Android/tree/main/reproducible-builds>
+
+### C.16 Civil-society security incident corpora
+
+- **Citizen Lab — TargetedThreats research index.** <https://citizenlab.ca/category/research/targeted-threats/>
+- **Amnesty International Security Lab — research index.** <https://securitylab.amnesty.org/research/>
+- **Mercenary spyware accountability and trade documentation.** Multiple researcher consortia documenting NSO Group, Intellexa, Candiru, Memento Labs, and related vendors (Citizen Lab corpus above is the canonical entry point).
+
+### C.17 Editorial and writing standards
+
+- **Strunk, W. & White, E.B. — _The Elements of Style._** The diction discipline the brief's calibration commitments echo: precise, calibrated, honest verb selection.
+- **Architectural Decision Records (ADRs) — community documentation.** The ADR pattern Cairn's decision register uses. <https://adr.github.io>
 
 ---
 
 ## Document changelog
 
-- 0.1 (initial outline): scaffold structure based on architecture decisions to date
+- **0.2 (2026-05-28).** Substantial post-adversarial-review revision cycle. New: §1 Executive Summary (synthesis pass); §10 Funding and Resourcing (phase-gated cost model); D0008–D0014 decision documents; Q13–Q26 open questions; per-lens adversarial review artifacts under `docs/reviews/`; consolidated review documents for §§2, 4, 6/7, 8/9, 10. Major: §2 audience three-layer restructure with co-located adversary / non-peer-recovery acknowledgments; §4 calibration sweep (verb deflation, trust-substitution-not-elimination, dependency-surface naming); §§6/7 phase-gate register replacing calendar windows; §6.1 solo-developer specialist-absorption and v1 cryptographic-engineering enumeration; §3.3 supply-chain BYOD decomposition; §10 internal-contradiction fixes (BYOD reconciliation; reviewer-honoraria phase split; foundation-incorporation dependency; addressable-by-instrument floor framing; named-ask §10.9; sustainability-cliff acknowledgment in §10.4); §10.8 disclaimer set expansion; §2.3 landscape calendar pass with Tails/SecureDrop/CalyxOS/Threema/Wire/Olvid additions and Wickr/Signal/Matrix/Briar/Session/SimpleX updates. Appendix A rewritten as decision-document index + thematic groupings + interaction chains; Appendix B rewritten as comprehensive thematic glossary including brief-internal vocabulary; Appendix C rewritten as structured reference catalog.
+- **0.1 (2026-05-27 / earlier).** Initial outline transferred from prior conversation; scaffold structure based on architecture decisions to date; §§3, 5 drafted and adversarially reviewed; D0001–D0007 decision documents; Q1–Q12 open questions; placeholders for §§1–2, §§6–10, appendices.
