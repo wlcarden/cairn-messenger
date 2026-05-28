@@ -11,9 +11,11 @@ The brief commits in 8.2 to "quarterly cadence matching reasonable reviewer-pool
 
 ## Decision
 
-**Accept release slippage as the expected behavior of the volunteer baseline.** Releases ship when 3-of-5 reviewer attestations form. The expected median release interval at volunteer baseline is 4-6 months; quarterly remains the target cadence once honoraria fund. The architectural commitment (3-of-5 attestation threshold per release) does not change; the cadence assumption changes from "quarterly" to "as quorum forms, expected 4-6 months."
+**Accept release slippage as the expected behavior of the volunteer baseline.** The expected median release interval at volunteer baseline is 4-6 months; quarterly remains the target cadence once honoraria fund.
 
-This is the honest answer for the volunteer baseline. It does not change the security property the multi-party attestation provides (the threshold is preserved). It does change what users and partners expect about release frequency.
+**Update (per [D0015](D0015-v1-release-security-posture.md)):** the recruited 5+/3-of-5 reviewer pool defers from v1 critical path to v1.5. At v1, release cadence is governed by engineering scope completion plus pre-pilot audit closing plus the partner-mediated pilot consent and exit protocol landing — not by reviewer-pool quorum formation. At v1.5 onward, releases ship when 3-of-5 reviewer attestations form (the architectural threshold from Section 5.5, activated at v1.5 when the recruited pool ships alongside reproducible builds). The 4-6 month median interval applies at both v1 (developer engineering + audit cycle) and v1.5+ (volunteer-attestation pool "as-quorum-forms" pattern) — the underlying operational reality is the same volunteer cadence; only the proximate cause shifts.
+
+This is the honest answer for the volunteer baseline. It does not change the security property the multi-party attestation provides at v1.5+ (the threshold is preserved). It does change what users and partners expect about release frequency, both at v1 and at v1.5 onward.
 
 ## Alternatives considered
 

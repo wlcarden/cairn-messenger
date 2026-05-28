@@ -64,12 +64,14 @@ These checks gate the transition from working name to committed name, not from p
 
 **Status:** Open. Targets identified; roles partners would play not defined.
 
-**Context.** Candidate partners: Tactical Tech, Front Line Defenders, Access Now, Citizen Lab, Open Technology Fund. Possible roles: technical review, pilot facilitation, threat intel, localization, end-user training. Outreach not begun.
+**Context.** Candidate partners: Tactical Tech, Front Line Defenders, Access Now, Citizen Lab, Open Technology Fund. Possible roles for v1: witness pool (release log + trust-graph audit), pilot facilitation, threat intel, localization, end-user training, partner-mediated pilot consent and exit channel per [D0013](decisions/D0013-pilot-consent-exit.md). Reviewer-pool recruitment proceeds in parallel for v1.5 architectural-target activation per [D0015](decisions/D0015-v1-release-security-posture.md) — but is not on the v1 critical path. Outreach not begun.
 
 **What it blocks.**
 
 - Section 8.6 (Partnership Approach) beyond placeholder list.
-- Whether the external reviewer pool for releases (Sigstore signing model needs 2-3 reviewers) draws from these partners or is recruited separately.
+- Whether the witness pool for the v1 release log + trust-graph audit draws from these partners or is recruited separately. Witness recruitment is on the v1 critical path.
+- Reviewer-pool recruitment for v1.5 architectural target activation (not blocking v1 ship per D0015; the recruited pool soft-ships against v1 releases if willing reviewers join during v1 outreach, but v1 release is not gated on pool formation).
+- Pilot consent and partner-mediated reporting channel per D0013 — this is on the v1 critical path; partner organization must be willing to operate the mediation channel.
 - Localization partnerships specifically — translation work likely runs through one of these.
 
 **Next step.** Decide on a primary partner candidate for each role before outreach. Defer outreach until design brief is shareable.
@@ -146,20 +148,20 @@ These checks gate the transition from working name to committed name, not from p
 
 ## Q10. Witness pool and reviewer pool composition
 
-**Status:** Open. Pools enumerated as trust roots in Section 3.4; specific organizations and individuals not yet identified.
+**Status:** Partially resolved (architectural target for reviewer pool deferred to v1.5 per [D0015](decisions/D0015-v1-release-security-posture.md); witness pool remains a v1 commitment). Specific organizations and individuals not yet identified for either pool.
 
-**Context.** Two distinct pools recruited from a partially overlapping set of partner organizations:
+**Context.** Two distinct pools with different version commitments:
 
-- **Sigsum witnesses** (Section 5.2 trust-graph audit + Section 5.5 release audit, with the shared-witness-pool concentration acknowledged in 3.4): cosign log state so log tampering is detectable. The candidate pool draws from NGO and academic partners (Citizen Lab, Tactical Tech, Front Line Defenders, Access Now, EFF, plus academic security-research groups).
-- **External reviewer pool** (Section 5.5): 5+ reviewers, 3-of-5 attestation threshold, geographic/institutional diversity required. In v1 they read source for each release; in v1.5 they verify binary equivalence.
+- **Sigsum witnesses (v1 commitment).** Section 5.2 trust-graph audit + Section 5.5 release audit, with the shared-witness-pool concentration acknowledged in 3.4. Witnesses cosign log state so log tampering is detectable. Candidate pool draws from NGO and academic partners (Citizen Lab, Tactical Tech, Front Line Defenders, Access Now, EFF, plus academic security-research groups). Recruitment is a v1 commitment via Q5 outreach.
+- **External reviewer pool (v1.5 commitment per D0015).** 5+ reviewers, 3-of-5 attestation threshold, geographic/institutional diversity required. At v1.5 they verify binary equivalence against reproducible builds. Recruitment work proceeds at v1 through Q5 outreach; willing reviewers identified during v1 may soft-ship attestations against v1 releases, but v1 release shipping is not gated on pool formation. The recruited pool's role as a trust root activates at v1.5.
 
 **What it blocks.**
 
-- Section 3.4's trust-root commitments cannot be fully concrete until specific organizations are named.
-- Section 5.5's "recruitment criteria, threshold for shipping, rotation, and compensation" cannot move from policy to practice without identified people.
-- v1 release cadence (releases wait for 3-of-5 attestation) depends on the pool being recruited and operationally available.
+- Section 3.4's trust-root commitments for the witness pool cannot be fully concrete until specific organizations are named.
+- For the v1 stack, witness-pool recruitment gates v1 release log cosignatures; v1 ship is conditional on at least basic witness participation.
+- Section 5.5/8.2 reviewer-pool commitments cannot move from v1.5 architectural target to v1.5 operational reality without identified reviewers; recruitment work occupies Q5 outreach at v1.
 
-**Next step.** Begins after Q3 (funding) provides enough certainty to offer reviewer honoraria, and after Q5 (NGO partner outreach) opens the partnership conversation. Recruit witnesses and reviewers from non-overlapping subsets of partner organizations where possible to reduce the correlation acknowledged in 3.4.
+**Next step.** Witness-pool recruitment begins immediately after Q5 (NGO partner outreach) opens partnership conversations — this is on the v1 critical path. Reviewer-pool recruitment can proceed in parallel; given the v1.5 architectural-target framing, the reviewer-pool ask of partners is decoupled from any v1 ship-date pressure. Recruit witnesses and reviewers from non-overlapping subsets of partner organizations where possible to reduce the correlation acknowledged in 3.4. Reviewer-pool honoraria operations (Q3-conditional) become relevant for v1.5+ broader-release cadence; v1.5 ships with whatever volunteer-attestation pool has formed if honoraria funding does not close.
 
 ---
 
