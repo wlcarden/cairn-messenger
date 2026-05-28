@@ -1265,56 +1265,95 @@ The brief is not the application. The brief is the document an application refer
 
 ## Appendix A: Technical Decisions and Rationale
 
-_Purpose: capture the key architectural decisions with their reasoning, alternatives considered, and references. Lets reviewers engage with the choices rather than just the conclusions._
+_Purpose: index the project's documented architectural and operational decisions so readers can navigate the rationale, alternatives considered, and references for any specific decision. The decision documents themselves live in `docs/decisions/`; this appendix is the navigation surface over them._
 
-Decisions to document:
+### A.0 The decision-document pattern
 
-### A.1 Identity model: capability tokens vs HD keys vs threshold signatures
+Every architecturally or operationally consequential decision in the brief is recorded as a separate ADR-style document in `docs/decisions/` with a uniform structure:
 
-- Decision: hybrid three-tier with capability tokens
-- Alternatives considered and why not selected
-- References to relevant prior work
+- **Status** (Accepted / Superseded / Withdrawn)
+- **Date**
+- **Context** (the question and what surfaced it)
+- **Decision** (what was chosen and the specifics)
+- **Alternatives considered** (each with rationale for rejection or partial adoption)
+- **Consequences** (effects on the brief, on operations, on open questions, plus reversibility notes)
+- **References** (related decisions, open questions, prior reviews, external sources)
 
-### A.2 Trust graph: CRDT vs blockchain vs centralized
+The intent is that reviewers can engage with the choices rather than just the conclusions. When a decision is revised, the original document is preserved with status "Superseded" and a new document records the revision; the chain is auditable. Decisions in this register reflect the project's working understanding at the date stated and may revise as evidence accumulates — particularly D0010 (foundation jurisdiction, explicitly a placeholder pending legal consultation) and decisions interlocked with open questions still under partner conversation.
 
-- Decision: signed-operation CRDT with sigsum transparency log
-- Alternatives considered
-- References
+### A.1 Chronological index
 
-### A.3 Recovery: social/Shamir vs trustee/escrow vs paper backup
+| ID                                                     | Date       | Title                                                                                                                  | Status   |
+| ------------------------------------------------------ | ---------- | ---------------------------------------------------------------------------------------------------------------------- | -------- |
+| [D0001](decisions/D0001-project-name.md)               | 2026-05-27 | Project working name: Cairn                                                                                            | Accepted |
+| [D0002](decisions/D0002-duress-profile.md)             | 2026-05-27 | Duress profile out of v1; duress-wipe deferred to v1.5                                                                 | Accepted |
+| [D0003](decisions/D0003-implementation-language.md)    | 2026-05-27 | Implementation language: Rust core + Kotlin UI via UniFFI                                                              | Accepted |
+| [D0004](decisions/D0004-v1-scope-cuts.md)              | 2026-05-27 | v1 scope cuts: defer Briar and reproducible builds to v1.5; drop local CRDT permanently; narrow v1 UX                  | Accepted |
+| [D0005](decisions/D0005-peer-verification.md)          | 2026-05-27 | Recovery peer verification: pre-shared challenges plus 48-hour delay-and-confirm                                       | Accepted |
+| [D0006](decisions/D0006-cryptographic-envelope.md)     | 2026-05-27 | Cryptographic envelope: COSE_Sign1 + deterministic CBOR + nine-field schema + five operation types + cascade semantics | Accepted |
+| [D0007](decisions/D0007-multi-device.md)               | 2026-05-27 | Multi-device commitment demoted: v1 and v2 single-device-per-identity de facto                                         | Accepted |
+| [D0008](decisions/D0008-volunteer-baseline-cadence.md) | 2026-05-28 | Volunteer-baseline release cadence: slippage acceptance; quarterly as post-honoraria target                            | Accepted |
+| [D0009](decisions/D0009-sudden-unavailability.md)      | 2026-05-28 | Sudden-developer-unavailability contingency: dead-man's-switch + pre-arranged partner advisory authority               | Accepted |
+| [D0010](decisions/D0010-foundation-jurisdiction.md)    | 2026-05-28 | Foundation jurisdiction: placeholder pending legal consultation; fiscal-sponsor stage; factual corrections             | Accepted |
+| [D0011](decisions/D0011-audit-budget-and-timing.md)    | 2026-05-28 | Audit budget and timing: two-stage approach (pre-pilot primitives + pre-beta full); subsidy programs named             | Accepted |
+| [D0012](decisions/D0012-researcher-safe-harbor.md)     | 2026-05-28 | Researcher Safe Harbor: stated intent until foundation incorporation; formalized at incorporation                      | Accepted |
+| [D0013](decisions/D0013-pilot-consent-exit.md)         | 2026-05-28 | Pilot consent and exit protocol: partner-mediated reporting channel as Phase B precondition                            | Accepted |
+| [D0014](decisions/D0014-non-peer-recovery.md)          | 2026-05-28 | Non-peer recovery path policy: out of scope for v1 with explicit acknowledgment; v1.x/v2 candidate paths named         | Accepted |
 
-- Decision: 3-of-5 Shamir among peer-designated recovery contacts
-- Alternatives considered
-- Why not pure paper backup or trustee model
+The 2026-05-27 cluster reflects the design-architecture decision cycle that produced the Section 5 architecture; the 2026-05-28 cluster reflects the operational and audience decision cycle that absorbed the Sections 8/9, 10, and 2 adversarial reviews.
 
-### A.4 Hardware token role: phone secure element vs external token
+### A.2 Thematic groupings
 
-- Decision: phone's built-in secure element for v1 (no external token in phones-only scope)
-- How v2+ extends to external tokens for USB form factor
+#### Identity, trust graph, and cryptographic envelope
 
-### A.5 Comms protocol: SimpleX + Briar vs Matrix vs Session vs custom
+- [D0003](decisions/D0003-implementation-language.md) — Rust core + Kotlin UI via UniFFI: the implementation substrate for capability tokens, Shamir reconstruction with memory hygiene, and the trust-graph operation envelope.
+- [D0006](decisions/D0006-cryptographic-envelope.md) — COSE_Sign1 + deterministic CBOR encoding; the nine-field signed-operation schema with prior-hash chain and issuer-cert-hash binding; five operation types (attestation, attestation withdrawal, key-compromise revocation, introduction, key rotation) with the withdrawal-vs-compromise split closing the cascade-laundering attack; cascade quarantine semantics and 90-day stale-flag escalation.
+- [D0007](decisions/D0007-multi-device.md) — Multi-device commitment demoted from v1/v2 architectural claim to v1 single-device-per-identity at the client level, with the schema-level multi-device support preserved as forward-compatibility for v2+ work.
 
-- Decision: SimpleX primary, Briar for highest-sensitivity
-- Alternatives evaluated
-- Rationale for each rejection
+#### Recovery
 
-### A.6 Updates: Sigstore vs TUF vs custom multi-sig
+- [D0005](decisions/D0005-peer-verification.md) — Recovery peer-verification mechanism: pre-shared challenges (peer-selected questions answered out-of-band at provisioning) plus 48-hour delay-and-confirm window; calibrated to raise the cost of the unlock → peer enumeration → impersonation chain.
+- [D0014](decisions/D0014-non-peer-recovery.md) — Non-peer recovery path: out of scope for v1 with explicit acknowledgment of the audience populations excluded; candidate v1.x/v2 paths named (printed paper shares held by self; time-locked self-recovery; single-trustee with attorney-client privilege; explicit no-recovery option).
 
-- Decision: Sigstore identity-based signing with reproducible builds
-- Why not full TUF (overkill for project scale)
-- Why not custom (reinventing solved problems)
+#### Scope, audience, and roadmap
 
-### A.7 Platform: GrapheneOS Pixel only vs broader Android
+- [D0002](decisions/D0002-duress-profile.md) — Duress profile out of v1 (detected concealment is itself prosecutable in compelled-decryption jurisdictions); duress-wipe pattern deferred to v1.5 with the architectural-answer-to-compelled-unlock framing in §3.5.
+- [D0004](decisions/D0004-v1-scope-cuts.md) — v1 scope cuts: Briar and reproducible builds deferred to v1.5; local CRDT dropped permanently; v1 UX narrowed to what one developer can ship soundly given §5's architectural scope.
+- [D0007](decisions/D0007-multi-device.md) — Single-device-per-identity scope.
+- [D0014](decisions/D0014-non-peer-recovery.md) — v1 audience scope as a function of recovery-architecture serviceability.
 
-- Decision: GrapheneOS Pixel only for v1
-- Rationale: hardware attestation, reduced testing surface, security baseline
-- Tradeoff: addressable user base is meaningfully smaller
+#### Implementation
 
-### A.8 Mesh protocol selection: Meshtastic vs MeshCore
+- [D0001](decisions/D0001-project-name.md) — Working name (Cairn) per the brand-axis selection criteria; trademark and namespace checks tracked as Q2 outstanding follow-ups.
+- [D0003](decisions/D0003-implementation-language.md) — Implementation-language stack and UniFFI binding-layer choice; subsumes earlier Q8 architectural-shape items.
 
-- Decision (for v3 scope): protocol-agnostic integration supporting both
-- Rationale: let users follow local mesh community conventions
-- Architectural differences noted
+#### Release security, audit, and assurance
+
+- [D0011](decisions/D0011-audit-budget-and-timing.md) — Two-stage audit: pre-pilot cryptographic-primitives audit (Phase B gate, ~$15–30K subsidized; specific routes per OTF Secure Audit, Cure53 mission rates, NLnet NGI Zero Trust) plus pre-beta full audit (Phase C gate, $60–220K depending on firm selection). Subsidy programs named; firm selection deferred to Q7.
+
+#### Operations, governance, and contingency
+
+- [D0008](decisions/D0008-volunteer-baseline-cadence.md) — Release cadence as slippage acceptance: ships when 3-of-5 attestation forms; expected median 4–6 months at volunteer baseline; quarterly as post-honoraria operational target.
+- [D0009](decisions/D0009-sudden-unavailability.md) — Sudden-developer-unavailability contingency: monthly dead-man's-switch check-in; pre-arranged partner advisory authority triggered at 60-day silence; pre-staged successor documentation.
+- [D0010](decisions/D0010-foundation-jurisdiction.md) — Foundation jurisdiction as placeholder pending legal consultation; fiscal-sponsor stage for pre-incorporation grant intake; factual corrections to earlier Signal Foundation and Briar references; named diligence considerations.
+- [D0012](decisions/D0012-researcher-safe-harbor.md) — Researcher protection as stated intent until foundation incorporation; formalization through a standard Safe Harbor template (disclose.io, Bugcrowd "We Will Not Sue", EFF Coders' Rights Project) at incorporation; explicit acknowledgment of natural-person non-enforceability.
+- [D0013](decisions/D0013-pilot-consent-exit.md) — Pilot consent and exit protocol modeled on IRB-equivalent protective-technology study practice; partner-mediated reporting channel as Phase B precondition; mid-pilot exit and tool-mediated harm reporting paths.
+
+### A.3 Decision interactions
+
+Several decisions interlock and are best read together. The principal chains:
+
+- **Foundation-incorporation chain.** [D0010](decisions/D0010-foundation-jurisdiction.md) (jurisdiction placeholder + fiscal-sponsor stage) gates [D0012](decisions/D0012-researcher-safe-harbor.md) (Safe Harbor formalization happens at incorporation) which gates the §8.5 audit-disclosure posture for broader-release users. [D0011](decisions/D0011-audit-budget-and-timing.md) Phase C funding for foundation incorporation depends on the Phase B legal-consultation work that D0010 references; the sequencing is explicitly named in §10.3.
+- **Volunteer-baseline operations chain.** [D0008](decisions/D0008-volunteer-baseline-cadence.md) (release cadence as slippage acceptance) interacts with [D0009](decisions/D0009-sudden-unavailability.md) (sudden-unavailability contingency) and the §8.2 reviewer-honoraria operating model: at the volunteer baseline, the project's operational tempo is slower than the brief's earlier drafts assumed, and [D0013](decisions/D0013-pilot-consent-exit.md) pilot deployment is gated on the partner-mediation arrangement that itself depends on the §8.6 partner outreach D0008 makes operationally honest about the cadence of.
+- **Recovery and audience-honesty chain.** [D0005](decisions/D0005-peer-verification.md) defines the peer-verification mechanism for users who have a peer network; [D0014](decisions/D0014-non-peer-recovery.md) acknowledges the populations whose threat condition precludes the peer-network precondition and commits to v1.x/v2 candidate paths for them. The §2.2 audience honesty extension and the §6.3 pilot-scope explicit exclusion both reflect this pairing.
+- **Implementation-substrate chain.** [D0003](decisions/D0003-implementation-language.md) (Rust + Kotlin via UniFFI) is the implementation substrate that [D0006](decisions/D0006-cryptographic-envelope.md) (envelope construction) and [D0005](decisions/D0005-peer-verification.md) (recovery memory hygiene) commit to specifically. [D0007](decisions/D0007-multi-device.md) is the schema-level forward-compatibility commitment that v1's single-device deployment is built against.
+- **Pilot-readiness chain.** v1 pilot deployment is gated on three Phase B items per the brief: the pre-pilot cryptographic-primitives audit per [D0011](decisions/D0011-audit-budget-and-timing.md); the partner-mediated consent and exit protocol per [D0013](decisions/D0013-pilot-consent-exit.md); and first-quorum reviewer attestation per §8.2 / §5.5. None is solely engineering-sequenced; each has its own funding or partner gate.
+
+### A.4 What is not in the decision register
+
+The brief contains operational and architectural choices that are documented in prose rather than as standalone decision records — for example, specific cryptographic primitive selections (Ed25519, Curve25519, ChaCha20-Poly1305, Shamir 3-of-5 default), the choice of Tor as the network anonymization layer, the GrapheneOS-on-Pixel platform baseline, the choice not to federate, and the no-skip-the-audit posture for broader-than-pilot release. These reflect standard practice or industry-consensus choices the brief documents in §§4, 5, and 8 rather than treating as project-specific decisions requiring an ADR. The register is reserved for choices where the project considered substantive alternatives and where future readers benefit from understanding why specific options were rejected.
+
+Open questions in [open-questions.md](open-questions.md) (Q1–Q26) track decisions not yet made; resolved questions move to the decision register here. The interlock is one-directional: a decision document never references an open question as still-open if the decision document itself resolves it — the question is marked resolved at the time the decision document is written.
 
 ---
 
