@@ -15,8 +15,19 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-# === Shamir Secret Sharing (D0018 §3.1) ===
-vsss-rs = { workspace = true }
+# === Shamir Secret Sharing — byte-level GF(256), not vsss-rs ===
+#
+# `vsss-rs` 4.3.8 (the D0018 §3.1 pin) requires the secret to live in a
+# `PrimeField` (cryptographic-curve scalar field), not at the byte level.
+# Cairn splits the 32-byte Ed25519 *seed* (RFC 8032 §5.1.5), not the
+# derived scalar — splitting at the seed layer preserves Ed25519's
+# deterministic-nonce contract per RFC 8032 §5.1.6 across multi-site
+# reconstruction (D0006 §9). The byte-level GF(2^8) Shamir implementation
+# lives in `src/gf256.rs` + `src/share.rs`.
+#
+# `vsss-rs` may still return as a dependency if cairn-shamir grows
+# verifiable secret sharing (Feldman / Pedersen VSS) for trust-graph
+# attestations per D0006 §6.
 
 # === Commit-of-secret hash (D0018 §3.4) ===
 blake3 = { workspace = true }

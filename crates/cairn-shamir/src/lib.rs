@@ -45,22 +45,46 @@
 //!
 //! The commitment is NOT a secret. It travels alongside the shares.
 //!
+//! ## Implementation strategy: byte-level GF(2⁸), not vsss-rs
+//!
+//! D0018 §3.1 originally pinned `vsss-rs` 4.3.8 for Shamir Secret
+//! Sharing. Investigation revealed `vsss-rs::shamir::split_secret`
+//! requires `F: PrimeField` (cryptographic-curve scalar field). Cairn's
+//! seed-not-scalar requirement means the secret is 32 *bytes*, not a
+//! scalar — byte-level GF(2⁸) Shamir is required, which `vsss-rs` does
+//! not implement at v4.3.8.
+//!
+//! The byte-level GF(2⁸) Shamir algorithm is small (~150 `LoC` core),
+//! well-known, and more auditable than wrapping a generic library. This
+//! crate implements it directly with documented constant-time intent
+//! across all secret-bearing intermediates. A future D-doc will record
+//! the D0018 §3.1 revision.
+//!
 //! ## Constant-time discipline
 //!
-//! Per D0018 §3.5: the Shamir reconstruction polynomial evaluation must
-//! be constant-time across the secret-bearing intermediates. The
-//! `vsss-rs` 4.3.8 implementation provides this; this crate's CI pipeline
-//! includes a `dudect-bencher` constant-time gate per D0018 §5.3
-//! (forthcoming surface).
+//! All field-arithmetic primitives ([`gf256`]) operate without
+//! data-dependent branches or table lookups indexed by secret values.
+//! The shift-and-conditional-XOR multiplication idiom uses bitmask
+//! arithmetic (`(b & 1).wrapping_neg()` to produce the all-ones or
+//! all-zeros mask) rather than a conditional branch. Reconstruction
+//! Lagrange interpolation evaluates over a fixed loop bound determined
+//! by the share count (not the secret bytes). The `dudect-bencher`
+//! constant-time gate per D0018 §5.3 is a separate surface that
+//! empirically validates this property.
 //!
 //! ## Module organization (incremental — surfaces land per
 //! `metrics.md`)
 //!
 //! - [`error`] — error types for the crate
-//! - `share` (forthcoming) — `Share` type + split / reconstruct API
-//! - `commit` (forthcoming) — BLAKE3 commitment construction +
-//!   verification
+//! - [`gf256`] — GF(2⁸) field arithmetic (constant-time)
+//! - [`share`] — `Share` type + `split` / `reconstruct` API
+//! - [`commit`] — BLAKE3 commit-of-secret construction + verification
 
+pub mod commit;
 pub mod error;
+pub mod gf256;
+pub mod share;
 
+pub use commit::{COMMITMENT_LEN, Commitment};
 pub use error::ShamirError;
+pub use share::{SECRET_LEN, Share, reconstruct, split};
