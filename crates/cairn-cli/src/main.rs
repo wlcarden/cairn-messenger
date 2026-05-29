@@ -70,8 +70,10 @@ use anyhow::{Context, Result, anyhow, bail};
 use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, SEED_LEN, SigningKey, VerifyingKey};
 use cairn_envelope::cose_sign1::{CoseSign1, Sign1Builder};
 use cairn_identity::{CapabilityToken, SignedCapabilityToken};
+use cairn_recovery::{SignedMasterAttestation, reconstruct_and_attest};
 use cairn_shamir::{COMMITMENT_LEN, Commitment, SECRET_LEN, Share, reconstruct, split};
-use clap::{Parser, Subcommand};
+use cairn_trust_graph::{OpType, SignedTrustGraphOp, TrustGraphOp};
+use clap::{Parser, Subcommand, ValueEnum};
 use rand_core::OsRng;
 use zeroize::Zeroizing;
 
@@ -214,6 +216,119 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Sign a trust-graph operation (`attest` / `revoke-withdraw` /
+    /// `revoke-compromise` / `re-attest`) per D0006 §2. Signed by
+    /// the device key under a capability token authorizing the
+    /// required scope.
+    TrustOp {
+        /// Operation kind.
+        #[arg(long, value_enum)]
+        kind: TrustOpKind,
+        /// Path to the device's 32-byte seed file.
+        #[arg(long)]
+        device_key: PathBuf,
+        /// Path to the operational identity's 32-byte pubkey
+        /// (becomes the op's `issuer` field).
+        #[arg(long)]
+        issuer_pubkey: PathBuf,
+        /// Path to the subject peer's 32-byte pubkey.
+        #[arg(long)]
+        subject_pubkey: PathBuf,
+        /// Unix-seconds when the op is issued.
+        #[arg(long)]
+        timestamp: u64,
+        /// Path to a file containing the prior-hash bytes (zero
+        /// length for genesis ops).
+        #[arg(long)]
+        prior_hash: PathBuf,
+        /// Path to a file containing the issuer-cert-hash bytes
+        /// (typically the BLAKE3 of the capability token envelope).
+        #[arg(long)]
+        cert_hash: PathBuf,
+        /// `revoked_as_of` Unix-seconds (`revoke-compromise` only).
+        #[arg(long)]
+        revoked_as_of: Option<u64>,
+        /// Path to the `prior_revocation_ref` bytes (`re-attest`
+        /// only).
+        #[arg(long)]
+        prior_revocation_ref: Option<PathBuf>,
+        /// Output path for the trust-graph op envelope.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Verify a trust-graph operation envelope against a capability
+    /// token + expected operational identity pubkey. Demonstrates
+    /// the D0006 §9 hops #1 + #2 chain for trust-graph ops.
+    VerifyTrustOp {
+        /// Path to the trust-graph op envelope.
+        #[arg(long)]
+        op: PathBuf,
+        /// Path to the capability-token envelope.
+        #[arg(long)]
+        token: PathBuf,
+        /// Path to the expected operational identity pubkey.
+        #[arg(long)]
+        expected_issuer_pubkey: PathBuf,
+    },
+    /// Reconstruct master from shares + sign an attestation of a new
+    /// operational identity. The master seed is held in `Zeroizing`
+    /// throughout and wiped on exit per D0006 §6.
+    AttestOperationalIdentity {
+        /// Path to a master share file (33 bytes). May be supplied
+        /// multiple times.
+        #[arg(long = "share", action = clap::ArgAction::Append)]
+        shares: Vec<PathBuf>,
+        /// Path to the master commitment file (32 bytes).
+        #[arg(long)]
+        commitment: PathBuf,
+        /// Path to the new operational identity's 32-byte pubkey.
+        #[arg(long)]
+        new_op_identity_pubkey: PathBuf,
+        /// Unix-seconds attestation timestamp.
+        #[arg(long)]
+        timestamp: u64,
+        /// Output path for the master attestation envelope.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Verify a master attestation envelope against an expected
+    /// master pubkey (typically the one printed on the user's paper
+    /// backup card).
+    VerifyMasterAttestation {
+        /// Path to the master attestation envelope.
+        #[arg(long)]
+        attestation: PathBuf,
+        /// Path to the expected master pubkey (32 bytes).
+        #[arg(long)]
+        expected_master_pubkey: PathBuf,
+    },
+}
+
+/// Variant flag for the `trust-op` subcommand.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum TrustOpKind {
+    /// Issuer claims a trust relationship with the subject peer.
+    Attest,
+    /// Issuer cleanly withdraws their previous attestation; no
+    /// cascade.
+    RevokeWithdraw,
+    /// Issuer revokes due to compromise; triggers cascade
+    /// quarantine. Requires `--revoked-as-of`.
+    RevokeCompromise,
+    /// Post-revocation re-attestation. Requires
+    /// `--prior-revocation-ref`.
+    ReAttest,
+}
+
+impl From<TrustOpKind> for OpType {
+    fn from(kind: TrustOpKind) -> Self {
+        match kind {
+            TrustOpKind::Attest => Self::Attest,
+            TrustOpKind::RevokeWithdraw => Self::WithdrawRevoke,
+            TrustOpKind::RevokeCompromise => Self::CompromiseRevoke,
+            TrustOpKind::ReAttest => Self::ReAttest,
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -269,6 +384,51 @@ fn main() -> Result<()> {
             commitment,
             out,
         } => cmd_reconstruct_seed(&shares, &commitment, &out),
+        Command::TrustOp {
+            kind,
+            device_key,
+            issuer_pubkey,
+            subject_pubkey,
+            timestamp,
+            prior_hash,
+            cert_hash,
+            revoked_as_of,
+            prior_revocation_ref,
+            out,
+        } => cmd_trust_op(
+            kind,
+            &device_key,
+            &issuer_pubkey,
+            &subject_pubkey,
+            timestamp,
+            &prior_hash,
+            &cert_hash,
+            revoked_as_of,
+            prior_revocation_ref.as_ref(),
+            &out,
+        ),
+        Command::VerifyTrustOp {
+            op,
+            token,
+            expected_issuer_pubkey,
+        } => cmd_verify_trust_op(&op, &token, &expected_issuer_pubkey),
+        Command::AttestOperationalIdentity {
+            shares,
+            commitment,
+            new_op_identity_pubkey,
+            timestamp,
+            out,
+        } => cmd_attest_operational_identity(
+            &shares,
+            &commitment,
+            &new_op_identity_pubkey,
+            timestamp,
+            &out,
+        ),
+        Command::VerifyMasterAttestation {
+            attestation,
+            expected_master_pubkey,
+        } => cmd_verify_master_attestation(&attestation, &expected_master_pubkey),
     }
 }
 
@@ -682,5 +842,337 @@ fn cmd_reconstruct_seed(
         shares.len()
     );
     eprintln!("Wrote 32-byte seed to {}", out.display());
+    Ok(())
+}
+
+/// Sign a trust-graph operation (`attest` / `revoke-withdraw` /
+/// `revoke-compromise` / `re-attest`) per D0006 §2.
+///
+/// The op is signed by a device key — verification against the
+/// associated capability token is performed at verify time via
+/// [`SignedTrustGraphOp::verify_chain`]. Variant-required argument
+/// validation runs before construction so the type-level guarantees
+/// inside [`TrustGraphOp`] are never bypassed by a CLI typo.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "matches the per-variant TrustGraphOp surface; collapsing into a struct \
+              would obscure the CLI flag mapping"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "variant validation + variant dispatch + sign/encode form one indivisible \
+              correctness block per D0006 §2; splitting scatters the per-variant invariants"
+)]
+fn cmd_trust_op(
+    kind: TrustOpKind,
+    device_key: &PathBuf,
+    issuer_pubkey: &PathBuf,
+    subject_pubkey: &PathBuf,
+    timestamp: u64,
+    prior_hash: &PathBuf,
+    cert_hash: &PathBuf,
+    revoked_as_of: Option<u64>,
+    prior_revocation_ref: Option<&PathBuf>,
+    out: &PathBuf,
+) -> Result<()> {
+    // === Argument validation: variant-required fields ===
+    let op_type: OpType = kind.into();
+    match op_type {
+        OpType::CompromiseRevoke => {
+            if revoked_as_of.is_none() {
+                bail!("--revoked-as-of is required when --kind=revoke-compromise (per D0006 §2)");
+            }
+            if prior_revocation_ref.is_some() {
+                bail!("--prior-revocation-ref is only valid with --kind=re-attest");
+            }
+        }
+        OpType::ReAttest => {
+            if prior_revocation_ref.is_none() {
+                bail!("--prior-revocation-ref is required when --kind=re-attest (per D0006 §2)");
+            }
+            if revoked_as_of.is_some() {
+                bail!("--revoked-as-of is only valid with --kind=revoke-compromise");
+            }
+        }
+        OpType::Attest | OpType::WithdrawRevoke => {
+            if revoked_as_of.is_some() {
+                bail!("--revoked-as-of is only valid with --kind=revoke-compromise");
+            }
+            if prior_revocation_ref.is_some() {
+                bail!("--prior-revocation-ref is only valid with --kind=re-attest");
+            }
+        }
+        // `OpType` is `#[non_exhaustive]` — future protocol variants
+        // require a coordinated CLI update before this binary can sign
+        // them. Refusing here beats silently accepting an unknown op.
+        _ => bail!(
+            "trust-graph op type {:?} is not supported by this CLI version; \
+             upgrade cairn-cli to a release that ships support for it",
+            op_type
+        ),
+    }
+
+    // === Inputs ===
+    let device_seed = read_seed(device_key)?;
+    let device_signing_key = SigningKey::from_seed(&device_seed);
+    let issuer_vk = read_pubkey(issuer_pubkey)?;
+    let subject_vk = read_pubkey(subject_pubkey)?;
+
+    let prior_hash_bytes = std::fs::read(prior_hash)
+        .with_context(|| format!("failed to read prior-hash from {}", prior_hash.display()))?;
+    let cert_hash_bytes = std::fs::read(cert_hash)
+        .with_context(|| format!("failed to read cert-hash from {}", cert_hash.display()))?;
+
+    // === Variant dispatch ===
+    let op = match op_type {
+        OpType::Attest => TrustGraphOp::new_attest(
+            issuer_vk,
+            subject_vk,
+            timestamp,
+            prior_hash_bytes,
+            cert_hash_bytes,
+        ),
+        OpType::WithdrawRevoke => TrustGraphOp::new_withdraw_revoke(
+            issuer_vk,
+            subject_vk,
+            timestamp,
+            prior_hash_bytes,
+            cert_hash_bytes,
+        ),
+        OpType::CompromiseRevoke => {
+            // Unwrap safe: presence validated above.
+            let revoked_as_of_value = revoked_as_of
+                .ok_or_else(|| anyhow!("internal: revoked_as_of presence check skipped"))?;
+            TrustGraphOp::new_compromise_revoke(
+                issuer_vk,
+                subject_vk,
+                timestamp,
+                prior_hash_bytes,
+                cert_hash_bytes,
+                revoked_as_of_value,
+            )
+        }
+        OpType::ReAttest => {
+            // Unwrap safe: presence validated above.
+            let prior_ref_path = prior_revocation_ref
+                .ok_or_else(|| anyhow!("internal: prior_revocation_ref presence check skipped"))?;
+            let prior_ref_bytes = std::fs::read(prior_ref_path).with_context(|| {
+                format!(
+                    "failed to read prior-revocation-ref from {}",
+                    prior_ref_path.display()
+                )
+            })?;
+            TrustGraphOp::new_re_attest(
+                issuer_vk,
+                subject_vk,
+                timestamp,
+                prior_hash_bytes,
+                cert_hash_bytes,
+                prior_ref_bytes,
+            )
+        }
+        // `OpType` is `#[non_exhaustive]`; unreachable here because the
+        // validation pass above bails before dispatch on unknown variants.
+        _ => bail!(
+            "trust-graph op type {:?} is not supported by this CLI version",
+            op_type
+        ),
+    };
+
+    // === Sign + encode ===
+    let signed = SignedTrustGraphOp::sign(op, &device_signing_key)
+        .map_err(|e| anyhow!("trust-op sign failed: {e}"))?;
+    let bytes = signed
+        .encode(false)
+        .map_err(|e| anyhow!("trust-op envelope encode failed: {e}"))?;
+
+    std::fs::write(out, &bytes)
+        .with_context(|| format!("failed to write trust-op envelope to {}", out.display()))?;
+
+    eprintln!(
+        "Signed trust-op kind={:?} ({} byte envelope, requires capability \"{}\")",
+        kind,
+        bytes.len(),
+        op_type.required_capability()
+    );
+    eprintln!("Wrote envelope to {}", out.display());
+    Ok(())
+}
+
+/// Verify a trust-graph operation envelope against a capability token
+/// and an expected operational identity pubkey. Demonstrates the D0006
+/// §9 hops #1 and #2 chain. Hop #3 (master-attestation chain-to-master)
+/// is handled separately via `verify-master-attestation`.
+fn cmd_verify_trust_op(
+    op: &PathBuf,
+    token: &PathBuf,
+    expected_issuer_pubkey: &PathBuf,
+) -> Result<()> {
+    let op_bytes = std::fs::read(op)
+        .with_context(|| format!("failed to read trust-op envelope from {}", op.display()))?;
+    let token_bytes = std::fs::read(token)
+        .with_context(|| format!("failed to read token from {}", token.display()))?;
+    let expected_issuer = read_pubkey(expected_issuer_pubkey)?;
+
+    let signed_op = SignedTrustGraphOp::from_bytes(&op_bytes)
+        .map_err(|e| anyhow!("trust-op envelope decode failed: {e}"))?;
+    let verified_op = signed_op
+        .verify_chain(&token_bytes, &expected_issuer)
+        .map_err(|e| anyhow!("trust-op verification failed: {e}"))?;
+
+    println!("VERIFIED");
+    println!("op-type:           {:?}", verified_op.op_type);
+    println!(
+        "required-capability: {}",
+        verified_op.op_type.required_capability()
+    );
+    println!(
+        "issuer-pubkey:     {}",
+        hex_encode(&verified_op.issuer.to_bytes())
+    );
+    println!(
+        "subject-pubkey:    {}",
+        hex_encode(&verified_op.subject.to_bytes())
+    );
+    println!(
+        "timestamp:         {} (Unix seconds)",
+        verified_op.timestamp
+    );
+    println!("prior-hash:        {} bytes", verified_op.prior_hash.len());
+    println!(
+        "issuer-cert-hash:  {} bytes",
+        verified_op.issuer_cert_hash.len()
+    );
+    if let Some(revoked_as_of) = verified_op.revoked_as_of {
+        println!("revoked-as-of:     {revoked_as_of} (Unix seconds)");
+    }
+    if let Some(prior_ref) = &verified_op.prior_revocation_ref {
+        println!("prior-revocation-ref: {} bytes", prior_ref.len());
+    }
+    Ok(())
+}
+
+/// Reconstruct the master from threshold-many shares + a commitment,
+/// then sign a master attestation of `new_operational_identity_pubkey`.
+///
+/// The master seed lives in `Zeroizing` for the duration of the
+/// underlying `reconstruct_and_attest` call and is wiped on exit — no
+/// seed bytes ever touch disk via this command. The output file
+/// contains only the signed attestation envelope (master pubkey +
+/// operational identity pubkey + timestamp, COSE_Sign1-wrapped).
+fn cmd_attest_operational_identity(
+    share_paths: &[PathBuf],
+    commitment_path: &PathBuf,
+    new_op_identity_pubkey: &PathBuf,
+    timestamp: u64,
+    out: &PathBuf,
+) -> Result<()> {
+    if share_paths.is_empty() {
+        bail!("at least one --share must be supplied");
+    }
+
+    // === Load shares (same 33-byte format as cmd_reconstruct_seed) ===
+    let mut shares: Vec<Share> = Vec::with_capacity(share_paths.len());
+    for path in share_paths {
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("failed to read share from {}", path.display()))?;
+        if bytes.len() != SECRET_LEN + 1 {
+            bail!(
+                "share file {} has {} bytes (expected {})",
+                path.display(),
+                bytes.len(),
+                SECRET_LEN + 1
+            );
+        }
+        // Statically safe: length verified above.
+        #[allow(clippy::indexing_slicing)]
+        let id = bytes[0];
+        let mut value = [0u8; SECRET_LEN];
+        #[allow(clippy::indexing_slicing)]
+        value.copy_from_slice(&bytes[1..]);
+        let share = Share::try_from_parts(id, Zeroizing::new(value))
+            .map_err(|e| anyhow!("invalid share in {}: {e}", path.display()))?;
+        shares.push(share);
+    }
+
+    // === Load commitment ===
+    let commitment_bytes = std::fs::read(commitment_path).with_context(|| {
+        format!(
+            "failed to read commitment from {}",
+            commitment_path.display()
+        )
+    })?;
+    if commitment_bytes.len() != COMMITMENT_LEN {
+        bail!(
+            "commitment file {} has {} bytes (expected {})",
+            commitment_path.display(),
+            commitment_bytes.len(),
+            COMMITMENT_LEN
+        );
+    }
+    let mut commitment_arr = [0u8; COMMITMENT_LEN];
+    commitment_arr.copy_from_slice(&commitment_bytes);
+    let commitment = Commitment::from_bytes(commitment_arr);
+
+    // === Load new operational identity pubkey ===
+    let new_op_identity = read_pubkey(new_op_identity_pubkey)?;
+
+    // === Reconstruct + attest (master held in Zeroizing inside) ===
+    let signed = reconstruct_and_attest(&shares, &commitment, new_op_identity, timestamp)
+        .map_err(|e| anyhow!("reconstruct_and_attest failed: {e}"))?;
+
+    let bytes = signed
+        .encode(false)
+        .map_err(|e| anyhow!("attestation envelope encode failed: {e}"))?;
+
+    std::fs::write(out, &bytes)
+        .with_context(|| format!("failed to write attestation envelope to {}", out.display()))?;
+
+    eprintln!(
+        "Reconstructed master from {} shares; commitment verified; master seed wiped.",
+        shares.len()
+    );
+    eprintln!(
+        "Signed master attestation of operational-identity {} ({} byte envelope)",
+        hex_encode(&new_op_identity.to_bytes()),
+        bytes.len()
+    );
+    eprintln!("Wrote envelope to {}", out.display());
+    Ok(())
+}
+
+/// Verify a master attestation envelope against an expected master
+/// pubkey (typically the one printed on the user's paper backup card).
+///
+/// This is hop #3 of the D0006 §9 chain: trust the master pubkey
+/// out-of-band → verify the master attestation → trust the embedded
+/// operational identity → (subsequent commands) verify capability
+/// tokens issued by that operational identity.
+fn cmd_verify_master_attestation(
+    attestation: &PathBuf,
+    expected_master_pubkey: &PathBuf,
+) -> Result<()> {
+    let attestation_bytes = std::fs::read(attestation).with_context(|| {
+        format!(
+            "failed to read attestation envelope from {}",
+            attestation.display()
+        )
+    })?;
+    let expected_master = read_pubkey(expected_master_pubkey)?;
+
+    let signed = SignedMasterAttestation::from_bytes(&attestation_bytes, &expected_master)
+        .map_err(|e| anyhow!("master attestation verification failed: {e}"))?;
+    let att = signed.attestation();
+
+    println!("VERIFIED");
+    println!(
+        "master-pubkey:        {}",
+        hex_encode(&att.master.to_bytes())
+    );
+    println!(
+        "operational-identity: {}",
+        hex_encode(&att.operational_identity.to_bytes())
+    );
+    println!("timestamp:            {} (Unix seconds)", att.timestamp);
     Ok(())
 }

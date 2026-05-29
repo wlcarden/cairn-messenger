@@ -276,7 +276,8 @@ implementation session because they demonstrate end-to-end
 functionality with the existing primitives.
 
 - [x] **`cairn-cli` minimum-demoable-capability binary** — 2026-05-29
-  - Eight subcommands cover the full v1 protocol shape:
+  - Twelve subcommands cover the full v1 protocol shape end-to-end
+    across all three hops of the D0006 §9 verification chain:
     - `gen-key` / `pubkey` — Ed25519 keypair management
     - `issue-token` / `verify-token` — capability token issuance +
       verification (D0006 §9 hop #2)
@@ -286,13 +287,34 @@ functionality with the existing primitives.
       check)
     - `split-seed` / `reconstruct-seed` — Shamir 3-of-5 demo with
       BLAKE3 commitment integrity
-  - End-to-end demos validate the happy path plus negative paths
-    (wrong AAD → signature verify fail; capability not in scope →
-    scope error; wrong issuer → IssuerMismatch; insufficient shares /
-    tampered share → uniform CommitmentMismatch per D0018 §3.4)
-  - Single `cairn` binary (~5 MB release build) demonstrates the
-    cryptographic foundation, recoverable identity, capability-token
-    chain with scope enforcement, and constant-time signing — all
+    - `trust-op` (variant flag `--kind=attest | revoke-withdraw |
+revoke-compromise | re-attest`) / `verify-trust-op` —
+      protocol-layer trust-graph operation signing + chain
+      verification (D0006 §9 hops #1 + #2 over `cairn-trust-graph`'s
+      `SignedTrustGraphOp` primitives; CLI enforces variant-required
+      argument presence before constructing the typestate-friendly
+      `TrustGraphOp` so the protocol layer's invariants are never
+      bypassed by CLI typos)
+    - `attest-operational-identity` / `verify-master-attestation` —
+      recovery flow demonstrating hop #3 (master attestation chain).
+      `attest-operational-identity` composes
+      `cairn-shamir::reconstruct` + `cairn-recovery::reconstruct_and_attest`
+      with the master seed held in `Zeroizing` for the call and wiped
+      on exit — seed bytes never touch disk via this command
+  - End-to-end demos validate the happy path plus negative paths:
+    - Hop #3: wrong expected-master-pubkey → MasterPubkeyMismatch
+    - Hop #2b: trust-op for capability NOT in issued token scope →
+      CapabilityNotAuthorized (e.g., `revoke-withdraw` op against a
+      token authorizing only `attest` + `revoke-compromise`)
+    - Hop #2a: wrong AAD on message → SignatureVerifyFailed (uniform
+      per the no-error-oracle discipline)
+    - Hop #1: wrong issuer for token → IssuerMismatch; insufficient /
+      tampered shares → uniform CommitmentMismatch per D0018 §3.4
+    - CLI-layer: `--kind=revoke-compromise` without `--revoked-as-of` →
+      bail with explicit reference to D0006 §2; `--revoked-as-of` with
+      irrelevant `--kind` → bail
+  - Single `cairn` binary (~5 MB release build) demonstrates all three
+    hops of D0006 §9 (device key → capability token → master attestation)
     runnable today against trusted-runner partner conversations
 
 ## Elapsed-time tracking
