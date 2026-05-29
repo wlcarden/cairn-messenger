@@ -1,0 +1,455 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Cairn maintainers and contributors
+
+//! Master attestation data structure + signed-envelope wrapper.
+//!
+//! Payload schema (canonical-CBOR map with integer keys per COSE
+//! conventions):
+//!
+//! | Key | Field | CBOR type | Notes |
+//! |-----|-------|-----------|-------|
+//! | 1 | `master` | bstr(32) | The user's long-lived master public key |
+//! | 2 | `operational_identity` | bstr(32) | The new operational identity being attested |
+//! | 3 | `timestamp` | uint | Unix-seconds when the attestation was issued |
+//!
+//! Signed by the master directly (NOT by a device key under a
+//! capability token — the master is its own root of trust).
+
+use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, SigningKey, VerifyingKey};
+use cairn_envelope::canonical::Value;
+use cairn_envelope::cose_sign1::{CoseSign1, Sign1Builder};
+use cairn_shamir::{Commitment, SECRET_LEN, Share, reconstruct};
+use ciborium::Value as CiboriumValue;
+use zeroize::Zeroizing;
+
+use crate::error::RecoveryError;
+
+/// Canonical-CBOR map key for `master`.
+const KEY_MASTER: i64 = 1;
+/// Canonical-CBOR map key for `operational_identity`.
+const KEY_OPERATIONAL_IDENTITY: i64 = 2;
+/// Canonical-CBOR map key for `timestamp`.
+const KEY_TIMESTAMP: i64 = 3;
+
+/// Master attestation of a new operational identity per D0005 +
+/// D0006 §6.
+///
+/// Construct via [`Self::new`]; sign via [`Self::sign`]; verify via
+/// [`SignedMasterAttestation::from_bytes`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MasterAttestation {
+    /// The user's long-lived master Ed25519 public key.
+    pub master: VerifyingKey,
+    /// The new operational identity being attested.
+    pub operational_identity: VerifyingKey,
+    /// Unix-seconds when the attestation was issued.
+    pub timestamp: u64,
+}
+
+impl MasterAttestation {
+    /// Construct a master attestation.
+    #[must_use]
+    pub const fn new(
+        master: VerifyingKey,
+        operational_identity: VerifyingKey,
+        timestamp: u64,
+    ) -> Self {
+        Self {
+            master,
+            operational_identity,
+            timestamp,
+        }
+    }
+
+    /// Encode as canonical-CBOR bytes (the `COSE_Sign1` payload).
+    ///
+    /// # Errors
+    ///
+    /// - [`RecoveryError::TimestampOutOfRange`] if `timestamp` doesn't
+    ///   fit in `i64`.
+    /// - [`RecoveryError::CanonicalEncode`] from the canonical encoder.
+    pub fn to_canonical_cbor(&self) -> Result<Vec<u8>, RecoveryError> {
+        let timestamp_i64 =
+            i64::try_from(self.timestamp).map_err(|_| RecoveryError::TimestampOutOfRange)?;
+        let map = Value::Map(vec![
+            (
+                Value::Int(KEY_MASTER),
+                Value::Bytes(self.master.to_bytes().to_vec()),
+            ),
+            (
+                Value::Int(KEY_OPERATIONAL_IDENTITY),
+                Value::Bytes(self.operational_identity.to_bytes().to_vec()),
+            ),
+            (Value::Int(KEY_TIMESTAMP), Value::Int(timestamp_i64)),
+        ]);
+        map.encode().map_err(RecoveryError::from)
+    }
+
+    /// Decode from canonical-CBOR bytes.
+    ///
+    /// # Errors
+    ///
+    /// - [`RecoveryError::MalformedPayload`] for any CBOR / schema
+    ///   structural error
+    /// - [`RecoveryError::InvalidPubkeyLength`] /
+    ///   [`RecoveryError::InvalidPubkey`] for pubkey-field issues
+    /// - [`RecoveryError::TimestampOutOfRange`] for negative or
+    ///   `> 2^63` timestamps
+    pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, RecoveryError> {
+        let parsed: CiboriumValue =
+            ciborium::de::from_reader(bytes).map_err(|_| RecoveryError::MalformedPayload)?;
+        let CiboriumValue::Map(entries) = parsed else {
+            return Err(RecoveryError::MalformedPayload);
+        };
+
+        let mut master_bytes: Option<Vec<u8>> = None;
+        let mut op_identity_bytes: Option<Vec<u8>> = None;
+        let mut timestamp: Option<u64> = None;
+
+        for (key, value) in entries {
+            let CiboriumValue::Integer(key_int_ciborium) = key else {
+                return Err(RecoveryError::MalformedPayload);
+            };
+            let key_int = i64::try_from(i128::from(key_int_ciborium))
+                .map_err(|_| RecoveryError::MalformedPayload)?;
+            match key_int {
+                KEY_MASTER => {
+                    let CiboriumValue::Bytes(b) = value else {
+                        return Err(RecoveryError::MalformedPayload);
+                    };
+                    master_bytes = Some(b);
+                }
+                KEY_OPERATIONAL_IDENTITY => {
+                    let CiboriumValue::Bytes(b) = value else {
+                        return Err(RecoveryError::MalformedPayload);
+                    };
+                    op_identity_bytes = Some(b);
+                }
+                KEY_TIMESTAMP => {
+                    let CiboriumValue::Integer(v) = value else {
+                        return Err(RecoveryError::MalformedPayload);
+                    };
+                    timestamp = Some(
+                        u64::try_from(i128::from(v))
+                            .map_err(|_| RecoveryError::TimestampOutOfRange)?,
+                    );
+                }
+                _ => {} // forward-compat
+            }
+        }
+
+        let master_bytes = master_bytes.ok_or(RecoveryError::MalformedPayload)?;
+        let op_identity_bytes = op_identity_bytes.ok_or(RecoveryError::MalformedPayload)?;
+        let timestamp = timestamp.ok_or(RecoveryError::MalformedPayload)?;
+
+        if master_bytes.len() != PUBLIC_KEY_LEN {
+            return Err(RecoveryError::InvalidPubkeyLength {
+                got_bytes: master_bytes.len(),
+                expected_bytes: PUBLIC_KEY_LEN,
+            });
+        }
+        if op_identity_bytes.len() != PUBLIC_KEY_LEN {
+            return Err(RecoveryError::InvalidPubkeyLength {
+                got_bytes: op_identity_bytes.len(),
+                expected_bytes: PUBLIC_KEY_LEN,
+            });
+        }
+        let master_arr: [u8; PUBLIC_KEY_LEN] = master_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| RecoveryError::InvalidPubkey)?;
+        let op_arr: [u8; PUBLIC_KEY_LEN] = op_identity_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| RecoveryError::InvalidPubkey)?;
+        let master =
+            VerifyingKey::from_bytes(&master_arr).map_err(|_| RecoveryError::InvalidPubkey)?;
+        let operational_identity =
+            VerifyingKey::from_bytes(&op_arr).map_err(|_| RecoveryError::InvalidPubkey)?;
+        Ok(Self {
+            master,
+            operational_identity,
+            timestamp,
+        })
+    }
+
+    /// Sign this attestation with the master signing key. The
+    /// resulting [`SignedMasterAttestation`] is a `COSE_Sign1`
+    /// envelope.
+    ///
+    /// # Errors
+    ///
+    /// Propagates encoding / signing failures via [`RecoveryError`].
+    pub fn sign(
+        &self,
+        master_signing_key: &SigningKey,
+    ) -> Result<SignedMasterAttestation, RecoveryError> {
+        let payload = self.to_canonical_cbor()?;
+        let envelope = Sign1Builder::new()
+            .with_payload(payload)
+            .finalize(master_signing_key)
+            .map_err(|_| RecoveryError::SignFailed)?;
+        Ok(SignedMasterAttestation {
+            envelope,
+            attestation: self.clone(),
+        })
+    }
+}
+
+/// A `COSE_Sign1`-wrapped master attestation.
+///
+/// Construct via [`MasterAttestation::sign`] (or
+/// [`reconstruct_and_attest`]); decode + verify via
+/// [`Self::from_bytes`]; re-encode via [`Self::encode`].
+#[derive(Debug, Clone)]
+pub struct SignedMasterAttestation {
+    envelope: CoseSign1,
+    attestation: MasterAttestation,
+}
+
+impl SignedMasterAttestation {
+    /// Decode envelope bytes + verify the signature against the
+    /// expected master pubkey.
+    ///
+    /// The verifier supplies the master pubkey they trust (typically
+    /// loaded from the user's paper backup card at first boot).
+    ///
+    /// # Errors
+    ///
+    /// - [`RecoveryError::MalformedPayload`] for envelope / payload
+    ///   parse failure
+    /// - [`RecoveryError::MasterPubkeyMismatch`] if the embedded
+    ///   master pubkey doesn't match the expected one
+    /// - [`RecoveryError::SignatureVerifyFailed`] for any crypto-layer
+    ///   verify failure (uniform per the no-error-oracle discipline)
+    pub fn from_bytes(bytes: &[u8], expected_master: &VerifyingKey) -> Result<Self, RecoveryError> {
+        let envelope = CoseSign1::from_bytes(bytes).map_err(|_| RecoveryError::MalformedPayload)?;
+        let payload = envelope.payload().ok_or(RecoveryError::MalformedPayload)?;
+        let attestation = MasterAttestation::from_canonical_cbor(payload)?;
+        if attestation.master != *expected_master {
+            return Err(RecoveryError::MasterPubkeyMismatch);
+        }
+        envelope
+            .verify(expected_master, b"")
+            .map_err(|_| RecoveryError::SignatureVerifyFailed)?;
+        Ok(Self {
+            envelope,
+            attestation,
+        })
+    }
+
+    /// Get the verified attestation contents.
+    #[must_use]
+    pub const fn attestation(&self) -> &MasterAttestation {
+        &self.attestation
+    }
+
+    /// Encode the envelope back to bytes (canonical form).
+    ///
+    /// # Errors
+    ///
+    /// Propagates the underlying `COSE_Sign1` encoding error
+    /// (unreachable for envelopes constructed via
+    /// [`MasterAttestation::sign`] or [`Self::from_bytes`]).
+    pub fn encode(&self, tagged: bool) -> Result<Vec<u8>, RecoveryError> {
+        self.envelope.encode(tagged).map_err(RecoveryError::from)
+    }
+}
+
+/// Reconstruct the master from Shamir shares + commitment, sign a
+/// master attestation of `new_operational_identity_pubkey`, and zero
+/// the reconstructed master seed.
+///
+/// The master seed is held in `Zeroizing<[u8; SECRET_LEN]>` for the
+/// duration of this function and is wiped on exit (via the
+/// `Zeroizing` Drop impl). The returned signed attestation does NOT
+/// carry any master-secret material — only the master pubkey
+/// (computed via `SigningKey::verifying_key`).
+///
+/// # Errors
+///
+/// - [`RecoveryError::ShamirReconstruct`] if the Shamir layer rejects
+///   the share set (insufficient shares / tampered / wrong commitment;
+///   uniform per D0018 §3.4)
+/// - [`RecoveryError::CanonicalEncode`] / [`RecoveryError::SignFailed`]
+///   from the attestation construction step
+pub fn reconstruct_and_attest(
+    master_shares: &[Share],
+    master_commitment: &Commitment,
+    new_operational_identity_pubkey: VerifyingKey,
+    timestamp: u64,
+) -> Result<SignedMasterAttestation, RecoveryError> {
+    // Reconstruct the master seed (held in Zeroizing).
+    let master_seed: Zeroizing<[u8; SECRET_LEN]> = reconstruct(master_shares, master_commitment)?;
+
+    // Derive the master SigningKey from the seed. SigningKey stores
+    // the seed in its own SecretBox internally; the local
+    // `master_seed` will be wiped at function exit via Zeroizing.
+    let master_signing_key = SigningKey::from_seed(&master_seed);
+    let master_pubkey = master_signing_key.verifying_key();
+
+    // Build and sign the attestation.
+    let attestation =
+        MasterAttestation::new(master_pubkey, new_operational_identity_pubkey, timestamp);
+    let signed = attestation.sign(&master_signing_key)?;
+
+    // master_signing_key drops here → its internal SecretBox is zeroized.
+    // master_seed drops here → Zeroizing wipes the bytes.
+    drop(master_signing_key);
+    drop(master_seed);
+
+    Ok(signed)
+}
+
+#[cfg(test)]
+mod tests {
+    // `indexing_slicing` allowed at the test-module level: shares and
+    // envelope bytes are produced by the test setup and have
+    // statically-known lengths.
+    #![allow(clippy::indexing_slicing)]
+
+    use super::*;
+    use cairn_crypto::ed25519::SigningKey;
+    use cairn_shamir::split;
+    use rand_core::OsRng;
+
+    /// Pre-condition for the recovery tests: produce a master
+    /// `SigningKey` plus its 3-of-5 Shamir share set plus commitment.
+    fn provision_master(rng: &mut OsRng) -> (SigningKey, Vec<Share>, Commitment) {
+        use rand_core::RngCore as _;
+        let mut seed_bytes = [0u8; SECRET_LEN];
+        rng.fill_bytes(&mut seed_bytes);
+        let master_seed = Zeroizing::new(seed_bytes);
+        let master_signing_key = SigningKey::from_seed(&master_seed);
+        let (shares, commitment) = split(&master_seed, 3, 5, rng).unwrap();
+        (master_signing_key, shares, commitment)
+    }
+
+    #[test]
+    fn reconstruct_and_attest_happy_path() {
+        let mut rng = OsRng;
+        let (master_sk, shares, commitment) = provision_master(&mut rng);
+        let new_op_identity = SigningKey::generate(&mut rng).verifying_key();
+
+        let signed =
+            reconstruct_and_attest(&shares[..3], &commitment, new_op_identity, 1_700_000_000)
+                .unwrap();
+
+        let bytes = signed.encode(false).unwrap();
+        let recovered =
+            SignedMasterAttestation::from_bytes(&bytes, &master_sk.verifying_key()).unwrap();
+        assert_eq!(recovered.attestation().master, master_sk.verifying_key());
+        assert_eq!(
+            recovered.attestation().operational_identity,
+            new_op_identity
+        );
+        assert_eq!(recovered.attestation().timestamp, 1_700_000_000);
+    }
+
+    #[test]
+    fn reconstruct_with_tampered_share_fails() {
+        let mut rng = OsRng;
+        let (_master_sk, shares, commitment) = provision_master(&mut rng);
+        let new_op_identity = SigningKey::generate(&mut rng).verifying_key();
+
+        // Tamper share[0]: flip a bit in the value bytes.
+        let original = shares[0].clone();
+        let mut tampered_bytes = *original.bytes();
+        tampered_bytes[0] ^= 0xFF;
+        let tampered_share =
+            Share::try_from_parts(original.id(), Zeroizing::new(tampered_bytes)).unwrap();
+        let mut tampered_shares = vec![tampered_share];
+        tampered_shares.extend_from_slice(&shares[1..3]);
+
+        let result = reconstruct_and_attest(
+            &tampered_shares,
+            &commitment,
+            new_op_identity,
+            1_700_000_000,
+        );
+        assert!(matches!(result, Err(RecoveryError::ShamirReconstruct(_))));
+    }
+
+    #[test]
+    fn reconstruct_with_insufficient_shares_fails() {
+        let mut rng = OsRng;
+        let (_master_sk, shares, commitment) = provision_master(&mut rng);
+        let new_op_identity = SigningKey::generate(&mut rng).verifying_key();
+
+        // Only 2 shares for a 3-of-5 split.
+        let result =
+            reconstruct_and_attest(&shares[..2], &commitment, new_op_identity, 1_700_000_000);
+        assert!(matches!(result, Err(RecoveryError::ShamirReconstruct(_))));
+    }
+
+    #[test]
+    fn verify_with_wrong_expected_master_rejected() {
+        let mut rng = OsRng;
+        let (master_sk, shares, commitment) = provision_master(&mut rng);
+        let new_op_identity = SigningKey::generate(&mut rng).verifying_key();
+        let signed =
+            reconstruct_and_attest(&shares[..3], &commitment, new_op_identity, 1_700_000_000)
+                .unwrap();
+        let bytes = signed.encode(false).unwrap();
+
+        let other_master = SigningKey::generate(&mut rng).verifying_key();
+        let result = SignedMasterAttestation::from_bytes(&bytes, &other_master);
+        assert!(matches!(result, Err(RecoveryError::MasterPubkeyMismatch)));
+        // Confirm the original master pubkey is what's actually inside.
+        assert_ne!(other_master, master_sk.verifying_key());
+    }
+
+    #[test]
+    fn tampered_attestation_bytes_fail_verify() {
+        let mut rng = OsRng;
+        let (master_sk, shares, commitment) = provision_master(&mut rng);
+        let new_op_identity = SigningKey::generate(&mut rng).verifying_key();
+        let signed =
+            reconstruct_and_attest(&shares[..3], &commitment, new_op_identity, 1_700_000_000)
+                .unwrap();
+        let mut bytes = signed.encode(false).unwrap();
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0x01;
+        let result = SignedMasterAttestation::from_bytes(&bytes, &master_sk.verifying_key());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn round_trip_canonical_cbor() {
+        let mut rng = OsRng;
+        let master = SigningKey::generate(&mut rng).verifying_key();
+        let op_identity = SigningKey::generate(&mut rng).verifying_key();
+        let att = MasterAttestation::new(master, op_identity, 1_700_000_000);
+        let bytes = att.to_canonical_cbor().unwrap();
+        let decoded = MasterAttestation::from_canonical_cbor(&bytes).unwrap();
+        assert_eq!(decoded, att);
+    }
+
+    #[test]
+    fn deterministic_encoding() {
+        let mut rng = OsRng;
+        let master = SigningKey::generate(&mut rng).verifying_key();
+        let op_identity = SigningKey::generate(&mut rng).verifying_key();
+        let att = MasterAttestation::new(master, op_identity, 1_700_000_000);
+        let a = att.to_canonical_cbor().unwrap();
+        let b = att.to_canonical_cbor().unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn signing_with_master_only_path() {
+        // Demonstrate: build attestation from an existing master
+        // SigningKey directly (no reconstruct step). This is the
+        // path used at provisioning time when the master is freshly
+        // generated.
+        let mut rng = OsRng;
+        let master_sk = SigningKey::generate(&mut rng);
+        let new_op_identity = SigningKey::generate(&mut rng).verifying_key();
+        let att = MasterAttestation::new(master_sk.verifying_key(), new_op_identity, 1_700_000_000);
+        let signed = att.sign(&master_sk).unwrap();
+        let bytes = signed.encode(false).unwrap();
+        let recovered =
+            SignedMasterAttestation::from_bytes(&bytes, &master_sk.verifying_key()).unwrap();
+        assert_eq!(recovered.attestation(), &att);
+    }
+}

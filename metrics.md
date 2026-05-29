@@ -213,6 +213,31 @@ this baseline.
 These extend the foundation crates with protocol-level operations
 beyond the Tier 1 MDC line.
 
+- [x] **`cairn-recovery` master-attestation primitive per D0005 +
+      D0006 §6** — 2026-05-29
+  - `MasterAttestation { master, operational_identity, timestamp }`
+    canonical-CBOR + COSE_Sign1 envelope signed by master directly
+    (no capability token — the master is its own root of trust at
+    the top of the three-hop chain)
+  - `reconstruct_and_attest(shares, commitment, new_op_identity, ts)`
+    composes `cairn-shamir::reconstruct` + `MasterAttestation::sign`
+    with the master seed held in `Zeroizing` end-to-end and wiped on
+    function exit
+  - `SignedMasterAttestation::from_bytes(bytes, &expected_master)`
+    verifies: embedded master pubkey matches expected (defends
+    against key substitution), then signature verifies against
+    expected master pubkey
+  - 8 unit tests: happy-path round-trip via reconstruct_and_attest;
+    tampered share → ShamirReconstruct error; insufficient shares →
+    ShamirReconstruct error; wrong expected master → MasterPubkeyMismatch;
+    tampered envelope bytes → verify error; canonical encoding
+    round-trip + determinism; provisioning-time master-only path
+  - **Deferred to higher layers**: atomic-or-non-leaking re-split per
+    D0018 §3.5 (two-phase commit across N peers); recovery-peer
+    authentication per D0005 (trust-graph-driven authorization of
+    which peers hold shares). Both require the peer protocol layer
+    (network/messaging) which is outside the cryptographic primitives.
+
 - [x] **`cairn-trust-graph` operation envelopes per D0006 §2** —
       2026-05-29
   - Four operation types per D0006 §2: `Attest`, `WithdrawRevoke`,

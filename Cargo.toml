@@ -28,6 +28,8 @@ members = [
     "crates/cairn-cli",
     # Trust-graph operations per D0006 §2 (Tier 2 protocol layer)
     "crates/cairn-trust-graph",
+    # Recovery: master-attestation of new operational identity (Tier 2)
+    "crates/cairn-recovery",
 ]
 # Future members per D0018 §8.6 (added incrementally as Tier 1/2/3 lands):
 #   "crates/cairn-identity",

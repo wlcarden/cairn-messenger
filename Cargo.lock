@@ -254,6 +254,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cairn-recovery"
+version = "0.1.0-dev"
+dependencies = [
+ "cairn-crypto",
+ "cairn-envelope",
+ "cairn-shamir",
+ "ciborium",
+ "hex-literal",
+ "proptest",
+ "rand_core 0.6.4",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
 name = "cairn-shamir"
 version = "0.1.0-dev"
 dependencies = [
