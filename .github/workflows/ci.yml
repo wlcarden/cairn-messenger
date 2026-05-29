@@ -124,19 +124,39 @@ jobs:
   #     - run: cargo install cargo-auditable cargo-ndk
   #     - run: cargo ndk -t arm64-v8a -t x86_64 -p 24 build --release
 
-  # Fuzz harness placeholder — runs once fuzz/ is populated.
-  # fuzz-pr:
-  #   if: github.event_name == 'pull_request'
-  #   name: cargo-fuzz (PR)
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: dtolnay/rust-toolchain@nightly
-  #     - run: cargo install cargo-fuzz
-  #     - run: |
-  #         for target in fuzz_envelope_parse fuzz_canonical_cbor; do
-  #           cargo fuzz run "$target" -- -max_total_time=60
-  #         done
+  # Fuzz harness PR-time runs per D0018 §8.5. Each target runs for
+  # 60 seconds of libFuzzer iterations on the PR's HEAD; failures
+  # (panic / sanitizer crash / timeout) write a crash artifact to
+  # fuzz/artifacts/<target>/ which CI uploads as a job artifact for
+  # post-mortem. Continuous runs (per D0018 §5.2's OSS-Fuzz
+  # integration) land separately once the repo is public per D0019.
+  fuzz-pr:
+    if: github.event_name == 'pull_request'
+    name: cargo-fuzz (PR; 60s per target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - run: cargo install cargo-fuzz
+      - run: |
+          set -euo pipefail
+          cd fuzz
+          for target in fuzz_envelope_parse fuzz_canonical_cbor \
+                        fuzz_shamir_reconstruct fuzz_capability_token \
+                        fuzz_trust_graph_op fuzz_master_attestation; do
+            echo "::group::$target"
+            cargo +nightly fuzz run "$target" -- -max_total_time=60
+            echo "::endgroup::"
+          done
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
 
   # dudect-bencher smoke test: builds the cairn-ct-bench harness in
   # release mode (per D0018 §5.3 — release-profile timing tests
