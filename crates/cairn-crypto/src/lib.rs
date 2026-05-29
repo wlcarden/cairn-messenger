@@ -52,12 +52,14 @@
 //! - [`never_export`] — sealed marker trait preventing secret types from crossing
 //!   the `UniFFI` boundary
 //! - [`ed25519`] — Ed25519 signing key wrappers
-//! - [`x25519`] — X25519 ECDH (forthcoming as integration crates land)
+//! - [`x25519`] — X25519 ECDH key-agreement wrappers (with mandatory
+//!   `was_contributory()` enforcement per D0018 §1.2)
 //! - [`hkdf`] — HKDF-SHA256 derivation (forthcoming)
 //! - [`error`] — error types for the crate
 
 pub mod ed25519;
 pub mod error;
 pub mod never_export;
+pub mod x25519;
 
-pub use error::{CryptoError, SignError, VerifyError};
+pub use error::{AgreeError, CryptoError, SignError, VerifyError};
