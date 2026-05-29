@@ -42,6 +42,8 @@
 //! - [`emit`] — combined persist + Sigsum-emit wrapper per D0023 §6.1
 //!   (hosted here instead of in `cairn-trust-graph` to avoid the
 //!   dependency cycle the literal §6.1 placement would create).
+//! - [`verify`] — chain-link + Sigsum-inclusion composed verifier per
+//!   D0023 §6.2 (same dependency-direction rationale as `emit`).
 //! - [`error`] — typed error enum per D0018 §4.2 + D0023 §7.
 //!
 //! ## Implementation status (v1 skeleton)
@@ -68,6 +70,7 @@ pub mod client;
 pub mod emit;
 pub mod error;
 pub mod leaf;
+pub mod verify;
 pub mod witness;
 
 pub use cache::{InclusionProof, TreeHead, cache_record_id_for_leaf, cache_record_id_for_log};
@@ -75,6 +78,7 @@ pub use client::{RetryBudget, SigsumClient, SigsumClientConfig};
 pub use emit::{EmissionStatus, EmitOutcome, sigsum_emit};
 pub use error::SigsumError;
 pub use leaf::{LEAF_HASH_LEN, LeafHash, leaf_hash_for};
+pub use verify::{VerifyChainWithSigsumError, verify_chain_links_with_sigsum};
 pub use witness::{
     MIN_WITNESS_COUNT, REQUIRED_COSIGNATURE_COUNT, Witness, WitnessPool, parse_witness_pool,
     verify_cosignature,

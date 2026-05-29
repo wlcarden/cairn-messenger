@@ -22,6 +22,9 @@ default = []
 integration-tests = []
 
 [dev-dependencies]
+# cairn-identity is consumed in the verify-module tests to construct
+# capability tokens against which verify_chain_links runs.
+cairn-identity = { path = "../cairn-identity" }
 rand_core = { workspace = true }
 
 [dependencies]
