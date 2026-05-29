@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Cairn maintainers and contributors
+
+[package]
+name = "cairn-shamir"
+version = "0.1.0-dev"
+description = "Cairn Shamir Secret Sharing with BLAKE3 commit-of-secret per D0006 §9 + D0018 §3"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# === Shamir Secret Sharing (D0018 §3.1) ===
+vsss-rs = { workspace = true }
+
+# === Commit-of-secret hash (D0018 §3.4) ===
+blake3 = { workspace = true }
+
+# === Memory hygiene (D0018 §1.6) ===
+zeroize = { workspace = true }
+secrecy = { workspace = true }
+subtle = { workspace = true }
+
+# === CSPRNG (D0018 §1.7) ===
+rand_core = { workspace = true }
+
+# === Error handling (D0018 §4.2) ===
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+hex-literal = { workspace = true }
