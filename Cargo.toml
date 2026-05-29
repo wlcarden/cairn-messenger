@@ -24,6 +24,8 @@ members = [
     "crates/cairn-identity",
     # Constant-time benchmarks per D0018 §5.3 (Tier 1 MDC infrastructure)
     "crates/cairn-ct-bench",
+    # Minimum demoable capability CLI composing the above
+    "crates/cairn-cli",
 ]
 # Future members per D0018 §8.6 (added incrementally as Tier 1/2/3 lands):
 #   "crates/cairn-identity",
@@ -91,6 +93,7 @@ tracing = "=0.1.40"
 tracing-subscriber = { version = "=0.3.18", features = ["env-filter", "json"] }
 log-panics = { version = "=2.1.0", features = ["with-backtrace"] }
 anyhow = "=1.0.86"
+clap = { version = "=4.6.1", features = ["derive"] }
 
 # === Error handling (D0018 §4.2) ===
 thiserror = "=1.0.63"
