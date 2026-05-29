@@ -191,6 +191,13 @@ This is a defense-in-depth measure, not a guarantee. The brief's §5.1 language 
 
 **Critical gap: `Header::to_cbor_value` does NOT sort `rest` (custom) header parameters.** Well-known headers (alg, crit, content_type, kid, iv, partial_iv, counter_signature; labels 1-7) happen to emit in numerical-label order which coincides with bytewise lex sort for those values. But anything in `rest: Vec<(Label, Value)>` is in insertion order. Cairn closes this gap by building the protected header bytes manually via the `cairn-cbor-canonical` helper per section 2.3, then passing through `ProtectedHeader { original_data: Some(bytes), header }` to use coset's verbatim-preservation path.
 
+**Coset's role in Cairn (per D0021 §2):** coset is retained for two roles distinct from canonical encoding:
+
+1. **Decoder for incoming peer envelopes.** `ProtectedHeader::original_data` preservation in `coset-0.4.2/src/header/mod.rs::cbor_bstr` carries the bytes the signer originally saw through the decode → re-verify path; signature verification works against the original (potentially non-canonical) signing input.
+2. **Reference implementation for `veraison/go-cose` interop validation.** The cross-implementation interop surface (pending per `metrics.md`) compares coset's parse of Cairn's emitted bytes against `veraison/go-cose`'s parse; both must agree.
+
+The canonical encoder for emit-side bytes remains `cairn-envelope::canonical` per section 2.3. `cairn-envelope::cose_sign1` builds the `Sig_structure` and the outer 4-tuple via that canonical encoder, never via `coset::CborSerializable::to_vec` (which delegates to `ciborium`'s non-canonical default — re-confirmed against 0.4.2 in D0021 §2.1).
+
 **Tag confirmation per D0006 §6.** `CoseSign1::TAG = 18` per IANA CBOR Tags registry (verified via docs.rs). Cairn uses **untagged** form: `CoseSign1::to_vec()` and `from_slice()`. Tag 98 (COSE_Sign multi-signer) is NOT used.
 
 ### 2.3 Canonical encoding helper: `cairn-cbor-canonical`
@@ -302,6 +309,8 @@ Cairn's device-key cosignature per D0006 §9 is an **explicit chain** structure 
 - Audit finding #3: saturating-add identifier overflow producing duplicate x-coordinates (now `field_bounded_add`)
 
 **Residual risk: audit firm name and full report not yet public.** The April 24 commit references audit findings but the upstream publication has not landed. **This makes D0011's Sprint 1 addition (Shamir-library timing-safety verification in pre-pilot audit scope) the public record for this code path** if upstream firm publication is still missing at Cairn's audit kickoff.
+
+**Implementation-phase confirmation (per D0021).** The D0021 library-pin audit confirms this primary `vsss-rs` 5.4.0 decision. During the implementation phase the workspace `Cargo.toml` briefly drifted to `vsss-rs` 4.3.8, which lacks the `Gf256` byte-level module; an earlier D0021 draft (commit `5b2161b`) misattributed the gap to library inadequacy and justified a from-scratch implementation (commit `2ad574f`). The drift was caught during the inline touch-ups for this D-doc, `Cargo.toml` was bumped to 5.4.0 (commit `b543241`), and `cairn-shamir` was refactored to wrap `vsss-rs::Gf256` (commit `56a825d`) as originally specified here. The audit-discipline lesson is recorded in D0021 §4.
 
 ### 3.2 Backup: vendor `oxidecomputer/omicron/trust-quorum/gfss`
 
@@ -466,6 +475,8 @@ This feature **statically removes** debug/trace call sites at compile time in re
 
 **`subtle` 2.6.1** is the de-facto-standard primitive library for constant-time comparison and conditional-select; required at every secret-byte equality and conditional-select call site. Custom clippy lint per section 8 disallows `==` on disallowed-types (secret-bearing types).
 
+**`dudect-bencher` pin: 0.7.0 (bumped from 0.6.0 per D0021 §3.2).** 0.7.0 declares `rust-version = "1.85"` matching the toolchain pin; 0.6.0 left MSRV implicit. Same author, repo, license, and `core-hint-black-box` feature. The CI-gate semantics above are unchanged.
+
 ### 5.4 CI grep gates for discipline enforcement
 
 Three grep-based CI gates enforce project-wide disciplines:
@@ -620,7 +631,10 @@ anyhow              = "1.0"
 
 # Error handling
 thiserror   = "2.0"
-displaydoc  = "0.2"
+# `displaydoc` removed per D0021 §3.1 — zero usage across cairn-crypto /
+# cairn-envelope / cairn-shamir; thiserror covers the error-with-Display
+# surface ergonomically. Re-add via D-doc if a future surface needs the
+# markdown-style doc-comment derive.
 
 # FFI
 uniffi      = { version = "=0.31.1" }
