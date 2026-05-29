@@ -26,6 +26,8 @@ members = [
     "crates/cairn-ct-bench",
     # Minimum demoable capability CLI composing the above
     "crates/cairn-cli",
+    # Trust-graph operations per D0006 §2 (Tier 2 protocol layer)
+    "crates/cairn-trust-graph",
 ]
 # Future members per D0018 §8.6 (added incrementally as Tier 1/2/3 lands):
 #   "crates/cairn-identity",

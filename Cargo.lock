@@ -269,6 +269,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cairn-trust-graph"
+version = "0.1.0-dev"
+dependencies = [
+ "cairn-crypto",
+ "cairn-envelope",
+ "cairn-identity",
+ "ciborium",
+ "hex-literal",
+ "proptest",
+ "rand_core 0.6.4",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.63"
 source = "registry+https://github.com/rust-lang/crates.io-index"

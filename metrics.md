@@ -208,6 +208,40 @@ this baseline.
 
 - [ ] **First crates.io publication (when ready)**
 
+### Tier 2 protocol layer surfaces
+
+These extend the foundation crates with protocol-level operations
+beyond the Tier 1 MDC line.
+
+- [x] **`cairn-trust-graph` operation envelopes per D0006 §2** —
+      2026-05-29
+  - Four operation types per D0006 §2: `Attest`, `WithdrawRevoke`,
+    `CompromiseRevoke` (triggers cascade quarantine), `ReAttest`
+  - Each op encoded as integer-keyed canonical-CBOR map (8 schema
+    keys) signed by device key as `COSE_Sign1` envelope, matching
+    the same three-hop pattern as message envelopes
+  - `OpType::required_capability()` maps each op type to its required
+    `cairn-identity` capability string for scope-check enforcement
+  - `SignedTrustGraphOp::verify_chain(token_bytes, expected_op_identity)`
+    performs hops #1 + #2 atomically: token verifies against expected
+    issuer, scope contains required capability, op signature verifies
+    against the token's subject (device pubkey), op's `issuer` field
+    matches the token's `issuer` field (defends against forged-issuer
+    on device that has a token from a different operational identity)
+  - Variant-required field discipline: `CompromiseRevoke` MUST carry
+    `revoked_as_of`; `ReAttest` MUST carry `prior_revocation_ref`;
+    others MUST NOT
+  - 14 unit tests covering: all four op types round-trip and verify
+    against valid tokens; scope-check rejects misaligned op type;
+    op-issuer-vs-token-issuer mismatch rejected; wrong device signing
+    key rejected; wrong expected operational identity rejected;
+    field-presence schema enforcement; unknown op_type rejected;
+    forward-compat unknown map keys preserved; deterministic
+    canonical encoding; required-capability mapping table
+  - Cascade quarantine state-tracking + chain-walk validation
+    deferred to higher-layer surface (will live in
+    `cairn-trust-graph-state` or `cairn-recovery` once those land)
+
 ### Application surfaces (beyond Tier 1 MDC)
 
 These are "above" the Tier 1 MDC line — they compose the foundation

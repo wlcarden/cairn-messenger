@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Cairn maintainers and contributors
+
+[package]
+name = "cairn-trust-graph"
+version = "0.1.0-dev"
+description = "Cairn trust-graph operation envelopes (attestation / revocation / re-attestation) per D0006 §2"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# === Foundational primitives ===
+cairn-crypto = { path = "../cairn-crypto" }
+cairn-envelope = { path = "../cairn-envelope" }
+cairn-identity = { path = "../cairn-identity" }
+
+# === CBOR (D0018 §2.1) — used for decoding op payload bytes ===
+ciborium = { workspace = true }
+
+# === Memory hygiene (D0018 §1.6) ===
+zeroize = { workspace = true }
+
+# === Error handling (D0018 §4.2) ===
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+hex-literal = { workspace = true }
+rand_core = { workspace = true }
