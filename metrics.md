@@ -388,7 +388,7 @@ implementation session because they demonstrate end-to-end
 functionality with the existing primitives.
 
 - [x] **`cairn-cli` minimum-demoable-capability binary** — 2026-05-29
-  - Fifteen subcommands cover the full v1 protocol shape end-to-end
+  - Sixteen subcommands cover the full v1 protocol shape end-to-end
     across all three hops of the D0006 §9 verification chain: - `gen-key` / `pubkey` — Ed25519 keypair management - `issue-token` / `verify-token` — capability token issuance +
     verification (D0006 §9 hop #2) - `sign-message` / `verify-message` — device-key signs payload
     under a capability token; verifier enforces order (token first,

@@ -72,7 +72,10 @@ use cairn_envelope::cose_sign1::{CoseSign1, Sign1Builder};
 use cairn_identity::{CapabilityToken, SignedCapabilityToken};
 use cairn_recovery::{SignedMasterAttestation, reconstruct_and_attest};
 use cairn_shamir::{COMMITMENT_LEN, Commitment, SECRET_LEN, Share, reconstruct, split};
-use cairn_trust_graph::{OpType, SignedTrustGraphOp, TrustGraphOp, verify_chain_links};
+use cairn_trust_graph::{
+    OpType, QuarantineStatus, SignedTrustGraphOp, TrustGraphOp, compute_quarantine_state,
+    verify_chain_links,
+};
 use clap::{Parser, Subcommand, ValueEnum};
 use rand_core::OsRng;
 use sha2::{Digest as _, Sha256};
@@ -350,6 +353,25 @@ enum Command {
         #[arg(long)]
         expected_issuer_pubkey: PathBuf,
     },
+    /// Decode a heterogeneous set of trust-graph op envelopes (across
+    /// multiple operational identities) and print the D0006 §2
+    /// cascade-quarantine status of each. The classifier is stateless:
+    /// `CompromiseRevoke` cascades hard-suspend post-revocation
+    /// attestations + soft-flag pre-revocation attestations of the
+    /// revoked subject; `WithdrawRevoke` soft-flags post-withdrawal
+    /// attestations.
+    ///
+    /// IMPORTANT: this command DECODES without verifying per-op
+    /// signatures (the op set spans multiple operational identities so
+    /// no single token suffices for verification). Callers should
+    /// verify each chain via `verify-trust-chain` before trusting the
+    /// classification output here.
+    InspectTrustState {
+        /// Path to a trust-graph op envelope. Supply once per op in
+        /// the set being inspected.
+        #[arg(long = "op", action = clap::ArgAction::Append)]
+        ops: Vec<PathBuf>,
+    },
 }
 
 /// Variant flag for the `trust-op` subcommand.
@@ -491,6 +513,7 @@ fn main() -> Result<()> {
             token,
             expected_issuer_pubkey,
         } => cmd_verify_trust_chain(&ops, &token, &expected_issuer_pubkey),
+        Command::InspectTrustState { ops } => cmd_inspect_trust_state(&ops),
     }
 }
 
@@ -1361,4 +1384,94 @@ fn cmd_verify_trust_chain(
         )
     );
     Ok(())
+}
+
+/// Decode a heterogeneous set of trust-graph op envelopes (across
+/// multiple operational identities) and print the D0006 §2 cascade-
+/// quarantine status of each via [`compute_quarantine_state`].
+///
+/// Decodes without per-op verification — the input set spans multiple
+/// operational identities so no single token suffices. The op decode
+/// step still parses the canonical CBOR payload schema, so structural
+/// errors surface here; cryptographic verification is the caller's
+/// responsibility via `verify-trust-chain` per chain.
+fn cmd_inspect_trust_state(op_paths: &[PathBuf]) -> Result<()> {
+    if op_paths.is_empty() {
+        bail!("at least one --op must be supplied");
+    }
+
+    let mut decoded: Vec<SignedTrustGraphOp> = Vec::with_capacity(op_paths.len());
+    for path in op_paths {
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("failed to read trust-op envelope from {}", path.display()))?;
+        let signed = SignedTrustGraphOp::from_bytes(&bytes).map_err(|e| {
+            anyhow!(
+                "trust-op envelope decode failed for {}: {e}",
+                path.display()
+            )
+        })?;
+        decoded.push(signed);
+    }
+
+    let op_refs: Vec<&TrustGraphOp> = decoded.iter().map(SignedTrustGraphOp::op).collect();
+    let statuses = compute_quarantine_state(&op_refs);
+
+    println!("DECODED-ONLY ({} ops)", op_refs.len());
+    println!(
+        "WARNING: per-op signature verification was NOT performed. \
+         Run verify-trust-chain on each (issuer, subject) chain before \
+         trusting this classification."
+    );
+    println!();
+    for (i, (op, status)) in op_refs.iter().zip(statuses.iter()).enumerate() {
+        println!(
+            "[{i}] op_type={:?} issuer={} subject={} timestamp={}",
+            op.op_type,
+            hex_encode_short(&op.issuer.to_bytes()),
+            hex_encode_short(&op.subject.to_bytes()),
+            op.timestamp
+        );
+        println!("     status: {}", format_status(*status));
+    }
+    Ok(())
+}
+
+/// Render the leading 8 hex chars of a pubkey for compact display.
+fn hex_encode_short(bytes: &[u8]) -> String {
+    let full = hex_encode(bytes);
+    // `min` keeps the slice in bounds for absurdly short inputs that
+    // pubkey paths never actually reach.
+    let preview_len = full.len().min(16);
+    #[allow(clippy::indexing_slicing, reason = "preview_len ≤ full.len() by min()")]
+    full[..preview_len].to_string()
+}
+
+/// Render a `QuarantineStatus` for human-readable CLI output.
+fn format_status(status: QuarantineStatus) -> String {
+    match status {
+        QuarantineStatus::NotApplicable => "n/a (revocation op)".to_string(),
+        QuarantineStatus::Active => "Active".to_string(),
+        QuarantineStatus::SoftFlaggedByWithdrawal {
+            revoked_by,
+            withdrawal_at,
+        } => format!(
+            "SoftFlaggedByWithdrawal (by {} at t={withdrawal_at})",
+            hex_encode_short(&revoked_by.to_bytes())
+        ),
+        QuarantineStatus::SoftFlaggedPreCompromise {
+            revoked_by,
+            revoked_as_of,
+        } => format!(
+            "SoftFlaggedPreCompromise (by {} revoked_as_of={revoked_as_of})",
+            hex_encode_short(&revoked_by.to_bytes())
+        ),
+        QuarantineStatus::HardSuspended {
+            revoked_by,
+            revoked_as_of,
+        } => format!(
+            "HardSuspended (by {} revoked_as_of={revoked_as_of})",
+            hex_encode_short(&revoked_by.to_bytes())
+        ),
+        _ => "(unknown variant — CLI built against older cairn-trust-graph)".to_string(),
+    }
 }
