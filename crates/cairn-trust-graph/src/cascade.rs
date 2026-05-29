@@ -432,3 +432,136 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::indexing_slicing, clippy::panic, clippy::match_on_vec_items)]
+mod proptests {
+    use super::*;
+    use cairn_crypto::ed25519::SigningKey;
+    use proptest::prelude::*;
+    use rand_core::OsRng;
+
+    /// Independent re-derivation of the cascade-status severity rank
+    /// (parallels the internal `severity` impl on `QuarantineStatus`)
+    /// so property assertions are not just self-referential.
+    ///
+    /// `QuarantineStatus` is `#[non_exhaustive]`; if a future variant
+    /// is added, this match becomes inexhaustive at compile time and
+    /// forces an explicit decision on its severity. That's the right
+    /// failure mode for property tests — silent default-handling of a
+    /// new variant would let the cascade rule drift unnoticed.
+    #[allow(
+        unreachable_patterns,
+        reason = "wildcard covers any future non_exhaustive variant — \
+                  intentional safety net rather than an unreachable arm"
+    )]
+    const fn severity_rank(status: QuarantineStatus) -> u8 {
+        match status {
+            QuarantineStatus::NotApplicable | QuarantineStatus::Active => 0,
+            QuarantineStatus::SoftFlaggedByWithdrawal { .. } => 1,
+            QuarantineStatus::SoftFlaggedPreCompromise { .. } => 2,
+            QuarantineStatus::HardSuspended { .. } => 3,
+            _ => u8::MAX, // unknown future variant → most-conservative rank
+        }
+    }
+
+    proptest! {
+        /// Property: compute_quarantine_state is deterministic — same
+        /// input always yields the same output. Guards against
+        /// HashMap-iteration-order leakage or any other source of
+        /// nondeterminism in the classifier.
+        #[test]
+        fn prop_classifier_is_deterministic(
+            attest_timestamp in 0u64..1_000_000,
+            revoked_as_of in 0u64..1_000_000,
+        ) {
+            let mut rng = OsRng;
+            let alice = SigningKey::generate(&mut rng).verifying_key();
+            let bob = SigningKey::generate(&mut rng).verifying_key();
+            let charlie = SigningKey::generate(&mut rng).verifying_key();
+            let attest = TrustGraphOp::new_attest(bob, charlie, attest_timestamp, vec![], vec![]);
+            let revoke = TrustGraphOp::new_compromise_revoke(
+                alice, bob, attest_timestamp.saturating_add(1000), vec![], vec![], revoked_as_of,
+            );
+            let a = compute_quarantine_state(&[&attest, &revoke]);
+            let b = compute_quarantine_state(&[&attest, &revoke]);
+            prop_assert_eq!(a, b);
+        }
+
+        /// Property: CompromiseRevoke severity is monotone in
+        /// attest_timestamp. As the attestation moves from "well before
+        /// revoked_as_of" to "well after revoked_as_of", the cascade
+        /// severity is non-decreasing.
+        #[test]
+        fn prop_compromise_severity_monotone_in_time(
+            revoked_as_of in 100u64..10_000,
+            delta in 1u64..1_000,
+        ) {
+            let mut rng = OsRng;
+            let alice = SigningKey::generate(&mut rng).verifying_key();
+            let bob = SigningKey::generate(&mut rng).verifying_key();
+            let charlie = SigningKey::generate(&mut rng).verifying_key();
+            let revoke = TrustGraphOp::new_compromise_revoke(
+                alice, bob, revoked_as_of.saturating_add(50_000), vec![], vec![], revoked_as_of,
+            );
+
+            let pre_t = revoked_as_of.saturating_sub(delta);
+            let post_t = revoked_as_of.saturating_add(delta);
+            let attest_pre = TrustGraphOp::new_attest(bob, charlie, pre_t, vec![], vec![]);
+            let attest_post = TrustGraphOp::new_attest(bob, charlie, post_t, vec![], vec![]);
+
+            let pre_status = compute_quarantine_state(&[&attest_pre, &revoke])[0];
+            let post_status = compute_quarantine_state(&[&attest_post, &revoke])[0];
+
+            prop_assert!(
+                severity_rank(post_status) >= severity_rank(pre_status),
+                "post-revoke severity should be >= pre-revoke severity",
+            );
+            let post_is_hard = matches!(post_status, QuarantineStatus::HardSuspended { .. });
+            let pre_is_soft = matches!(pre_status, QuarantineStatus::SoftFlaggedPreCompromise { .. });
+            prop_assert!(post_is_hard);
+            prop_assert!(pre_is_soft);
+        }
+
+        /// Property: an attestation whose issuer was NOT revoked is
+        /// always Active, regardless of timestamp. Cross-cutting check
+        /// that the cascade only triggers for revoked subjects.
+        #[test]
+        fn prop_unrevoked_issuer_is_always_active(
+            attest_timestamp in 0u64..u64::from(u32::MAX),
+        ) {
+            let mut rng = OsRng;
+            let alice = SigningKey::generate(&mut rng).verifying_key();
+            let charlie = SigningKey::generate(&mut rng).verifying_key();
+            let dave = SigningKey::generate(&mut rng).verifying_key();
+            let unrelated_subject = SigningKey::generate(&mut rng).verifying_key();
+            // Revoke is about `unrelated_subject`, not Alice — so
+            // Alice→Charlie attestation should stay Active.
+            let attest = TrustGraphOp::new_attest(alice, charlie, attest_timestamp, vec![], vec![]);
+            let unrelated_revoke = TrustGraphOp::new_compromise_revoke(
+                dave, unrelated_subject, 999_999, vec![], vec![], 500_000,
+            );
+            let statuses = compute_quarantine_state(&[&attest, &unrelated_revoke]);
+            prop_assert_eq!(statuses[0], QuarantineStatus::Active);
+        }
+
+        /// Property: revocation ops themselves are NEVER classified
+        /// as Active/Soft/Hard — they always return NotApplicable.
+        #[test]
+        fn prop_revocations_are_not_applicable(
+            timestamp in 0u64..u64::from(u32::MAX),
+            revoked_as_of in 0u64..u64::from(u32::MAX),
+        ) {
+            let mut rng = OsRng;
+            let alice = SigningKey::generate(&mut rng).verifying_key();
+            let bob = SigningKey::generate(&mut rng).verifying_key();
+            let cr = TrustGraphOp::new_compromise_revoke(
+                alice, bob, timestamp, vec![], vec![], revoked_as_of,
+            );
+            let wr = TrustGraphOp::new_withdraw_revoke(alice, bob, timestamp, vec![], vec![]);
+            let statuses = compute_quarantine_state(&[&cr, &wr]);
+            prop_assert_eq!(statuses[0], QuarantineStatus::NotApplicable);
+            prop_assert_eq!(statuses[1], QuarantineStatus::NotApplicable);
+        }
+    }
+}

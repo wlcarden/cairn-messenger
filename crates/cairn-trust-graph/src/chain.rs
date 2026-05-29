@@ -143,7 +143,7 @@ mod tests {
 
     /// Build a complete (operational identity, device, capability
     /// token) bundle authorizing the device for the requested scope.
-    fn make_token_bundle(scope: &[&str]) -> (SigningKey, SigningKey, Vec<u8>) {
+    pub(super) fn make_token_bundle(scope: &[&str]) -> (SigningKey, SigningKey, Vec<u8>) {
         let mut rng = OsRng;
         let op_identity_sk = SigningKey::generate(&mut rng);
         let device_sk = SigningKey::generate(&mut rng);
@@ -163,7 +163,7 @@ mod tests {
     /// Helper: sign a genesis Attest op + N follow-up Attest ops, each
     /// chained via SHA-256(prior signature). Timestamps strictly
     /// increasing.
-    fn build_well_formed_chain(
+    pub(super) fn build_well_formed_chain(
         length: usize,
         cert_hash: &[u8],
     ) -> (
@@ -406,5 +406,68 @@ mod tests {
         // First op is genesis; last op has the final prior_hash.
         assert!(verified[0].prior_hash.is_empty());
         assert!(!verified[15].prior_hash.is_empty());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::indexing_slicing)]
+mod proptests {
+    use super::tests::{build_well_formed_chain, make_token_bundle};
+    use super::*;
+    use cairn_identity::capabilities;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Property: any well-formed chain of length in [1, 8] verifies
+        /// cleanly. The build_well_formed_chain helper produces a chain
+        /// that satisfies all four invariants (genesis empty
+        /// prior_hash, SHA-256 link, single pair, monotone timestamps).
+        #[test]
+        fn prop_well_formed_chain_verifies_for_any_length(length in 1usize..=8) {
+            let (op_identity_sk, _device_sk, _peer, token_bytes, chain) =
+                build_well_formed_chain(length, &[]);
+            let result = verify_chain_links(
+                &chain, &token_bytes, &op_identity_sk.verifying_key()
+            );
+            prop_assert!(result.is_ok(), "well-formed chain of length {length} should verify");
+            let verified = result.unwrap();
+            prop_assert_eq!(verified.len(), length);
+        }
+
+        /// Property: verifying the same chain twice yields identical
+        /// results. Determinism guard for the verifier path.
+        #[test]
+        fn prop_verification_is_deterministic(length in 1usize..=4) {
+            let (op_identity_sk, _device_sk, _peer, token_bytes, chain) =
+                build_well_formed_chain(length, &[]);
+            let a = verify_chain_links(&chain, &token_bytes, &op_identity_sk.verifying_key());
+            let b = verify_chain_links(&chain, &token_bytes, &op_identity_sk.verifying_key());
+            prop_assert_eq!(a.is_ok(), b.is_ok());
+        }
+
+        /// Property: a chain with the wrong expected operational
+        /// identity always rejects. The mismatch is detected at the
+        /// first per-op verify_chain call, so the chain-walk surfaces
+        /// the same error path regardless of chain length.
+        #[test]
+        fn prop_wrong_expected_issuer_always_rejected(length in 1usize..=4) {
+            let mut rng = rand_core::OsRng;
+            let (_op_identity_sk, _device_sk, _peer, token_bytes, chain) =
+                build_well_formed_chain(length, &[]);
+            let bogus_issuer = cairn_crypto::ed25519::SigningKey::generate(&mut rng).verifying_key();
+            let result = verify_chain_links(&chain, &token_bytes, &bogus_issuer);
+            prop_assert!(result.is_err());
+        }
+
+        /// Property: empty chain always rejects with ChainEmpty.
+        /// Length 0 has no genesis to anchor structural checks against.
+        #[test]
+        fn prop_empty_chain_rejected(_dummy in 0u8..1) {
+            let (op_identity_sk, _device_sk, token_bytes) =
+                make_token_bundle(&[capabilities::TRUST_GRAPH_ATTEST]);
+            let result = verify_chain_links(&[], &token_bytes, &op_identity_sk.verifying_key());
+            let is_empty_error = matches!(result, Err(TrustGraphError::ChainEmpty));
+            prop_assert!(is_empty_error);
+        }
     }
 }
