@@ -45,7 +45,7 @@ A new "Sudden-unavailability contingency" subsection is added to 9.4, distinct f
 
 ### Section 8.4 board composition addition
 
-When the foundation is incorporated (per 8.4), the board takes over the partner advisory authority role (or formally appoints it). The board composition criteria (per F33 minor finding) gain a note that one role of the board post-incorporation is to hold the advisory authority that v1 partner arrangement establishes.
+If the [D0016](D0016-foundation-incorporation-trigger.md) foundation-incorporation trigger activates and the project incorporates per Section 8.4, the board takes over the partner advisory authority role (or formally appoints it). The board composition criteria gain a note that one role of the board after incorporation is to hold the advisory authority that the partner arrangement establishes. **If the D0016 trigger does not activate, the partner advisory authority remains the permanent governance scaffold** rather than a transitional state — the project commits to renewing the partner arrangement per its multi-year cycle indefinitely; the monthly dead-man's-switch check-in operates indefinitely; the pre-staged successor documentation remains the project's permanent successor-recoverability commitment. Q14 partner-organization selection criteria emphasize permanent-operational-fit (multi-year reliability; institutional stability; willingness to renew the arrangement over indefinite horizons) under the D0016 deferral framing.
 
 ### Section 3.4 trust roots
 

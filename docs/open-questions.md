@@ -214,47 +214,47 @@ These checks gate the transition from working name to committed name, not from p
 
 ## Q14. Partner advisory authority for sudden-developer-unavailability contingency
 
-**Status:** Open. Mechanism committed via [D0009](decisions/D0009-sudden-unavailability.md); specific partner identity deferred.
+**Status:** Open. Mechanism committed via [D0009](decisions/D0009-sudden-unavailability.md); specific partner identity deferred. **Elevated in importance under [D0016](decisions/D0016-foundation-incorporation-trigger.md) deferral:** the partner advisory authority becomes the permanent governance scaffold rather than a transitional state.
 
-**Context.** A named partner organization holds pre-arranged authority to publish a project status advisory if the developer's dead-man's-switch check-in misses by 60 days. Selection criteria: organizational stability over years; institutional independence from the developer; operational capacity for short-notice public advisory; jurisdictional placement that does not concentrate advisory authority in the developer's own legal-process exposure.
+**Context.** A named partner organization holds pre-arranged authority to publish a project status advisory if the developer's dead-man's-switch check-in misses by 60 days. Under the D0016 deferral framing, this arrangement is the project's permanent governance scaffold unless the foundation-incorporation trigger activates at v1.5 broader-release planning. Selection criteria emphasize permanent-operational-fit: organizational stability over multi-year horizons; institutional independence from the developer; operational capacity for short-notice public advisory; jurisdictional placement that does not concentrate advisory authority in the developer's own legal-process exposure; willingness to renew the arrangement over indefinite horizons (rather than treating the role as a finite-window transition).
 
-**What it blocks.** Section 3.4's named trust placement for the partner advisory authority cannot be concrete until selection happens. The pre-staged advisory script cannot be partner-rehearsed.
+**What it blocks.** Section 3.4's named trust placement for the partner advisory authority cannot be concrete until selection happens. The pre-staged advisory script cannot be partner-rehearsed. The D0016 deferral's "permanent governance scaffold" framing depends on the partner-arrangement renewal being viable indefinitely.
 
-**Next step.** Q5 outreach. Candidate organizations to evaluate: Software Freedom Conservancy, Open Tech Fund (as notification recipient and channel rather than as advisory holder per Section 9.4 successor list correction), Front Line Defenders, Tactical Tech. The role is meaningful and requires explicit partner agreement; the conversation belongs in initial partnership outreach rather than as a downstream task.
-
----
-
-## Q15. Fiscal sponsor for pre-incorporation grant intake
-
-**Status:** Open. Mechanism committed via [D0010](decisions/D0010-foundation-jurisdiction.md); specific sponsor deferred.
-
-**Context.** The 18-24 month interval between brief completion and foundation incorporation requires a fiscal sponsor for grant intake (OTF and similar funders cannot grant directly to a natural person under most program structures). Candidate fiscal sponsors:
-
-- Software Freedom Conservancy (established 501(c)(3); maintainer-autonomy preserving)
-- Open Collective Foundation / Open Source Collective (lower overhead; smaller initial grants)
-- Code for Science & Society (mission-aligned for civil-society security tools)
-- NumFOCUS (security and scientific computing focus)
-- NLnet Foundation (Netherlands-based; serves as both grantmaker and de facto sponsor for European arrangements)
-
-**What it blocks.** Grant intake from any funder during the pre-incorporation window. The fiscal-sponsor question is a precondition for OTF or backup-foundation grant applications.
-
-**Next step.** Initial conversations with 2-3 candidate fiscal sponsors during Q5 outreach phase. Selection criteria: alignment with project mission, overhead structure, prior experience with the funders the project intends to apply to, jurisdictional considerations matching the eventual foundation jurisdiction (per D0010 placeholder).
+**Next step.** Q5 outreach. Candidate organizations to evaluate: Software Freedom Conservancy, Open Tech Fund (as notification recipient and channel rather than as advisory holder per Section 9.4 successor list correction), Front Line Defenders, Tactical Tech. The role is meaningful and requires explicit partner agreement; under the D0016 deferral the conversation must specifically establish the partner's willingness to operate the role indefinitely with multi-year renewal cycles. The conversation belongs in initial partnership outreach rather than as a downstream task.
 
 ---
 
-## Q16. Safe Harbor template selection (post-incorporation)
+## Q15. Fiscal sponsor for grant intake (permanent under [D0016](decisions/D0016-foundation-incorporation-trigger.md) deferral)
 
-**Status:** Open. Mechanism committed via [D0012](decisions/D0012-researcher-safe-harbor.md); template selection deferred to foundation incorporation.
+**Status:** Open. Mechanism committed via [D0010](decisions/D0010-foundation-jurisdiction.md); specific sponsor deferred. **Elevated in importance under D0016 deferral:** the fiscal-sponsor arrangement is the permanent grant-receipt structure for the duration of the deferral, which may be permanent rather than transitional.
 
-**Context.** At foundation incorporation (~18-24 months post-v1), the project formalizes researcher protection through a Safe Harbor commitment based on a standard template. Candidate templates:
+**Context.** Grant intake from any funder requires a fiscal sponsor or routing through a partner organization, because grants to natural persons are non-standard at most program structures. Under D0016, the fiscal-sponsor selection is a permanent operational decision rather than transitional — fees, sustainability, and operational fit matter on multi-year horizons. NLnet's grantee-sponsorship model avoids the 5-15% routing fee that other fiscal sponsors charge, making NLnet the financially preferable route where mission fit allows. Candidate fiscal sponsors:
+
+- Software Freedom Conservancy (established 501(c)(3); maintainer-autonomy preserving; standard fee 10-15%)
+- Open Collective Foundation / Open Source Collective (lower overhead; smaller initial grants; standard fee 5-10%)
+- Code for Science & Society (mission-aligned for civil-society security tools; standard fee 10-15%)
+- NumFOCUS (security and scientific computing focus; standard fee 10-15%)
+- NLnet Foundation (Netherlands-based; sponsors its own grantees without the routing fee; preferred where NGI Zero / NGI Trust mission fit applies)
+
+**What it blocks.** Grant intake from any funder. The fiscal-sponsor question is a precondition for OTF or backup-foundation grant applications. Under the D0016 deferral, the fiscal-sponsor selection has long-term consequences (cumulative routing fees at sustained grant-intake scale; operational coordination overhead) the selection criteria must weight.
+
+**Next step.** Initial conversations with 2-3 candidate fiscal sponsors during Q5 outreach phase. Selection criteria emphasize permanent-operational-fit: alignment with project mission; fee structure sustainability at multi-year scale; prior experience with the funders the project intends to apply to; jurisdictional fit for the project's operating posture; willingness to maintain the arrangement indefinitely (rather than as a transition to incorporation). NLnet-routed funding should be pursued first where mission fit applies to minimize cumulative fee overhead.
+
+---
+
+## Q16. Safe Harbor template selection (deferred under [D0016](decisions/D0016-foundation-incorporation-trigger.md) deferral)
+
+**Status:** Deferred indefinitely under D0016. Mechanism committed via [D0012](decisions/D0012-researcher-safe-harbor.md); template selection becomes operationally relevant only if the D0016 trigger activates and the project incorporates.
+
+**Context.** _If_ the [D0016](decisions/D0016-foundation-incorporation-trigger.md) trigger activates at v1.5 broader-release planning and the project incorporates per [D0010](decisions/D0010-foundation-jurisdiction.md), the project formalizes researcher protection through a Safe Harbor commitment based on a standard template. Candidate templates:
 
 - **disclose.io** — industry-standard Safe Harbor template; widely adopted across security-tools projects; reviewable language for researchers.
 - **Bugcrowd "We Will Not Sue" template** — established in commercial bug-bounty practice.
 - **EFF Coders' Rights Project model language** — aligned with civil-society audience.
 
-**What it blocks.** Formal researcher legal protection. v1 pilot phase operates on stated intent (per D0012); formalization lands at incorporation.
+**What it blocks.** Formal researcher legal protection. Under D0016 deferral, the project operates on stated-intent Safe Harbor (per D0012) indefinitely; formalization lands only if the trigger activates.
 
-**Next step.** Template selection during foundation governance setup. Coordination with foundation legal counsel (per Q15 fiscal-sponsor and D0010 jurisdiction work). Template adaptation to the chosen foundation jurisdiction's legal framework.
+**Next step.** Q16 becomes operationally relevant only if D0016 trigger activates. Until then, no template-selection work is required. If trigger activates: template selection during foundation governance setup; coordination with foundation legal counsel (per Q15 fiscal-sponsor and D0010 jurisdiction work); template adaptation to the chosen foundation jurisdiction's legal framework. If trigger does not activate, Q16 remains deferred indefinitely along with the trigger framework.
 
 ---
 

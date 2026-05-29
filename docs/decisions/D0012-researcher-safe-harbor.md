@@ -18,27 +18,31 @@ Security researchers evaluating whether to disclose against this product face th
 
 ## Decision
 
-**Downgrade the researcher-protection commitment to stated intent until foundation incorporation; commit to formalization through a Safe Harbor template (disclose.io or equivalent) at incorporation.**
+**Downgrade the researcher-protection commitment to stated intent indefinitely under the [D0016](D0016-foundation-incorporation-trigger.md) deferral; commit to formalization through a Safe Harbor template (disclose.io or equivalent) _if_ the trigger activates and the project incorporates.**
 
-### v1 pilot-phase posture
+### v1 pilot-phase and v1.5+ posture under the D0016 deferral
 
 The brief commits in 8.5 to the following:
 
 - A published security disclosure policy with PGP-encrypted contact, 90-day default disclosure timeline, public acknowledgment of good-faith researchers.
 - The developer's _stated intent_ not to pursue legal action against researchers disclosing in good faith.
-- Explicit acknowledgment that until foundation incorporation (per [D0010](D0010-foundation-jurisdiction.md) and Section 8.4), this commitment is a published preference rather than a legal protection. The developer is a natural person and cannot bind themselves or successors in a legally enforceable way.
+- Explicit acknowledgment that under the D0016 deferral (which may be permanent if the trigger does not activate at v1.5 broader-release planning per [D0016](D0016-foundation-incorporation-trigger.md) and [D0010](D0010-foundation-jurisdiction.md) / Section 8.4), this commitment is a published preference rather than a legal protection. The developer is a natural person and cannot bind themselves or successors in a legally enforceable way. The published-preference posture may persist indefinitely.
 
-The acknowledgment is named in the brief so researchers evaluating disclosure can make an informed decision about what protections they actually have at the v1 phase.
+The acknowledgment is named in the brief so researchers evaluating disclosure can make an informed decision about what protections they actually have under the deferral framing.
 
-### Post-incorporation formalization
+### Conditional formalization (if D0016 trigger activates)
 
-When the foundation is incorporated (~18-24 months post-v1, per D0010 and Section 8.4), the project formalizes researcher protection through a published Safe Harbor commitment based on a standard template. Candidate templates to evaluate:
+_If_ the [D0016](D0016-foundation-incorporation-trigger.md) trigger activates at v1.5 broader-release planning and the project incorporates per D0010 and Section 8.4, the project formalizes researcher protection through a published Safe Harbor commitment based on a standard template. Candidate templates to evaluate at that point:
 
 - **disclose.io.** Industry-standard Safe Harbor template; widely adopted across security-tools projects; reviewable language for researchers.
 - **Bugcrowd "We Will Not Sue" template.** Similar legal protections; established in commercial bug-bounty practice.
 - **EFF Coders' Rights Project model language.** Particularly aligned with the civil-society audience and partner organizations.
 
-Template selection is named as Q16 in [open-questions.md](../open-questions.md), to be resolved during foundation incorporation. The Safe Harbor commitment is one of the items the foundation board adopts as part of its initial governance package.
+Template selection is named as Q16 in [open-questions.md](../open-questions.md), to be resolved if and when the D0016 trigger activates. The Safe Harbor commitment would be one of the items the foundation board adopts as part of its initial governance package; if the trigger does not activate, Q16 remains deferred indefinitely and Safe Harbor remains at published-preference posture.
+
+### Outcome if D0016 trigger does not activate
+
+If the D0016 trigger does not activate at v1.5 broader-release planning (the expected outcome per D0016 under several plausible operational trajectories), the published-preference Safe Harbor posture persists indefinitely. The brief acknowledges this honestly in §8.5 and §10.7 rather than framing the deferral as transitional. Researchers evaluating disclosure to Cairn make their decision against the published-preference posture, not against a formal Safe Harbor that may never materialize.
 
 ## Alternatives considered
 

@@ -15,9 +15,11 @@ The depth gap is visible to any partner organization's legal advisor on first re
 
 ## Decision
 
-**Restructure Section 8.4 as a placeholder pending legal consultation, with three substantive additions:** (a) named fiscal-sponsor candidates for the pre-incorporation grant-intake window; (b) factual corrections to the Signal Foundation and Briar references; (c) explicit acknowledgment of the diligence considerations the current text omits, named as items to be addressed during legal consultation.
+**Restructure Section 8.4 as a placeholder pending legal consultation, with three substantive additions:** (a) named fiscal-sponsor candidates for grant-intake under the deferral window (which may be permanent per D0016); (b) factual corrections to the Signal Foundation and Briar references; (c) explicit acknowledgment of the diligence considerations the current text omits, named as items to be addressed during legal consultation if the [D0016](D0016-foundation-incorporation-trigger.md) trigger activates.
 
-The brief commits to engaging specialized non-profit counsel before incorporation; the jurisdictional analysis the brief currently contains is preserved as the project's working understanding pending that consultation, not as a settled evaluation.
+**Update (per [D0016](D0016-foundation-incorporation-trigger.md)):** the "before incorporation" framing in this decision is superseded by the D0016 deferral. Foundation incorporation is deferred from v1 / Phase C scope with a v1.5 broader-release evaluation trigger; legal consultation per this decision is required _if_ the trigger activates. Under the D0016 deferral, the fiscal-sponsor arrangement is the permanent grant-receipt structure for the duration of the deferral, which may be permanent if the trigger does not activate. The jurisdictional analysis below remains the substrate the project would act on if incorporation proceeds; the "approximately 18-24 months post-v1" timeline references that appeared in earlier drafts of this decision are superseded by the trigger-based framing.
+
+The brief commits to engaging specialized non-profit counsel before incorporation if D0016 trigger activates; the jurisdictional analysis this decision contains is preserved as the project's working understanding pending that consultation, not as a settled evaluation.
 
 ### Fiscal-sponsor stage (pre-incorporation)
 
