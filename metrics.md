@@ -208,6 +208,34 @@ this baseline.
 
 - [ ] **First crates.io publication (when ready)**
 
+### Application surfaces (beyond Tier 1 MDC)
+
+These are "above" the Tier 1 MDC line — they compose the foundation
+crates into runnable surfaces that prove the MDC pathway thesis. Not
+originally in the Tier 1 MDC ship-list, but landed in the same
+implementation session because they demonstrate end-to-end
+functionality with the existing primitives.
+
+- [x] **`cairn-cli` minimum-demoable-capability binary** — 2026-05-29
+  - Eight subcommands cover the full v1 protocol shape:
+    - `gen-key` / `pubkey` — Ed25519 keypair management
+    - `issue-token` / `verify-token` — capability token issuance +
+      verification (D0006 §9 hop #2)
+    - `sign-message` / `verify-message` — device-key signs payload
+      under a capability token; verifier enforces order (token first,
+      then message under token's subject pubkey, optional scope
+      check)
+    - `split-seed` / `reconstruct-seed` — Shamir 3-of-5 demo with
+      BLAKE3 commitment integrity
+  - End-to-end demos validate the happy path plus negative paths
+    (wrong AAD → signature verify fail; capability not in scope →
+    scope error; wrong issuer → IssuerMismatch; insufficient shares /
+    tampered share → uniform CommitmentMismatch per D0018 §3.4)
+  - Single `cairn` binary (~5 MB release build) demonstrates the
+    cryptographic foundation, recoverable identity, capability-token
+    chain with scope enforcement, and constant-time signing — all
+    runnable today against trusted-runner partner conversations
+
 ## Elapsed-time tracking
 
 Tracking format: `YYYY-MM-DD; surface; hours invested; notes`.
