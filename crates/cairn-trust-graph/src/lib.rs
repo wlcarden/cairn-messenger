@@ -64,9 +64,15 @@ pub mod chain;
 pub mod error;
 pub mod op;
 pub mod signed;
+pub mod store;
 
 pub use cascade::{QuarantineStatus, compute_quarantine_state};
 pub use chain::verify_chain_links;
 pub use error::TrustGraphError;
 pub use op::{OpType, TrustGraphOp};
 pub use signed::{DOMAIN_TAG, PRIOR_HASH_LEN, SignedTrustGraphOp};
+pub use store::{
+    RECORD_ID_LEN as STORE_RECORD_ID_LEN, StoreError, TRUST_GRAPH_SCHEMA_VERSION, delete_op,
+    initialize_schema, load_all_ops_chronological, load_chain_for_pair, load_signed_op,
+    record_id_for, store_signed_op,
+};

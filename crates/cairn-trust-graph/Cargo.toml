@@ -19,6 +19,8 @@ workspace = true
 cairn-crypto = { path = "../cairn-crypto" }
 cairn-envelope = { path = "../cairn-envelope" }
 cairn-identity = { path = "../cairn-identity" }
+# === Persistent storage substrate per D0022 ===
+cairn-storage = { path = "../cairn-storage" }
 
 # === CBOR (D0018 §2.1) — used for decoding op payload bytes ===
 ciborium = { workspace = true }

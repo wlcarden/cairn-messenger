@@ -346,6 +346,7 @@ dependencies = [
  "cairn-crypto",
  "cairn-envelope",
  "cairn-identity",
+ "cairn-storage",
  "ciborium",
  "hex-literal",
  "proptest",
