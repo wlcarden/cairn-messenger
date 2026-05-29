@@ -17,14 +17,19 @@ The timing question: pilot users (10-15 users at the threat tier Section 3 descr
 
 ### Pre-pilot cryptographic-primitives audit
 
-Before pilot deployment, the project commissions a limited-scope audit covering:
+Before pilot deployment, the project commissions a limited-scope audit covering two surfaces (narrowed from the original four-component scope per architecture-simplification review F5):
 
-- The capability-token COSE_Sign1 envelope construction and verification (per [D0006](D0006-cryptographic-envelope.md)).
-- The Shamir Secret Sharing reconstruction code, including memory-hygiene properties (per [D0003](D0003-implementation-language.md)).
-- The trust-graph operation envelope's nine-field schema and signature chain, including the issuer-cert-hash binding (per D0006).
-- The recovery-flow cryptographic operations (peer-challenge verification, master reconstruction, re-split, zeroize).
+- The capability-token COSE_Sign1 envelope construction and verification (per [D0006](D0006-cryptographic-envelope.md)) — including deterministic CBOR encoding, the nine-field signed-operation schema, prior-hash chain implementation, and issuer-cert-hash binding semantics. The trust-graph operation envelope and the capability-token envelope share construction; the audit covers both.
+- The recovery-flow cryptographic operations (peer-challenge verification per [D0005](D0005-peer-verification.md); master reconstruction from Shamir shares; re-split; zeroize semantics on memory boundaries). Recovery-flow correctness is where the original construction is concentrated.
 
-**Budget: $15-30K** at the lower auditor-subsidy tier, or $30-50K at the unsubsidized small-engagement tier. Realistic 1-2 person-weeks at Cure53 mission rates or Open Tech Fund audit-grant rates.
+**Removed from pre-pilot scope per F5 (relegated to Rust-core property checks and §5.5 source review):**
+
+- _Shamir SSS reconstruction primitive itself_ — the GF(256) byte-wise threshold scheme is a well-understood primitive with extensively-audited reference implementations (vsss-rs candidate per Q8). Cairn's contribution is the memory-hygiene wrapper around Shamir reconstruction (`zeroize`, `secrecy`, `subtle` crate usage on the reconstructed seed), which is a Rust-core property auditable through `cargo test` + property-based testing rather than external audit-firm scope. The recovery-flow audit above covers the integration of Shamir into the recovery flow; the primitive itself is not separately audited at pre-pilot.
+- _Trust-graph operation envelope nine-field schema (as separate scope)_ — the schema is a closed-form data layout the §5.5 source-review reviewers see directly when reading release commits. The audit's coverage of COSE_Sign1 envelope construction (above) covers the cryptographic content of the schema; the schema-as-such does not need separate cryptographic-audit treatment when the envelope construction is in scope.
+
+The narrowed scope reflects D0011's original contingency-clause framing ("If pre-pilot audit funding does not close, the project either reduces pre-pilot scope further — e.g., capability-token construction only") promoted to the v1 default per F5. The two surfaces retained are where Cairn does original construction no upstream audit covers; the two surfaces removed are well-understood primitives or source-visible data layouts whose correctness is verifiable through Rust-core property tests + source review.
+
+**Budget: $15-30K** at the lower auditor-subsidy tier, or $30-50K at the unsubsidized small-engagement tier. Realistic 1-2 person-weeks at Cure53 mission rates or Open Tech Fund audit-grant rates. The narrower scope means the same budget buys deeper attention on each retained surface, not lower overall cost — the audit retains its 1-2 person-week sizing with the time concentrated on COSE_Sign1 envelope and recovery-flow crypto.
 
 **Purpose:** Pilot users receive an implementation whose cryptographic core has been externally reviewed, even if the broader integration has not. The audit-after-pilot exposure that F20 identifies is bounded to the integration boundary rather than to the cryptographic primitives.
 
