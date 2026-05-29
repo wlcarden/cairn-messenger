@@ -35,6 +35,19 @@ const KEY_EXPIRY: i64 = 4;
 /// Canonical-CBOR map key for the signature-chain-to-master bytes.
 const KEY_CHAIN: i64 = 5;
 
+/// D0006 §8 domain-separation tag for capability tokens.
+///
+/// Bound into the `COSE_Sign1` `Sig_structure` via the `external_aad`
+/// field per RFC 9052 §4.4. A signature produced for a capability
+/// token cannot verify in a different domain (trust-graph operations,
+/// master attestations, application messages) even if the payload bits
+/// happen to overlap — the `Sig_structure` covers `external_aad`, so
+/// the AAD value is part of the signed input.
+///
+/// This is one of two tags explicitly enumerated in D0006 §8; the
+/// matching trust-graph-operation tag lives in `cairn-trust-graph`.
+pub const DOMAIN_TAG: &[u8] = b"cairn-v1-capability-token";
+
 /// A capability token authorizing a device key to perform a set of
 /// operations on behalf of an operational identity per D0006 §9.
 ///
@@ -280,6 +293,7 @@ impl CapabilityToken {
         let payload = self.to_canonical_cbor()?;
         let envelope = Sign1Builder::new()
             .with_payload(payload)
+            .with_external_aad(DOMAIN_TAG.to_vec())
             .finalize(signing_key)
             .map_err(IdentityError::from)?;
         Ok(SignedCapabilityToken {
@@ -341,7 +355,7 @@ impl SignedCapabilityToken {
         }
 
         envelope
-            .verify(expected_issuer, b"")
+            .verify(expected_issuer, DOMAIN_TAG)
             .map_err(|_| IdentityError::SignatureVerifyFailed)?;
 
         Ok(Self { envelope, token })
@@ -572,6 +586,48 @@ mod tests {
         let bytes = token.to_canonical_cbor().unwrap();
         let recovered = CapabilityToken::from_canonical_cbor(&bytes).unwrap();
         assert_eq!(recovered, token);
+    }
+
+    #[test]
+    fn signature_does_not_verify_under_wrong_domain_tag() {
+        // Sign with the capability-token domain tag (default in
+        // `CapabilityToken::sign`), then attempt verify with a
+        // different external_aad. The COSE_Sign1 `Sig_structure` binds
+        // external_aad per RFC 9052 §4.4, so a signature produced for
+        // one domain cannot verify in another even if the embedded
+        // issuer and payload bytes are identical. This is the D0006 §8
+        // cross-protocol substitution defense.
+        let (issuer_sk, _device_sk, token) = make_token();
+        let signed = token.sign(&issuer_sk).unwrap();
+        let bytes = signed.encode(false).unwrap();
+
+        let envelope = CoseSign1::from_bytes(&bytes).unwrap();
+        let wrong_tag_result = envelope.verify(
+            &issuer_sk.verifying_key(),
+            b"cairn-v1-trust-graph-operation",
+        );
+        assert!(
+            wrong_tag_result.is_err(),
+            "signature must not verify under the trust-graph-operation tag"
+        );
+        let no_tag_result = envelope.verify(&issuer_sk.verifying_key(), b"");
+        assert!(
+            no_tag_result.is_err(),
+            "signature must not verify under the empty / no-tag AAD"
+        );
+
+        // And the correct tag verifies (proving the test setup is
+        // structurally sound rather than failing for unrelated reasons).
+        envelope
+            .verify(&issuer_sk.verifying_key(), DOMAIN_TAG)
+            .expect("verify must succeed under the capability-token tag");
+    }
+
+    #[test]
+    fn domain_tag_value_matches_d0006() {
+        // D0006 §8 specifies the canonical byte string. Pin to catch
+        // accidental edits.
+        assert_eq!(DOMAIN_TAG, b"cairn-v1-capability-token");
     }
 
     #[test]

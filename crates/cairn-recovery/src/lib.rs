@@ -51,5 +51,7 @@
 pub mod attestation;
 pub mod error;
 
-pub use attestation::{MasterAttestation, SignedMasterAttestation, reconstruct_and_attest};
+pub use attestation::{
+    DOMAIN_TAG, MasterAttestation, SignedMasterAttestation, reconstruct_and_attest,
+};
 pub use error::RecoveryError;

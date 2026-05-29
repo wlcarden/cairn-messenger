@@ -69,4 +69,4 @@ pub mod error;
 pub mod token;
 
 pub use error::IdentityError;
-pub use token::{CapabilityToken, SignedCapabilityToken};
+pub use token::{CapabilityToken, DOMAIN_TAG, SignedCapabilityToken};

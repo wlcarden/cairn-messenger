@@ -267,6 +267,30 @@ beyond the Tier 1 MDC line.
     deferred to higher-layer surface (will live in
     `cairn-trust-graph-state` or `cairn-recovery` once those land)
 
+- [x] **D0006 §8 `external_aad` domain separation applied across
+      cairn-identity + cairn-trust-graph + cairn-recovery** — 2026-05-29
+  - Domain-separation tags exported as `pub const DOMAIN_TAG: &[u8]`
+    from each crate root:
+    - `cairn-identity::DOMAIN_TAG = b"cairn-v1-capability-token"`
+      (D0006 §8 explicit enumeration)
+    - `cairn-trust-graph::DOMAIN_TAG = b"cairn-v1-trust-graph-operation"`
+      (D0006 §8 explicit enumeration)
+    - `cairn-recovery::DOMAIN_TAG = b"cairn-v1-master-attestation"`
+      (extends D0006 §8 by analogy — same cross-protocol substitution
+      defense applies to the master-attestation envelope, which is
+      signed by the master directly without a capability-token wrapper)
+  - Tags bound into the `COSE_Sign1` `Sig_structure` via `external_aad`
+    per RFC 9052 §4.4; both sign and verify paths use the matching tag
+  - 6 new tests (2 per crate): pin the tag byte value to catch
+    accidental edits; prove signatures produced for one domain do NOT
+    verify under any other domain tag or under the empty AAD, AND that
+    the correct tag verifies (structural soundness check)
+  - All three-hop end-to-end CLI demos still verify cleanly post-change
+    (sign and verify paths updated atomically; no on-the-wire migration
+    needed since this lands pre-v1 with no deployed envelopes)
+  - 165 tests passing across workspace (was 159; +6 cross-domain
+    substitution tests)
+
 ### Application surfaces (beyond Tier 1 MDC)
 
 These are "above" the Tier 1 MDC line — they compose the foundation
@@ -277,30 +301,24 @@ functionality with the existing primitives.
 
 - [x] **`cairn-cli` minimum-demoable-capability binary** — 2026-05-29
   - Twelve subcommands cover the full v1 protocol shape end-to-end
-    across all three hops of the D0006 §9 verification chain:
-    - `gen-key` / `pubkey` — Ed25519 keypair management
-    - `issue-token` / `verify-token` — capability token issuance +
-      verification (D0006 §9 hop #2)
-    - `sign-message` / `verify-message` — device-key signs payload
-      under a capability token; verifier enforces order (token first,
-      then message under token's subject pubkey, optional scope
-      check)
-    - `split-seed` / `reconstruct-seed` — Shamir 3-of-5 demo with
-      BLAKE3 commitment integrity
-    - `trust-op` (variant flag `--kind=attest | revoke-withdraw |
+    across all three hops of the D0006 §9 verification chain: - `gen-key` / `pubkey` — Ed25519 keypair management - `issue-token` / `verify-token` — capability token issuance +
+    verification (D0006 §9 hop #2) - `sign-message` / `verify-message` — device-key signs payload
+    under a capability token; verifier enforces order (token first,
+    then message under token's subject pubkey, optional scope
+    check) - `split-seed` / `reconstruct-seed` — Shamir 3-of-5 demo with
+    BLAKE3 commitment integrity - `trust-op` (variant flag `--kind=attest | revoke-withdraw |
 revoke-compromise | re-attest`) / `verify-trust-op` —
-      protocol-layer trust-graph operation signing + chain
-      verification (D0006 §9 hops #1 + #2 over `cairn-trust-graph`'s
-      `SignedTrustGraphOp` primitives; CLI enforces variant-required
-      argument presence before constructing the typestate-friendly
-      `TrustGraphOp` so the protocol layer's invariants are never
-      bypassed by CLI typos)
-    - `attest-operational-identity` / `verify-master-attestation` —
-      recovery flow demonstrating hop #3 (master attestation chain).
-      `attest-operational-identity` composes
-      `cairn-shamir::reconstruct` + `cairn-recovery::reconstruct_and_attest`
-      with the master seed held in `Zeroizing` for the call and wiped
-      on exit — seed bytes never touch disk via this command
+    protocol-layer trust-graph operation signing + chain
+    verification (D0006 §9 hops #1 + #2 over `cairn-trust-graph`'s
+    `SignedTrustGraphOp` primitives; CLI enforces variant-required
+    argument presence before constructing the typestate-friendly
+    `TrustGraphOp` so the protocol layer's invariants are never
+    bypassed by CLI typos) - `attest-operational-identity` / `verify-master-attestation` —
+    recovery flow demonstrating hop #3 (master attestation chain).
+    `attest-operational-identity` composes
+    `cairn-shamir::reconstruct` + `cairn-recovery::reconstruct_and_attest`
+    with the master seed held in `Zeroizing` for the call and wiped
+    on exit — seed bytes never touch disk via this command
   - End-to-end demos validate the happy path plus negative paths:
     - Hop #3: wrong expected-master-pubkey → MasterPubkeyMismatch
     - Hop #2b: trust-op for capability NOT in issued token scope →

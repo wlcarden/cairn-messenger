@@ -31,6 +31,22 @@ const KEY_OPERATIONAL_IDENTITY: i64 = 2;
 /// Canonical-CBOR map key for `timestamp`.
 const KEY_TIMESTAMP: i64 = 3;
 
+/// Domain-separation tag for master attestations.
+///
+/// D0006 §8 explicitly enumerates two domain tags (`cairn-v1-capability-token`
+/// and `cairn-v1-trust-graph-operation`) but the same cross-protocol
+/// substitution defense applies to every distinct signed-envelope type
+/// in the system. This tag extends D0006 §8 by analogy: master
+/// attestations are a third signed envelope (signed by the master
+/// directly, no capability token wrapping) and need their own domain
+/// tag for the same reason — without it, an adversary who obtained
+/// any Ed25519 signature from the master could attempt to reinterpret
+/// the signed bytes as a master attestation.
+///
+/// Bound into the `COSE_Sign1` `Sig_structure` via `external_aad` per
+/// RFC 9052 §4.4.
+pub const DOMAIN_TAG: &[u8] = b"cairn-v1-master-attestation";
+
 /// Master attestation of a new operational identity per D0005 +
 /// D0006 §6.
 ///
@@ -187,6 +203,7 @@ impl MasterAttestation {
         let payload = self.to_canonical_cbor()?;
         let envelope = Sign1Builder::new()
             .with_payload(payload)
+            .with_external_aad(DOMAIN_TAG.to_vec())
             .finalize(master_signing_key)
             .map_err(|_| RecoveryError::SignFailed)?;
         Ok(SignedMasterAttestation {
@@ -230,7 +247,7 @@ impl SignedMasterAttestation {
             return Err(RecoveryError::MasterPubkeyMismatch);
         }
         envelope
-            .verify(expected_master, b"")
+            .verify(expected_master, DOMAIN_TAG)
             .map_err(|_| RecoveryError::SignatureVerifyFailed)?;
         Ok(Self {
             envelope,
@@ -451,5 +468,53 @@ mod tests {
         let recovered =
             SignedMasterAttestation::from_bytes(&bytes, &master_sk.verifying_key()).unwrap();
         assert_eq!(recovered.attestation(), &att);
+    }
+
+    #[test]
+    fn domain_tag_value_is_pinned() {
+        // Pin the tag byte string to catch accidental edits. The
+        // value extends D0006 §8 by analogy; documented in the
+        // module-level docs for DOMAIN_TAG.
+        assert_eq!(DOMAIN_TAG, b"cairn-v1-master-attestation");
+    }
+
+    #[test]
+    fn signature_does_not_verify_under_wrong_domain_tag() {
+        // Sign a master attestation (binds the master-attestation tag),
+        // then attempt verify under both the capability-token and
+        // trust-graph-operation tags. Both must reject — cross-protocol
+        // substitution defense.
+        let mut rng = OsRng;
+        let master_sk = SigningKey::generate(&mut rng);
+        let new_op_identity = SigningKey::generate(&mut rng).verifying_key();
+        let att = MasterAttestation::new(master_sk.verifying_key(), new_op_identity, 1_700_000_000);
+        let signed = att.sign(&master_sk).unwrap();
+        let bytes = signed.encode(false).unwrap();
+        let envelope = CoseSign1::from_bytes(&bytes).unwrap();
+
+        let wrong_tag_capability =
+            envelope.verify(&master_sk.verifying_key(), b"cairn-v1-capability-token");
+        assert!(
+            wrong_tag_capability.is_err(),
+            "master-attestation signature must not verify under capability-token tag"
+        );
+        let wrong_tag_trust_graph = envelope.verify(
+            &master_sk.verifying_key(),
+            b"cairn-v1-trust-graph-operation",
+        );
+        assert!(
+            wrong_tag_trust_graph.is_err(),
+            "master-attestation signature must not verify under trust-graph-operation tag"
+        );
+        let no_tag = envelope.verify(&master_sk.verifying_key(), b"");
+        assert!(
+            no_tag.is_err(),
+            "master-attestation signature must not verify under empty AAD"
+        );
+
+        // Correct tag verifies — proves the test setup is sound.
+        envelope
+            .verify(&master_sk.verifying_key(), DOMAIN_TAG)
+            .expect("verify must succeed under the master-attestation tag");
     }
 }

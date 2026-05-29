@@ -25,6 +25,19 @@ use cairn_identity::SignedCapabilityToken;
 use crate::error::TrustGraphError;
 use crate::op::TrustGraphOp;
 
+/// D0006 §8 domain-separation tag for trust-graph operations.
+///
+/// Bound into the `COSE_Sign1` `Sig_structure` via the `external_aad`
+/// field per RFC 9052 §4.4. A signature produced for a trust-graph
+/// operation cannot verify in a different domain (capability tokens,
+/// master attestations, application messages) — the `Sig_structure`
+/// covers `external_aad`, so the AAD value is part of the signed
+/// input.
+///
+/// This is one of two tags explicitly enumerated in D0006 §8; the
+/// matching capability-token tag lives in `cairn-identity`.
+pub const DOMAIN_TAG: &[u8] = b"cairn-v1-trust-graph-operation";
+
 /// A `COSE_Sign1`-wrapped trust-graph operation envelope.
 ///
 /// Construct via [`SignedTrustGraphOp::sign`]; decode via
@@ -54,6 +67,7 @@ impl SignedTrustGraphOp {
         let payload = op.to_canonical_cbor()?;
         let envelope = Sign1Builder::new()
             .with_payload(payload)
+            .with_external_aad(DOMAIN_TAG.to_vec())
             .finalize(device_signing_key)
             .map_err(TrustGraphError::from)?;
         Ok(Self { envelope, op })
@@ -162,10 +176,13 @@ impl SignedTrustGraphOp {
         }
 
         // Hop #1: verify the operation signature against the token's
-        // subject (device pubkey).
+        // subject (device pubkey). The envelope is bound to the
+        // trust-graph-operation domain tag per D0006 §8 — a signature
+        // produced for a capability token or master attestation cannot
+        // verify here.
         let device_pubkey = token.subject;
         self.envelope
-            .verify(&device_pubkey, b"")
+            .verify(&device_pubkey, DOMAIN_TAG)
             .map_err(|_| TrustGraphError::SignatureVerifyFailed)?;
 
         Ok(&self.op)
@@ -527,5 +544,48 @@ mod tests {
             OpType::CompromiseRevoke.required_capability(),
             capabilities::TRUST_GRAPH_REVOKE_COMPROMISE
         );
+    }
+
+    #[test]
+    fn domain_tag_value_matches_d0006() {
+        assert_eq!(DOMAIN_TAG, b"cairn-v1-trust-graph-operation");
+    }
+
+    #[test]
+    fn signature_does_not_verify_under_wrong_domain_tag() {
+        // Sign a trust-graph op (binds the trust-graph-operation tag),
+        // then attempt verify with the capability-token tag. Must
+        // reject — D0006 §8 cross-protocol substitution defense.
+        let (op_identity_sk, device_sk, _token_bytes) =
+            make_token_bundle(&[capabilities::TRUST_GRAPH_ATTEST]);
+        let mut rng = OsRng;
+        let peer_pubkey = SigningKey::generate(&mut rng).verifying_key();
+        let op = TrustGraphOp::new_attest(
+            op_identity_sk.verifying_key(),
+            peer_pubkey,
+            1_700_000_000,
+            vec![],
+            vec![],
+        );
+        let signed = SignedTrustGraphOp::sign(op, &device_sk).unwrap();
+        let bytes = signed.encode(false).unwrap();
+        let envelope = CoseSign1::from_bytes(&bytes).unwrap();
+
+        let wrong_tag_result =
+            envelope.verify(&device_sk.verifying_key(), b"cairn-v1-capability-token");
+        assert!(
+            wrong_tag_result.is_err(),
+            "trust-graph-op signature must not verify under capability-token tag"
+        );
+        let no_tag_result = envelope.verify(&device_sk.verifying_key(), b"");
+        assert!(
+            no_tag_result.is_err(),
+            "trust-graph-op signature must not verify under empty AAD"
+        );
+
+        // Correct tag verifies — proves the test setup is structurally sound.
+        envelope
+            .verify(&device_sk.verifying_key(), DOMAIN_TAG)
+            .expect("verify must succeed under the trust-graph-operation tag");
     }
 }

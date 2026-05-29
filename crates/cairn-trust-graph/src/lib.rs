@@ -65,4 +65,4 @@ pub mod signed;
 
 pub use error::TrustGraphError;
 pub use op::{OpType, TrustGraphOp};
-pub use signed::SignedTrustGraphOp;
+pub use signed::{DOMAIN_TAG, SignedTrustGraphOp};
