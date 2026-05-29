@@ -124,6 +124,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cairn-identity"
+version = "0.1.0-dev"
+dependencies = [
+ "cairn-crypto",
+ "cairn-envelope",
+ "ciborium",
+ "hex-literal",
+ "proptest",
+ "rand_core",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
 name = "cairn-shamir"
 version = "0.1.0-dev"
 dependencies = [

@@ -147,7 +147,27 @@ this baseline.
   - 131 tests + 1 doctest passing across workspace.
 - [ ] **`cairn-shamir` constant-time CI gate via `dudect-bencher`**
 
-- [ ] **`cairn-identity` capability-token construction per D0006 §9**
+- [x] **`cairn-identity` capability-token construction per D0006 §9** —
+      2026-05-29
+  - `CapabilityToken { issuer, subject, scope, expiry, chain }`
+    struct with canonical-CBOR payload encoding using integer keys
+    1..=5 per COSE convention
+  - `sign(&SigningKey) -> SignedCapabilityToken` wraps payload in
+    COSE_Sign1 via `cairn-envelope::cose_sign1::Sign1Builder`
+  - `SignedCapabilityToken::from_bytes(bytes, &expected_issuer)`
+    performs all four checks in one path: COSE_Sign1 decode, payload
+    decode, embedded-issuer matches expected, signature verifies
+  - Forward-compat: unknown scope strings and unknown map keys
+    round-trip cleanly per D0006 §6.4
+  - 13 unit tests (round-trip variants: tagged/untagged/empty-scope/
+    forward-compat; failure modes: malformed/tampered/wrong-issuer/
+    wrong-signing-key/issuer-mismatch; determinism; CBOR round-trip;
+    unknown-keys forward-compat) + 2 property tests (random round-
+    trip + has_capability consistency)
+  - 5 const &str capability identifiers in `capabilities` module
+    (MESSAGING*SEND / TRUST_GRAPH_ATTEST / TRUST_GRAPH_REVOKE*
+    WITHDRAW / TRUST_GRAPH_REVOKE_COMPROMISE / RECOVERY_PARTICIPATE)
+  - 133 tests + 2 doctests passing across workspace
 
 - [ ] **First crates.io publication (when ready)**
 
