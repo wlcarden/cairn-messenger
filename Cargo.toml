@@ -71,10 +71,10 @@ rand_core = "=0.6.4"
 
 # === CBOR + COSE (D0018 §2.1-2.2) ===
 ciborium = "=0.2.2"
-coset = "=0.3.8"
+coset = "=0.4.2"
 
 # === Shamir Secret Sharing (D0018 §3.1) ===
-vsss-rs = { version = "=4.3.8", default-features = false, features = [
+vsss-rs = { version = "=5.4.0", default-features = false, features = [
     "std",
     "zeroize",
 ] }
