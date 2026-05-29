@@ -392,6 +392,35 @@ impl CoseSign1 {
     pub fn signature(&self) -> &[u8] {
         &self.signature
     }
+
+    /// Return the canonical-CBOR-encoded `Sig_structure` bytes per
+    /// RFC 9052 §4.4 for the given `external_aad`.
+    ///
+    /// The `Sig_structure` is the byte string the signature commits
+    /// to (its content under canonical CBOR encoding is exactly what
+    /// `verify` reconstructs and `finalize` signs). Callers need
+    /// these bytes for protocol-level hash-of-attestation
+    /// constructions per D0006 §7 (e.g., `issuer_cert_hash :=
+    /// SHA-256( deterministic_cbor_encode( Sig_structure ) )`).
+    ///
+    /// The `external_aad` argument must match the value bound at
+    /// sign time — `CoseSign1` does not store the AAD (it's external
+    /// to the wire format) so the caller supplies it. For Cairn's
+    /// protocol crates the AAD is the crate-level `DOMAIN_TAG`
+    /// constant per D0006 §8.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`EnvelopeError`] from the canonical encoder
+    /// (unreachable for envelopes constructed via [`Sign1Builder::finalize`]
+    /// or [`Self::from_bytes`]).
+    pub fn sig_structure_bytes(&self, external_aad: &[u8]) -> Result<Vec<u8>, EnvelopeError> {
+        build_sig_structure(
+            &self.protected_bytes,
+            external_aad,
+            self.payload.as_deref().unwrap_or(&[]),
+        )
+    }
 }
 
 /// Build the canonical CBOR `Sig_structure` bytes per RFC 9052 §4.4.

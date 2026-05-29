@@ -20,9 +20,14 @@ use cairn_envelope::canonical::Value;
 use cairn_envelope::cose_sign1::{CoseSign1, Sign1Builder};
 use cairn_shamir::{Commitment, SECRET_LEN, Share, reconstruct};
 use ciborium::Value as CiboriumValue;
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::error::RecoveryError;
+
+/// Length of the SHA-256 hash output bound to `issuer_cert_hash` per
+/// D0006 §7.
+pub const ISSUER_CERT_HASH_LEN: usize = 32;
 
 /// Canonical-CBOR map key for `master`.
 const KEY_MASTER: i64 = 1;
@@ -271,6 +276,39 @@ impl SignedMasterAttestation {
     pub fn encode(&self, tagged: bool) -> Result<Vec<u8>, RecoveryError> {
         self.envelope.encode(tagged).map_err(RecoveryError::from)
     }
+
+    /// Return the canonical D0006 §7 `issuer_cert_hash` for this
+    /// master attestation.
+    ///
+    /// Computes
+    /// `SHA-256( deterministic_cbor_encode( master_attestation.Sig_structure ) )`
+    /// where `Sig_structure` is bound with the [`DOMAIN_TAG`] external
+    /// AAD per D0006 §8 (master-attestation domain).
+    ///
+    /// The output is the byte string that a trust-graph or capability-
+    /// token op writes into its `issuer_cert_hash` field to commit to
+    /// the master attestation certifying the operational identity that
+    /// signed (or whose device signs under a token for) the op.
+    /// Hashing the `Sig_structure` (the bytes the master's signature
+    /// covers) is the canonical commitment per D0006 §7's rationale.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`RecoveryError::CanonicalEncode`] from the
+    /// `Sig_structure` encoder (unreachable for envelopes constructed
+    /// via [`MasterAttestation::sign`] or [`Self::from_bytes`]).
+    pub fn issuer_cert_hash(&self) -> Result<[u8; ISSUER_CERT_HASH_LEN], RecoveryError> {
+        let sig_structure_bytes = self
+            .envelope
+            .sig_structure_bytes(DOMAIN_TAG)
+            .map_err(RecoveryError::from)?;
+        let mut hasher = Sha256::new();
+        hasher.update(&sig_structure_bytes);
+        let out = hasher.finalize();
+        let mut arr = [0u8; ISSUER_CERT_HASH_LEN];
+        arr.copy_from_slice(&out);
+        Ok(arr)
+    }
 }
 
 /// Reconstruct the master from Shamir shares + commitment, sign a
@@ -476,6 +514,90 @@ mod tests {
         // value extends D0006 §8 by analogy; documented in the
         // module-level docs for DOMAIN_TAG.
         assert_eq!(DOMAIN_TAG, b"cairn-v1-master-attestation");
+    }
+
+    #[test]
+    fn issuer_cert_hash_is_sha256_of_sig_structure_per_d0006_section_7() {
+        // D0006 §7: issuer_cert_hash := SHA-256(deterministic_cbor_encode(
+        //   master_attestation.Sig_structure
+        // ))
+        // Independently reconstruct the Sig_structure bytes and SHA-256
+        // them; compare against the helper's output.
+        use cairn_envelope::canonical::Value;
+        use sha2::{Digest as _, Sha256};
+
+        let mut rng = OsRng;
+        let master_sk = SigningKey::generate(&mut rng);
+        let new_op_identity = SigningKey::generate(&mut rng).verifying_key();
+        let att = MasterAttestation::new(master_sk.verifying_key(), new_op_identity, 1_700_000_000);
+        let signed = att.sign(&master_sk).unwrap();
+
+        // Manual Sig_structure: ["Signature1", protected_bytes,
+        // external_aad, payload]
+        let envelope_bytes = signed.encode(false).unwrap();
+        let envelope = CoseSign1::from_bytes(&envelope_bytes).unwrap();
+        let manual_sig_structure = Value::Array(vec![
+            Value::Text("Signature1".to_string()),
+            Value::Bytes(envelope.protected_bytes().to_vec()),
+            Value::Bytes(DOMAIN_TAG.to_vec()),
+            Value::Bytes(envelope.payload().unwrap_or(&[]).to_vec()),
+        ]);
+        let manual_bytes = manual_sig_structure.encode().unwrap();
+        let manual_hash = Sha256::digest(&manual_bytes);
+
+        let helper_hash = signed.issuer_cert_hash().unwrap();
+        assert_eq!(helper_hash.as_slice(), manual_hash.as_slice());
+        assert_eq!(helper_hash.len(), ISSUER_CERT_HASH_LEN);
+    }
+
+    #[test]
+    fn issuer_cert_hash_pinned_test_vector_d0006_section_7() {
+        // D0006 §7 spec line: "A reference (master_attestation, expected
+        // issuer_cert_hash bytes) pair is added to the v1 implementation
+        // test suite." Use a deterministic seed pair so the hash output
+        // is stable across runs and platforms — any change to the
+        // canonical encoding, domain tag, payload schema, or hash
+        // function fails this test loudly.
+        use cairn_crypto::ed25519::SEED_LEN;
+        use zeroize::Zeroizing;
+
+        let master_seed = Zeroizing::new([0x42u8; SEED_LEN]);
+        let op_identity_seed = Zeroizing::new([0x37u8; SEED_LEN]);
+        let master_sk = SigningKey::from_seed(&master_seed);
+        let op_identity_sk = SigningKey::from_seed(&op_identity_seed);
+
+        let att = MasterAttestation::new(
+            master_sk.verifying_key(),
+            op_identity_sk.verifying_key(),
+            1_700_000_000,
+        );
+        let signed = att.sign(&master_sk).unwrap();
+        let hash = signed.issuer_cert_hash().unwrap();
+
+        // Pin the hash bytes. If any of the canonical CBOR encoding,
+        // DOMAIN_TAG value, payload schema (keys 1/2/3), or SHA-256
+        // implementation changes upstream, this test fails — the
+        // failure message prints both expected and actual so the
+        // implementer can decide whether the change is intentional.
+        let actual_hex = hex_encode(&hash);
+        let expected_hex = "e3ee2121f19366b59ede1d48cd9bc4f7ad6f8177ac348f2a992bf32d1aee04b9";
+        assert_eq!(
+            actual_hex, expected_hex,
+            "D0006 §7 reference test vector mismatch"
+        );
+    }
+
+    /// Hex-encode bytes for printable test-vector pinning.
+    fn hex_encode(bytes: &[u8]) -> String {
+        use core::fmt::Write as _;
+        // `saturating_mul` to satisfy `arithmetic_side_effects`; for
+        // any realistic hash output (≤ 64 bytes) the saturation case
+        // is never reached.
+        let mut s = String::with_capacity(bytes.len().saturating_mul(2));
+        for b in bytes {
+            write!(&mut s, "{b:02x}").expect("writing to String cannot fail");
+        }
+        s
     }
 
     #[test]

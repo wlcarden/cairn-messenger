@@ -23,6 +23,9 @@ cairn-shamir = { path = "../cairn-shamir" }
 # === CBOR (D0018 §2.1) — used for decoding attestation payload bytes ===
 ciborium = { workspace = true }
 
+# === SHA-256 for issuer_cert_hash construction per D0006 §7 ===
+sha2 = { workspace = true }
+
 # === Memory hygiene (D0018 §1.6) ===
 zeroize = { workspace = true }
 

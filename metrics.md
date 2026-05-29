@@ -291,6 +291,36 @@ beyond the Tier 1 MDC line.
   - 165 tests passing across workspace (was 159; +6 cross-domain
     substitution tests)
 
+- [x] **D0006 §5 + §7 canonical-hash helpers + reference test vector**
+      — 2026-05-29
+  - `cairn-envelope::CoseSign1::sig_structure_bytes(external_aad)`:
+    public accessor for the canonical-CBOR-encoded RFC 9052 §4.4
+    `Sig_structure` byte string (caller supplies the matching AAD —
+    `Sig_structure` content is not stored on the envelope because
+    `external_aad` is external to the wire format)
+  - `cairn-trust-graph::SignedTrustGraphOp::prior_hash_bytes()`
+    returns `[u8; 32]` per D0006 §5:
+    `SHA-256( COSE_Sign1.signature_bytes( self ) )`. Removes the
+    caller's burden of remembering to hash the signature bytes (not
+    the payload or full envelope); typo-proof at the type system level
+  - `cairn-recovery::SignedMasterAttestation::issuer_cert_hash()`
+    returns `Result<[u8; 32], RecoveryError>` per D0006 §7:
+    `SHA-256( deterministic_cbor_encode( Sig_structure ) )` bound with
+    the master-attestation domain tag from D0006 §8
+  - D0006 §7 reference test vector pinned via deterministic fixed-seed
+    construction (master_seed = `[0x42; 32]`, op_identity_seed = `[0x37;
+32]`, timestamp = 1_700_000_000): expected
+    `e3ee2121f19366b59ede1d48cd9bc4f7ad6f8177ac348f2a992bf32d1aee04b9`.
+    Any change to canonical CBOR encoding, DOMAIN_TAG, payload schema,
+    or SHA-256 impl trips this test loudly. Satisfies D0006 §7's
+    "reference (master_attestation, expected issuer_cert_hash bytes)
+    pair is added to the v1 implementation test suite" requirement
+  - Cross-check tests in both protocol crates verify the helper output
+    matches an independently constructed SHA-256 of the canonical
+    Sig_structure or signature bytes (structural cross-verification —
+    catches drift between the helper and the spec's byte construction)
+  - 168 tests passing across workspace (was 165; +3 hash-helper tests)
+
 ### Application surfaces (beyond Tier 1 MDC)
 
 These are "above" the Tier 1 MDC line — they compose the foundation

@@ -21,9 +21,13 @@
 use cairn_crypto::ed25519::{SigningKey, VerifyingKey};
 use cairn_envelope::cose_sign1::{CoseSign1, Sign1Builder};
 use cairn_identity::SignedCapabilityToken;
+use sha2::{Digest, Sha256};
 
 use crate::error::TrustGraphError;
 use crate::op::TrustGraphOp;
+
+/// Length of the SHA-256 hash output bound to `prior_hash` per D0006 §5.
+pub const PRIOR_HASH_LEN: usize = 32;
 
 /// D0006 §8 domain-separation tag for trust-graph operations.
 ///
@@ -116,6 +120,30 @@ impl SignedTrustGraphOp {
     #[must_use]
     pub const fn op(&self) -> &TrustGraphOp {
         &self.op
+    }
+
+    /// Return the canonical D0006 §5 `prior_hash` for this operation.
+    ///
+    /// Computes `SHA-256( COSE_Sign1.signature_bytes( self ) )` —
+    /// the value the next operation in this issuer's chain places in
+    /// its `prior_hash` field. Hashing the signature bytes (not the
+    /// payload or full envelope) is intentional: the signature is the
+    /// unambiguous canonical commitment to the operation's content
+    /// (the signature covers the `Sig_structure`, which covers
+    /// payload, protected header, and `external_aad`), and hashing it
+    /// produces a fixed-size input regardless of payload complexity
+    /// per D0006 §5.
+    ///
+    /// The output is the byte string callers should write into the
+    /// next op's `prior_hash` field (zero-length for genesis ops only).
+    #[must_use]
+    pub fn prior_hash_bytes(&self) -> [u8; PRIOR_HASH_LEN] {
+        let mut hasher = Sha256::new();
+        hasher.update(self.envelope.signature());
+        let out = hasher.finalize();
+        let mut arr = [0u8; PRIOR_HASH_LEN];
+        arr.copy_from_slice(&out);
+        arr
     }
 
     /// Verify the three-hop chain (modulo hop #3 which higher layers
@@ -549,6 +577,37 @@ mod tests {
     #[test]
     fn domain_tag_value_matches_d0006() {
         assert_eq!(DOMAIN_TAG, b"cairn-v1-trust-graph-operation");
+    }
+
+    #[test]
+    fn prior_hash_bytes_is_sha256_of_signature_per_d0006_section_5() {
+        // D0006 §5: prior_hash := SHA-256(COSE_Sign1.signature_bytes(prior_op))
+        // Verify the helper output matches a manual SHA-256 of the
+        // envelope's signature.
+        use sha2::{Digest as _, Sha256};
+
+        let (op_identity_sk, device_sk, _token_bytes) =
+            make_token_bundle(&[capabilities::TRUST_GRAPH_ATTEST]);
+        let mut rng = OsRng;
+        let peer_pubkey = SigningKey::generate(&mut rng).verifying_key();
+        let op = TrustGraphOp::new_attest(
+            op_identity_sk.verifying_key(),
+            peer_pubkey,
+            1_700_000_000,
+            vec![],
+            vec![],
+        );
+        let signed = SignedTrustGraphOp::sign(op, &device_sk).unwrap();
+
+        // Reproduce the hash manually.
+        let envelope_bytes = signed.encode(false).unwrap();
+        let decoded = SignedTrustGraphOp::from_bytes(&envelope_bytes).unwrap();
+        let envelope = CoseSign1::from_bytes(&envelope_bytes).unwrap();
+        let expected = Sha256::digest(envelope.signature());
+
+        assert_eq!(decoded.prior_hash_bytes().as_slice(), expected.as_slice());
+        assert_eq!(signed.prior_hash_bytes().as_slice(), expected.as_slice());
+        assert_eq!(decoded.prior_hash_bytes().len(), PRIOR_HASH_LEN);
     }
 
     #[test]
