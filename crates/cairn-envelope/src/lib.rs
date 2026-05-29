@@ -3,7 +3,7 @@
 
 //! # cairn-envelope
 //!
-//! Canonical CBOR + COSE_Sign1 envelope construction for Cairn. Implements
+//! Canonical CBOR + `COSE_Sign1` envelope construction for Cairn. Implements
 //! the byte-level wire form per D0006 (cryptographic envelope completion)
 //! and D0018 §2 (CBOR + COSE engineering foundation).
 //!
@@ -20,7 +20,7 @@
 //!    project-owned encoder discipline per D0018 §2.3 (because no
 //!    Rust-side CBOR crate currently enforces deterministic encoding
 //!    end-to-end).
-//! 2. **Authenticated provenance.** Every envelope carries a COSE_Sign1
+//! 2. **Authenticated provenance.** Every envelope carries a `COSE_Sign1`
 //!    signature (RFC 9052 §4) by the sender's long-term Ed25519 key,
 //!    binding the outer header to the inner payload via the COSE
 //!    `Sig_structure`.
@@ -35,13 +35,13 @@
 //! - [`canonical`] — canonical CBOR encoding per RFC 8949 §4.2 +
 //!   D0018 §2.3 (project-owned because `ciborium` does not enforce
 //!   deterministic encoding alone)
-//! - [`cose_sign1`] — `COSE_Sign1` construction + verification
+//! - [`cose_sign1`] — ``COSE_Sign1`` construction + verification
 //!   (forthcoming; per RFC 9052 §4.4 `Sig_structure`)
 //! - [`error`] — error types for the crate
 //!
 //! ## Interop validation strategy
 //!
-//! Per D0018 §2.2 + §2.5: COSE_Sign1 byte forms produced by this crate
+//! Per D0018 §2.2 + §2.5: `COSE_Sign1` byte forms produced by this crate
 //! MUST validate against an independent implementation. Cairn targets
 //! `veraison/go-cose` as the cross-implementation oracle: a future
 //! integration-test step exports our envelopes to a Go test harness that
@@ -58,7 +58,7 @@
 //! this stability promise.
 
 // Module declarations land here as surfaces are implemented. The
-// progression per metrics.md is: canonical CBOR → `COSE_Sign1` →
+// progression per metrics.md is: canonical CBOR → ``COSE_Sign1`` →
 // envelope assembly → cross-implementation interop.
 
 pub mod canonical;
