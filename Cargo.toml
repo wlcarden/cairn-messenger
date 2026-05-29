@@ -104,7 +104,10 @@ arbitrary = { version = "=1.3.2", features = ["derive"] }
 hex-literal = "=0.4.1"  # RFC 5869 / RFC 8439 test-vector decoding
 
 # === Constant-time benchmarking (D0018 §5.3) ===
-dudect-bencher = "=0.6.0"
+# Bumped 0.6.0 → 0.7.0 per D0021's pin-audit hygiene action: 0.7.0
+# declares `rust-version = "1.85"` matching our toolchain pin (0.6.0
+# left MSRV implicit). Same author / repo / license / features.
+dudect-bencher = "=0.7.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
