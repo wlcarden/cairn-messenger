@@ -1,0 +1,18 @@
+# Cairn rustfmt configuration per D0018 §8.3.
+
+edition = "2024"
+style_edition = "2024"
+max_width = 100
+hard_tabs = false
+tab_spaces = 4
+newline_style = "Unix"
+use_field_init_shorthand = true
+use_try_shorthand = true
+reorder_imports = true
+reorder_modules = true
+
+# Nightly-only options (commented; uncomment when adopting nightly fmt)
+# imports_granularity = "Module"
+# group_imports = "StdExternalCrate"
+# wrap_comments = true
+# comment_width = 100

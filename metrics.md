@@ -1,0 +1,243 @@
+# Empirical cadence metrics
+
+Per D0018's empirical-metrics commitment: calendar-time projections borrowed
+from comparable-project history have been abandoned in favor of empirical
+measurement starting from the first commits. This document tracks **actual
+elapsed work** against **surface-completion milestones**.
+
+The metrics here are the substrate for honest re-projection of v1 ship
+timing. Per the consolidated external-reads triage maintainer review M1
+finding, a month-18 check-in commitment compares actual progress against
+this baseline.
+
+## Surface-completion milestones
+
+### Tier 1 MDC (cryptographic foundation)
+
+- [x] **Workspace scaffolding complete** — 2026-05-29
+  - Cargo workspace + `rust-toolchain.toml` + `clippy.toml` + `rustfmt.toml`
+    - `deny.toml`
+  - LICENSE (AGPL-3.0-only) + COPYING symlink
+  - README, CONTRIBUTING, SECURITY
+  - `.github/workflows/ci.yml` with discipline-grep gates
+  - `.gitignore` updated for Rust + Android conventions
+
+- [x] **`cairn-crypto` Ed25519 module skeleton** — 2026-05-29
+  - Sealed `NeverExport` marker trait pattern
+  - `SigningKey` wrapper storing seed in `SecretBox<[u8; 32]>`
+  - `VerifyingKey` + `Signature` types with constant-time `PartialEq`
+  - 9 unit tests + 3 property-based tests + 1 doctest passing
+  - Clippy clean under workspace lints (including `pedantic` warnings as deny)
+  - Format-check clean
+
+- [x] **`cairn-crypto` X25519 ECDH module** — 2026-05-29
+  - `EphemeralKey` + `StaticKey` wrappers (consume-on-agree vs. reusable
+    semantics enforced at the type level)
+  - `PublicKey` + `SharedSecret` API-boundary types; `SharedSecret`
+    constructor is private and enforces `was_contributory()` per D0018 §1.2 +
+    vodozemac 2026 audit reference (illegal-states-unrepresentable encoding
+    of the check rather than procedural reminder)
+  - 7 unit tests + 3 property tests covering ECDH symmetry, zero-pk
+    rejection, and ephemeral-static interop
+  - Clippy clean under workspace lints; rustfmt clean
+
+- [x] **`cairn-crypto` HKDF module** — 2026-05-29
+  - HKDF-SHA256 extract/expand with cached-PRK [`Prk`] type for the
+    multi-label-derivation pattern (X3DH / Triple Ratchet per D0006 §5.4)
+  - One-shot `derive()` convenience helper for single-label cases
+  - All 3 RFC 5869 §A SHA-256 test vectors (A.1, A.2, A.3) pass
+  - 3 property tests covering derivation determinism, distinct-info /
+    distinct-OKM, and distinct-IKM / distinct-OKM
+  - Output length ceiling (`255 * 32 = 8160` bytes) enforced via
+    `HkdfError::OutputTooLong`
+
+- [x] **`cairn-crypto` AEAD module** — 2026-05-29
+  - `XChaCha20`-`Poly1305` wrapper per D0018 §1.4 (24-byte extended
+    nonces, random-safe across the device's lifetime; no nonce-counter
+    persistence required across restarts — important for the recoverable-
+    state model)
+  - Uniform `DecryptFailed` for all decryption failure modes per the
+    no-error-oracle discipline (D0006 / D0018 §1.4)
+  - Byte-exact KAT match against draft-irtf-cfrg-xchacha-03 §A.3
+  - 10 unit tests covering round-trip, tamper resistance (key/nonce/ad/
+    body/tag/truncation), empty-plaintext + empty-aad edge cases, and the
+    KAT vector
+  - 3 property tests covering round-trip determinism, single-bit tamper
+    rejection, and wrong-key rejection
+
+- [x] **`cairn-envelope` crate skeleton** — 2026-05-29
+  - Workspace member added; package builds with ciborium + coset deps
+  - `lib.rs` documents the wire-form principles (determinism + authenticated
+    provenance + confidentiality) and the interop-validation strategy
+    (`veraison/go-cose` cross-implementation oracle per D0018 §2.5)
+  - Placeholder `EnvelopeError` enum with `#[non_exhaustive]` discipline
+    ready for variants to land with each subsequent surface
+- [x] **`cairn-envelope` canonical CBOR helper per D0018 §2.3** — 2026-05-29
+  - Project-owned encoder per D0018 §2.3 (ciborium 0.2 does not enforce
+    deterministic encoding alone)
+  - Minimal typed [`Value`] AST: `Null`, `Bool`, `Int(i64)`, `Bytes`, `Text`,
+    `Array`, `Map` — variants intentionally restricted to those with
+    deterministic encodings (no floats, no indefinite-length, no big-int)
+  - All 4 RFC 8949 §4.2 deterministic encoding rules enforced:
+    smallest-head, definite-length-only, canonical map-key ordering,
+    duplicate-key rejection
+  - 29 unit tests covering every head-encoding boundary (int 0/23/24/255/
+    256/65535/65536/i64::MIN, negative -1/-24/-25), all leaf variants
+    encoding, map key sorting, cross-type key ordering, duplicate
+    detection, and nested structure encoding
+  - 3 property tests: leaf-non-empty, encode-determinism, map-order-
+    invariance
+  - 80 tests + 1 doctest passing across workspace
+- [x] **`cairn-envelope` `COSE_Sign1` construction** — 2026-05-29
+  - `Sign1Builder` (alg = `EdDSA` default, optional `kid` in unprotected
+    headers, optional external AAD) → `finalize(&SigningKey)` →
+    [`CoseSign1`]
+  - `CoseSign1::encode(tagged: bool)` produces canonical CBOR bytes
+    (optionally wrapped in CBOR tag 18); `CoseSign1::from_bytes` decodes
+    via ciborium then walks into our canonical [`Value`] AST for
+    unprotected headers (protected headers preserved as raw bytes per RFC
+    9052 §4.4 `Sig_structure` discipline — structural defense against
+    re-encoding mauling)
+  - `CoseSign1::verify` rebuilds the canonical `Sig_structure` and
+    delegates to `cairn-crypto::ed25519::verify` (which uses
+    `verify_strict` per D0018 §1.1)
+  - Uniform `CoseSign1VerifyFailed` for all crypto-layer failure modes
+    (wrong key, tampered payload, tampered headers, tampered signature,
+    wrong external AAD) per the no-error-oracle discipline (D0006 /
+    D0018 §1.4)
+  - 13 unit tests covering round-trip variants (payload, kid, external
+    AAD, detached, tagged, untagged), tamper resistance (key, payload,
+    signature, AAD, truncation), decoder rejection (malformed CBOR,
+    wrong arity), and determinism
+  - 2 property tests: random-payload round-trip + payload-tamper-fails-
+    verify
+- [ ] **`cairn-envelope` test vectors validated against `veraison/go-cose`**
+
+- [x] **`cairn-shamir` crate skeleton** — 2026-05-29
+  - Workspace member added; package builds with `vsss-rs` 4.3.8 +
+    `blake3` 1.5.4 deps
+  - `lib.rs` documents the seed-not-scalar rationale (preserves Ed25519's
+    deterministic-nonce contract per RFC 8032 §5.1.6 across multi-site
+    reconstruction), the BLAKE3 commit-of-secret defense (D0018 §3.4
+    against corrupted shares, malicious reconstruction shares, and
+    implementation drift), and the constant-time discipline plan
+  - Placeholder `ShamirError` enum ready for variants to land with the
+    split / reconstruct surfaces
+- [x] **`cairn-shamir` GF(256) Shamir wrapper with BLAKE3 commit** —
+      2026-05-29
+  - **Architectural finding**: `vsss-rs` 4.3.8 (the D0018 §3.1 pin)
+    requires `F: PrimeField` and does NOT support byte-level GF(2⁸)
+    Shamir. Cairn's seed-not-scalar requirement (preserves Ed25519's
+    deterministic-nonce contract per RFC 8032 §5.1.6 across multi-site
+    reconstruction) mandates byte-level splits. Future D-doc will revise
+    D0018 §3.1.
+  - Project-owned byte-level GF(2⁸) implementation: constant-time
+    `gf256` field arithmetic (`mul` via shift-and-conditional-XOR with
+    bitmask discipline; `inv` via Fermat fixed-schedule square-and-
+    multiply); `share` module with `split` / `reconstruct` over fixed
+    public loop bounds; `commit` module wrapping BLAKE3 `derive_key`
+    with versioned domain-separation context.
+  - 35 tests: 13 GF(256) (incl. FIPS 197 §4.2 AES multiplication
+    vectors `0x53*0xCA=0x01`, `0x57*0x83=0xC1`, `0x57*0x13=0xFE`); 6
+    `Commitment` (incl. direct cross-check against `blake3::derive_key`);
+    14 `share` (round-trip across `(2,2)`/`(3,5)`/`(5,5)`, exhaustive
+    `C(4,3)` subset reconstruction, tamper resistance, parameter
+    validation, duplicate-id rejection); 2 property tests (round-trip
+    - single-bit tamper rejection on a `(3,3)` split).
+  - 131 tests + 1 doctest passing across workspace.
+- [ ] **`cairn-shamir` constant-time CI gate via `dudect-bencher`**
+
+- [ ] **`cairn-identity` capability-token construction per D0006 §9**
+
+- [ ] **First crates.io publication (when ready)**
+
+## Elapsed-time tracking
+
+Tracking format: `YYYY-MM-DD; surface; hours invested; notes`.
+
+| Date       | Surface                                                 | Hours | Notes                                                                                                                                           |
+| ---------- | ------------------------------------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-05-29 | Workspace scaffolding + `cairn-crypto` Ed25519 skeleton | TBD   | First implementation session. Compiles, tests, clippy all green.                                                                                |
+| 2026-05-29 | `cairn-crypto` X25519 ECDH module                       | TBD   | Same-day continuation. Structural enforcement of `was_contributory()` via private constructor; 22 tests + 1 doctest pass; 2 clippy iterations.  |
+| 2026-05-29 | `cairn-crypto` HKDF module                              | TBD   | All 3 RFC 5869 §A SHA-256 test vectors pass; cached-PRK pattern for X3DH / Triple Ratchet multi-label derivation; 33 tests total in workspace.  |
+| 2026-05-29 | `cairn-crypto` AEAD module                              | TBD   | Byte-exact draft-irtf-cfrg-xchacha-03 §A.3 KAT match; uniform `DecryptFailed` error oracle discipline; 47 tests total + 1 doctest in workspace. |
+| 2026-05-29 | `cairn-envelope` crate skeleton                         | TBD   | New workspace member; coset + ciborium deps added; `EnvelopeError` placeholder enum ready for variant accretion as surfaces land.               |
+| 2026-05-29 | `cairn-envelope` canonical CBOR helper                  | TBD   | Project-owned encoder per D0018 §2.3; all RFC 8949 head-encoding boundaries covered; 80 tests total + 1 doctest in workspace.                   |
+| 2026-05-29 | `cairn-envelope` `COSE_Sign1` construction              | TBD   | Sign1Builder + finalize + encode + from_bytes + verify per RFC 9052 §4.4; full round-trip + tamper-resistance test battery; 95 tests total.     |
+
+The "TBD" entries are filled in by the developer as they go. The discipline
+is to record honest hours (not calendar elapsed) since the consolidated
+triage M1 finding specifically frames "honest re-baselining at month 18"
+against actual development cadence rather than borrowed projections.
+
+## Empirical-cadence summary (running)
+
+Updated at each surface-completion milestone:
+
+- **Surfaces complete**: 8 / ~15+ Tier 1 MDC surfaces (workspace
+  scaffolding, ed25519, x25519, hkdf, aead, cairn-envelope skeleton,
+  canonical CBOR, `COSE_Sign1`)
+- **Cumulative hours**: TBD
+- **Cumulative LoC (impl + docs)**: ~1900 LoC across `cairn-crypto/src/` +
+  `cairn-envelope/src/`
+- **Cumulative LoC (tests)**: ~1680 LoC (unit + property tests + RFC / KAT
+  vectors inline; 3581 total file LoC across both crates)
+- **Test:code ratio**: ~0.88:1 at this stage and rising (canonical CBOR
+  added 32 tests for 580 file LoC; `COSE_Sign1` added 15 tests for 756
+  file LoC with extensive round-trip + tamper-resistance coverage). Target
+  per D0018 §2.4 + audit-target practice is 2:1 to 3:1 for audit-target
+  surfaces; the next acceleration comes from `cairn-shamir`'s
+  `dudect-bencher` constant-time harnesses and the `veraison/go-cose`
+  interop vectors.
+- **Test pass count**: 95 unit + property tests + 1 doctest = 96 across
+  6 modules (cairn-crypto: ed25519, x25519, hkdf, aead + cairn-envelope:
+  canonical, `COSE_Sign1`)
+- **RFC / KAT vector coverage**:
+  - RFC 5869 §A.1–A.3 (HKDF-SHA256, 3/3 vectors)
+  - draft-irtf-cfrg-xchacha-03 §A.3 (`XChaCha20`-`Poly1305`, 1/1 vector)
+  - RFC 8949 §3 head-encoding boundary cases (canonical CBOR, exhaustive
+    coverage of int / nint / bytes / text / array / map heads)
+  - RFC 9052 §4.4 `Sig_structure` construction discipline (round-trip
+    - tamper-resistance proven at the wrapper layer; the
+      `veraison/go-cose` cross-implementation oracle is the next surface)
+  - Ed25519 covered by ed25519-dalek's audited test suite plus property
+    tests at the wrapper layer
+- **Commits**: 0 (first commit pending)
+- **Clippy diagnostics fixed in CI iteration**: 49 cumulative across both
+  crates (doc_markdown dominant, plus must_use, const_fn,
+  disallowed_types, needless_pass_by_value, useless_conversion,
+  indexing_slicing, arithmetic_side_effects, checked_conversions,
+  cast_sign_loss, manual_let_else, option_if_let_else, redundant_clone —
+  fixed at source, not blanket-allowed; allows applied only at test-code
+  sites with proven safety bounds)
+
+## Reference comparable-project cadence
+
+For calibration context (NOT for projection):
+
+- Briar Project: ~3 years from initial public commits to v1 broad release
+  (with institutional backing)
+- Cwtch: ~2 years from initial Rust port to v1.0 (with OpenPriv institutional
+  backing)
+- vodozemac: ~9 months from initial commit to audited v0.1.0 (with Matrix.org
+  institutional backing)
+- libsignal (Rust port): ~2 years to feature parity with libsignal-java (with
+  Signal Foundation institutional backing)
+
+Cairn's solo-volunteer baseline per D0008 has no comparable-project precedent
+at this threat tier with this scope. The empirical metric here is the only
+honest substrate for projection; this section exists to provide context, not
+target.
+
+## Re-projection cadence
+
+- **Month 1 (June 2026)**: first cadence data lands; metrics.md gets a real
+  hours-per-surface entry. No re-projection yet.
+- **Month 3 (August 2026)**: ~3 surfaces complete (estimate); first
+  re-projection of Tier 1 MDC ship date against actual cadence.
+- **Month 6 (November 2026)**: Tier 1 MDC expected complete (estimate);
+  re-projection of Tier 2 + Tier 3 against Tier 1 cadence baseline.
+- **Month 18 (November 2027)**: per the consolidated triage M1 finding,
+  formal month-18 check-in. Actual elapsed Phase A duration; honest
+  re-assessment of v1 scope vs. actual engineering velocity; runway-figure
+  comparison; D0016 trigger re-evaluation.

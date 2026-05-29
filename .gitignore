@@ -5,16 +5,67 @@
 *~
 .vscode/
 .idea/
+*.iml
 
 # Drafts and scratch
 *.draft.md
 scratch/
 .scratch/
 
-# Build artifacts (placeholder for future code)
+# Rust build artifacts
 target/
-build/
-dist/
-node_modules/
+**/target/
+Cargo.lock.bak
+*.rs.bk
+
+# Note: Cargo.lock IS committed for the workspace per D0018 §7.4
+# (reproducible builds depend on this)
+# fuzz/Cargo.lock is also committed.
+
+# Fuzz artifacts (corpus IS committed; minimization artifacts are not)
+fuzz/artifacts/
+fuzz/coverage/
+
+# Android
+android/.gradle/
+android/build/
+android/local.properties
+android/.cxx/
+android/**/build/
+*.apk
+*.aab
+*.so.dwp
+android/**/jniLibs/
+
+# Nix
+result
+result-*
+.direnv/
+
+# Python (for any tooling scripts)
 __pycache__/
 *.pyc
+
+# Audit and security tooling
+.cargo/credentials.toml
+.cargo/credentials
+
+# Node (for any tooling)
+node_modules/
+dist/
+build/
+
+# Backup files
+*.bak
+*.orig
+
+# Secret-bearing files (NEVER commit)
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+secrets.local.*
+.env
+.env.*
+!.env.example

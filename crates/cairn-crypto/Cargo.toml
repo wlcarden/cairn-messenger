@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Cairn maintainers and contributors
+
+[package]
+name = "cairn-crypto"
+version = "0.1.0-dev"
+description = "Cairn cryptographic primitives: typed wrappers over RustCrypto stack with memory hygiene + sealed-NeverExport discipline"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ed25519-dalek = { workspace = true }
+x25519-dalek = { workspace = true }
+hkdf = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { workspace = true }
+secrecy = { workspace = true }
+subtle = { workspace = true }
+getrandom = { workspace = true }
+rand_core = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

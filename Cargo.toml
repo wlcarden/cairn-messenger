@@ -1,0 +1,150 @@
+# Cairn workspace
+#
+# Per D0018 (engineering foundation) §8.1.
+# Per D0019 (license): AGPL-3.0-only.
+# Per D0020 (integration architecture).
+#
+# See docs/decisions/D0018-engineering-foundation.md for the full rationale
+# behind every crate version pin in [workspace.dependencies].
+#
+# CRITICAL: library versions are pinned with `=X.Y.Z` (exact) rather than
+# `^X.Y.Z` (semver) because byte-level encoder behavior must not change
+# transparently. Upgrades are coordinated events per D0018 §9.1.
+
+[workspace]
+resolver = "2"
+members = [
+    # Foundational cryptographic primitives (Tier 1 MDC)
+    "crates/cairn-crypto",
+]
+# Future members per D0018 §8.6 (added incrementally as Tier 1/2/3 lands):
+#   "crates/cairn-envelope",
+#   "crates/cairn-shamir",
+#   "crates/cairn-identity",
+#   "crates/cairn-trust-graph",
+#   "crates/cairn-recovery",
+#   "crates/cairn-storage",
+#   "crates/cairn-simplex-adapter",
+#   "crates/cairn-tor-transport",
+#   "crates/cairn-sigsum-client",
+#   "crates/cairn-sigstore-verify",
+#   "crates/cairn-uniffi",
+#   "crates/cairn-cli",
+#   "fuzz",
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "AGPL-3.0-only"
+authors = ["Cairn maintainers and contributors"]
+repository = "https://github.com/cairn-project/cairn"
+homepage = "https://cairn-project.org"
+
+[workspace.dependencies]
+# === Cryptographic primitives (D0018 §1) ===
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = [
+    "std",
+    "rand_core",
+    "zeroize",
+] }
+x25519-dalek = { version = "=2.0.1", default-features = false, features = [
+    "static_secrets",
+    "zeroize",
+] }
+hkdf = "=0.12.4"
+chacha20poly1305 = "=0.10.1"
+sha2 = "=0.10.9"
+blake3 = "=1.5.4"  # for Shamir commit-of-secret only per D0018 §3.4
+
+# === Memory hygiene (D0018 §1.6) ===
+zeroize = { version = "=1.8.1", features = ["derive"] }
+secrecy = "=0.10.3"
+subtle = "=2.6.1"
+
+# === CSPRNG (D0018 §1.7) ===
+# `getrandom` 0.4.x is not yet shipped as of 2026-05; pinning the latest stable
+# 0.2 line which is what libsignal currently uses. Upgrade coordinated.
+getrandom = "=0.2.15"
+rand_core = "=0.6.4"
+
+# === CBOR + COSE (D0018 §2.1-2.2) ===
+ciborium = "=0.2.2"
+coset = "=0.3.8"
+
+# === Shamir Secret Sharing (D0018 §3.1) ===
+vsss-rs = { version = "=4.3.8", default-features = false, features = [
+    "std",
+    "zeroize",
+] }
+
+# === Logging facade (D0018 §4.3) ===
+log = { version = "=0.4.22", features = ["release_max_level_info"] }
+
+# === Application-level (cairn-cli only) ===
+tracing = "=0.1.40"
+tracing-subscriber = { version = "=0.3.18", features = ["env-filter", "json"] }
+log-panics = { version = "=2.1.0", features = ["with-backtrace"] }
+anyhow = "=1.0.86"
+
+# === Error handling (D0018 §4.2) ===
+thiserror = "=1.0.63"
+displaydoc = "=0.2.5"
+
+# === Async (cairn-cli + I/O adapters only; NOT crypto core; D0018 §4.1) ===
+tokio = { version = "=1.40.0", features = ["rt-multi-thread", "macros"] }
+
+# === Testing (D0018 §5) ===
+proptest = { version = "=1.5.0", default-features = false, features = ["std"] }
+arbitrary = { version = "=1.3.2", features = ["derive"] }
+
+# === Constant-time benchmarking (D0018 §5.3) ===
+dudect-bencher = "=0.6.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unsafe_op_in_unsafe_fn = "warn"
+missing_docs = "warn"
+unused_must_use = "deny"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+# correctness is deny-by-default already
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
+# Specific high-value lints for security-critical code per D0018 §8.1
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "warn"
+arithmetic_side_effects = "warn"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+mem_forget = "deny"
+exit = "deny"
+
+# Modest noise reduction on pedantic in early-stage code
+module_name_repetitions = "allow"
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+debug = false
+overflow-checks = true
+
+[profile.release-with-debug]
+inherits = "release"
+debug = "line-tables-only"  # for crash-symbol resolution without exposing secrets
+
+[profile.bench]
+inherits = "release"
+debug = "line-tables-only"

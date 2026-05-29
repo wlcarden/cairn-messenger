@@ -1,0 +1,12 @@
+# Pinned Rust toolchain per D0018 §7.4.
+# Changes to this file require a coordinated workspace upgrade
+# and re-validation of dependency-tree compatibility.
+
+[toolchain]
+channel = "1.85.0"
+targets = [
+    "aarch64-linux-android",  # primary v1 target (Pixel-on-GrapheneOS)
+    "x86_64-linux-android",   # secondary v1 target (Chromebook + emulator + audit testing)
+]
+profile = "minimal"
+components = ["rustfmt", "clippy"]

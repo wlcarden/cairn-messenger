@@ -1,0 +1,148 @@
+# CI workflow per D0018 §8.5.
+#
+# Gates by category:
+#   - blocking: fmt, clippy, test, audit, deny, discipline-grep
+#   - informational: geiger, machete, auditable-release builds
+#   - cron-only: fuzz (PR), dudect-bencher (release-profile bench)
+
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-features
+
+  audit:
+    name: cargo-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check all
+
+  geiger:
+    name: cargo-geiger (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-geiger
+      - run: cargo geiger --workspace --forbid-only
+
+  machete:
+    name: cargo-machete (unused deps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bnjbvr/cargo-machete@main
+
+  discipline-grep:
+    name: discipline grep gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Secret-leak in logs grep gate
+        run: |
+          if grep -rnE 'debug!.*\?(secret|key_share|private_key|plaintext|seed)' --include='*.rs' crates/; then
+            echo "::error::Secret-bearing values logged in debug! macro. See D0018 §4.3 logging discipline."
+            exit 1
+          fi
+          if grep -rnE 'trace!.*\?(secret|key_share|private_key|plaintext|seed)' --include='*.rs' crates/; then
+            echo "::error::Secret-bearing values logged in trace! macro. See D0018 §4.3 logging discipline."
+            exit 1
+          fi
+      - name: Raw bytes in error variants grep gate
+        run: |
+          # Look for thiserror error enums containing Vec<u8> or &[u8] payloads.
+          # The pattern is approximate; sophisticated cases require manual review.
+          if grep -rnE '#\[error\(.*\)\]\s*\w+\(Vec<u8>\)' --include='*.rs' crates/; then
+            echo "::error::Raw byte payload in error variant. See D0018 §4.2 error-handling discipline."
+            exit 1
+          fi
+      - name: dbg! macro grep gate
+        run: |
+          if grep -rn 'dbg!' --include='*.rs' crates/; then
+            echo "::error::dbg! macro committed. See D0018 §4.3 logging discipline (clippy::dbg_macro)."
+            exit 1
+          fi
+
+  # Android cross-compile placeholder — wired in once cargo-ndk is configured.
+  # auditable-release:
+  #   name: cargo auditable release builds
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - run: cargo install cargo-auditable cargo-ndk
+  #     - run: cargo ndk -t arm64-v8a -t x86_64 -p 24 build --release
+
+  # Fuzz harness placeholder — runs once fuzz/ is populated.
+  # fuzz-pr:
+  #   if: github.event_name == 'pull_request'
+  #   name: cargo-fuzz (PR)
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@nightly
+  #     - run: cargo install cargo-fuzz
+  #     - run: |
+  #         for target in fuzz_envelope_parse fuzz_canonical_cbor; do
+  #           cargo fuzz run "$target" -- -max_total_time=60
+  #         done
+
+  # dudect placeholder — runs once dudect benches are wired.
+  # dudect:
+  #   name: dudect-bencher CI gate
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - run: cargo bench --bench dudect_signing --release -- --continuous false --runs 1000000

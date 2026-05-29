@@ -1,0 +1,28 @@
+# Cairn clippy configuration per D0018 §8.2.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+cognitive-complexity-threshold = 25
+
+# Types that must never be compared via PartialEq; use subtle::ConstantTimeEq
+disallowed-types = [
+    { path = "ed25519_dalek::SecretKey", reason = "wrap in SecretBox; compare via subtle::ConstantTimeEq" },
+    { path = "ed25519_dalek::SigningKey", reason = "wrap in SecretBox; never expose to untrusted code paths" },
+    { path = "x25519_dalek::StaticSecret", reason = "wrap in SecretBox; compare via subtle::ConstantTimeEq" },
+    { path = "x25519_dalek::EphemeralSecret", reason = "use directly within a single agreement; do not store" },
+]
+
+# Methods that must never be called from security-critical code paths
+disallowed-methods = [
+    { path = "std::env::var", reason = "do not read secrets via env in code paths reachable from FFI; use config-loading layer" },
+    { path = "std::env::var_os", reason = "do not read secrets via env in code paths reachable from FFI" },
+]
+
+# Disallow specific macros that bypass our logging discipline (D0018 §4.3)
+disallowed-macros = [
+    { path = "std::print", reason = "use log/tracing per D0018 §4.3 logging discipline" },
+    { path = "std::println", reason = "use log/tracing per D0018 §4.3 logging discipline" },
+    { path = "std::eprint", reason = "use log/tracing per D0018 §4.3 logging discipline" },
+    { path = "std::eprintln", reason = "use log/tracing per D0018 §4.3 logging discipline" },
+    { path = "std::dbg", reason = "never commit dbg! macros" },
+]
