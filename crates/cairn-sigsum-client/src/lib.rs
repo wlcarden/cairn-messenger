@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Cairn maintainers and contributors
+
+// Same crate-wide allow as cairn-storage: many proper-noun technical
+// terms (Sigsum, Ed25519, JSON, TOML, etc.) that would each need
+// backticks.
+#![allow(clippy::doc_markdown)]
+
+//! # cairn-sigsum-client
+//!
+//! Sigsum integration per [D0023](../../docs/decisions/D0023-sigsum-integration.md).
+//!
+//! ## Architectural commitments this crate implements
+//!
+//! - **Commitment-only logging** (design brief §3.3 + D0006 §3.3):
+//!   Sigsum stores SHA-256 hashes of trust-graph operations only;
+//!   issuer/subject/context never appear in the public log.
+//! - **Leaf hash schema** (D0023 §1):
+//!   `leaf_hash = SHA-256(COSE_Sign1.signature_bytes(signed_op))`.
+//!   Byte-identical to D0006 §5's `prior_hash` byte input — the same
+//!   hash anchors the trust-graph chain integrity AND the Sigsum
+//!   commitment.
+//! - **Project-owned witness cosignature verification** (D0023 §3):
+//!   Ed25519 `verify_strict` against a static `witnesses.toml`
+//!   shipped per release. No `sigsum-go` shim; no Go runtime in the
+//!   trust path.
+//! - **2-of-3 witness acceptance threshold** per D0015 + D0023 §3.4.
+//! - **Storage-layer caching** in
+//!   [`cairn_storage::categories::SIGSUM_CACHE`] for log heads +
+//!   inclusion proofs per D0023 §4.
+//! - **Typed errors** per D0018 §4.2 + D0023 §7 — every failure mode
+//!   surfaces a typed [`SigsumError`] variant; no `Vec<u8>` payloads
+//!   in error bodies.
+//!
+//! ## Crate structure
+//!
+//! - [`leaf`] — leaf hash computation per D0023 §1.
+//! - [`witness`] — witness pool config + cosignature verification per
+//!   D0023 §3.
+//! - [`cache`] — log-head + inclusion-proof cache types per D0023 §4.
+//! - [`client`] — the `SigsumClient` async surface per D0023 §5.
+//! - [`error`] — typed error enum per D0018 §4.2 + D0023 §7.
+//!
+//! ## Implementation status (v1 skeleton)
+//!
+//! The load-bearing primitives are implemented + tested:
+//!
+//! - Leaf hash composition (pure SHA-256 of envelope signature bytes)
+//! - Witness pool parsing + Ed25519 cosignature verification against
+//!   the Sigsum-spec'd signing input
+//! - Cache state schema (canonical-CBOR per D0022 §2.4 storage
+//!   semantics)
+//! - Threshold check (2-of-3 acceptance) per D0023 §3.4
+//! - Typed error surface per D0023 §7
+//!
+//! The network-bound surfaces (`SigsumClient::emit_leaf`,
+//! `verify_inclusion`, `refresh_tree_head`) are present as method
+//! signatures but their bodies return [`SigsumError::NetworkUnreached`]
+//! pending integration testing against a real Sigsum log endpoint per
+//! D0023 §10. The `integration-tests` cargo feature flag gates the
+//! eventual network-exercising tests; v1 skeleton ships without them.
+
+pub mod cache;
+pub mod client;
+pub mod error;
+pub mod leaf;
+pub mod witness;
+
+pub use cache::{InclusionProof, TreeHead, cache_record_id_for_leaf, cache_record_id_for_log};
+pub use client::{RetryBudget, SigsumClient, SigsumClientConfig};
+pub use error::SigsumError;
+pub use leaf::{LEAF_HASH_LEN, LeafHash, leaf_hash_for};
+pub use witness::{
+    MIN_WITNESS_COUNT, REQUIRED_COSIGNATURE_COUNT, Witness, WitnessPool, parse_witness_pool,
+    verify_cosignature,
+};

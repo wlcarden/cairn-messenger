@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Cairn maintainers and contributors
+
+[package]
+name = "cairn-sigsum-client"
+version = "0.1.0-dev"
+description = "Cairn Sigsum integration: commitment-only logging + witness-cosignature verification per D0023"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Gated network integration tests against real Sigsum log endpoints.
+# Disabled by default so CI doesn't depend on external network
+# availability per D0023 §10.
+integration-tests = []
+
+[dev-dependencies]
+rand_core = { workspace = true }
+
+[dependencies]
+# === Foundational primitives ===
+cairn-crypto = { path = "../cairn-crypto" }
+cairn-envelope = { path = "../cairn-envelope" }
+cairn-storage = { path = "../cairn-storage" }
+cairn-trust-graph = { path = "../cairn-trust-graph" }
+
+# === SHA-256 for the leaf-hash construction per D0023 §1 ===
+sha2 = { workspace = true }
+
+# === Async runtime + HTTPS (D0023 §2 + §5) ===
+reqwest = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
+
+# === Serde for witness config + Sigsum JSON shapes (D0023 §2.3) ===
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+
+# === CBOR for cache schema (D0023 §4) ===
+ciborium = { workspace = true }
+
+# === Memory hygiene (D0018 §1.6) ===
+zeroize = { workspace = true }
+
+# === Error handling (D0018 §4.2) ===
+thiserror = { workspace = true }

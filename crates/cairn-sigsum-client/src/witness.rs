@@ -1,0 +1,477 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Cairn maintainers and contributors
+
+//! Witness pool config + cosignature verification per D0023 §3.
+//!
+//! ## Witness pool config format
+//!
+//! ```toml
+//! [[witness]]
+//! name = "Witness Alpha"
+//! pubkey_hex = "..."
+//! url = "https://witness-alpha.example.org"
+//!
+//! [[witness]]
+//! name = "Witness Bravo"
+//! pubkey_hex = "..."
+//! url = "https://witness-bravo.example.org"
+//!
+//! [[witness]]
+//! name = "Witness Charlie"
+//! pubkey_hex = "..."
+//! url = "https://witness-charlie.example.org"
+//! ```
+//!
+//! Pool changes require a release per D0023 §3.3 — runtime mutation
+//! is not supported.
+//!
+//! ## Cosignature signing input
+//!
+//! Per the Sigsum protocol spec, each witness cosignature is an
+//! Ed25519 signature over:
+//!
+//! ```text
+//! signing_input = "sigsum.org/v1/tree-head\n"
+//!               ‖ tree_size  (8 bytes, network byte order)
+//!               ‖ root_hash  (32 bytes)
+//!               ‖ key_hash   (32 bytes, log pubkey hash)
+//! ```
+//!
+//! The leading domain-separation prefix `"sigsum.org/v1/tree-head\n"`
+//! is the Sigsum-spec'd context binding; it prevents cross-protocol
+//! signature substitution against e.g. message envelopes signed under
+//! the same Ed25519 key. (Cairn's own envelopes use AAD-binding per
+//! D0006 §8 — different domain, same defense.)
+//!
+//! v1 verifies the signing input field set above. The actual Sigsum
+//! protocol may include additional fields (timestamp, log identifier)
+//! — see the upstream spec; v1 skeleton matches the documented
+//! fields and the cosignature-format extension is a v1.5+ surface
+//! per the Sigsum upstream cadence.
+//!
+//! ## Acceptance threshold
+//!
+//! D0023 §3.4: pool size must be exactly 3 (per D0015's "minimum 3
+//! witnesses" rule); at least 2 of 3 cosignatures must verify.
+//! Smaller pools fail with [`crate::SigsumError::WitnessPoolTooSmall`].
+
+use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, VerifyingKey};
+use serde::{Deserialize, Serialize};
+use url::Url;
+
+use crate::error::SigsumError;
+
+/// Minimum witness pool size per D0015 + D0023 §3.4.
+pub const MIN_WITNESS_COUNT: u8 = 3;
+
+/// Required cosignature count for acceptance per D0023 §3.4.
+pub const REQUIRED_COSIGNATURE_COUNT: u8 = 2;
+
+/// Sigsum signing-input domain-separation prefix.
+///
+/// Per the Sigsum upstream protocol spec. Used in
+/// [`verify_cosignature`] to bind cosignatures to the tree-head
+/// domain and defend against cross-protocol signature substitution.
+pub const SIGSUM_TREE_HEAD_DOMAIN: &[u8] = b"sigsum.org/v1/tree-head\n";
+
+/// One witness in the configured pool.
+///
+/// Derives `Serialize` + `Deserialize` for the witnesses.toml parse
+/// path; the on-disk representation has the pubkey as a hex string
+/// for human-readability, which decodes into the typed `pubkey` field
+/// at parse time.
+#[derive(Debug, Clone)]
+pub struct Witness {
+    /// Display name (operational use; informs error messages).
+    pub name: String,
+    /// Ed25519 public key the witness signs cosignatures under.
+    pub pubkey: VerifyingKey,
+    /// HTTPS endpoint the client fetches cosignatures from.
+    pub url: Url,
+}
+
+/// Raw TOML representation of one witness entry. Decoded into
+/// [`Witness`] at parse time.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct WitnessRaw {
+    name: String,
+    pubkey_hex: String,
+    url: String,
+}
+
+/// The configured witness pool. Constructed via [`parse_witness_pool`].
+///
+/// Discipline: any pool with fewer than [`MIN_WITNESS_COUNT`] entries
+/// is rejected at parse time. A pool that successfully constructs is
+/// guaranteed to have at least 3 entries.
+#[derive(Debug, Clone)]
+pub struct WitnessPool {
+    witnesses: Vec<Witness>,
+}
+
+impl WitnessPool {
+    /// Return the configured witnesses in pool order.
+    #[must_use]
+    pub fn witnesses(&self) -> &[Witness] {
+        &self.witnesses
+    }
+
+    /// Return the witness at `index`, if present.
+    #[must_use]
+    pub fn get(&self, index: usize) -> Option<&Witness> {
+        self.witnesses.get(index)
+    }
+
+    /// Pool size. Guaranteed `>= MIN_WITNESS_COUNT` for any pool that
+    /// constructed via the public API.
+    #[must_use]
+    pub fn len(&self) -> u8 {
+        // The constructor enforces len() <= u8::MAX (it would fail
+        // earlier on more than ~255 witnesses).
+        u8::try_from(self.witnesses.len()).unwrap_or(u8::MAX)
+    }
+
+    /// Return `true` if the pool size is below the minimum threshold.
+    /// Since the constructor rejects undersized pools, this should
+    /// always return `false` for a successfully-constructed pool.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.witnesses.is_empty()
+    }
+}
+
+/// Parse a witness pool from a TOML config string.
+///
+/// Rejects pools with fewer than [`MIN_WITNESS_COUNT`] entries per
+/// D0023 §3.4. Each entry's pubkey hex must decode to exactly
+/// [`PUBLIC_KEY_LEN`] bytes and parse as a valid Ed25519 curve point.
+///
+/// # Errors
+///
+/// - [`SigsumError::WitnessConfigParse`] for any TOML parse failure,
+///   missing field, malformed pubkey hex, or invalid URL
+/// - [`SigsumError::WitnessPoolTooSmall`] if the parsed pool has
+///   fewer than [`MIN_WITNESS_COUNT`] entries
+pub fn parse_witness_pool(toml_text: &str) -> Result<WitnessPool, SigsumError> {
+    #[derive(Deserialize, Default)]
+    struct Wrapper {
+        #[serde(default, rename = "witness")]
+        witnesses: Vec<WitnessRaw>,
+    }
+
+    let wrapper: Wrapper =
+        toml::from_str(toml_text).map_err(|_| SigsumError::WitnessConfigParse)?;
+
+    let mut witnesses = Vec::with_capacity(wrapper.witnesses.len());
+    for raw in wrapper.witnesses {
+        let pubkey_bytes = decode_hex(&raw.pubkey_hex).ok_or(SigsumError::WitnessConfigParse)?;
+        if pubkey_bytes.len() != PUBLIC_KEY_LEN {
+            return Err(SigsumError::WitnessConfigParse);
+        }
+        let mut pubkey_arr = [0u8; PUBLIC_KEY_LEN];
+        pubkey_arr.copy_from_slice(&pubkey_bytes);
+        let pubkey =
+            VerifyingKey::from_bytes(&pubkey_arr).map_err(|_| SigsumError::WitnessConfigParse)?;
+        let url = Url::parse(&raw.url).map_err(|_| SigsumError::WitnessConfigParse)?;
+        witnesses.push(Witness {
+            name: raw.name,
+            pubkey,
+            url,
+        });
+    }
+
+    let configured = u8::try_from(witnesses.len()).unwrap_or(u8::MAX);
+    if configured < MIN_WITNESS_COUNT {
+        return Err(SigsumError::WitnessPoolTooSmall {
+            configured,
+            minimum: MIN_WITNESS_COUNT,
+        });
+    }
+
+    Ok(WitnessPool { witnesses })
+}
+
+/// Verify a single witness cosignature against the constructed
+/// signing input per D0023 §3.1 + the Sigsum upstream spec.
+///
+/// Routes through `cairn_crypto::ed25519::VerifyingKey::verify_strict`
+/// per D0018 §1.1 + D0023 §3.1 — same code path as every other
+/// Ed25519 verification in Cairn.
+///
+/// # Errors
+///
+/// Returns [`SigsumError::CosignatureVerifyFailed`] for any
+/// verification failure (uniform per D0018 §1.4 no-error-oracle).
+pub fn verify_cosignature(
+    pubkey: &VerifyingKey,
+    witness_index: u8,
+    signing_input: &[u8],
+    signature_bytes: &[u8],
+) -> Result<(), SigsumError> {
+    use cairn_crypto::ed25519::Signature;
+
+    if signature_bytes.len() != cairn_crypto::ed25519::SIGNATURE_LEN {
+        return Err(SigsumError::CosignatureVerifyFailed { witness_index });
+    }
+    let mut sig_arr = [0u8; cairn_crypto::ed25519::SIGNATURE_LEN];
+    sig_arr.copy_from_slice(signature_bytes);
+    let signature = Signature::from_bytes(sig_arr);
+
+    pubkey
+        .verify(signing_input, &signature)
+        .map_err(|_| SigsumError::CosignatureVerifyFailed { witness_index })
+}
+
+/// Build the Sigsum cosignature signing input per D0023 §3.1 + the
+/// upstream protocol spec:
+///
+/// ```text
+/// SIGSUM_TREE_HEAD_DOMAIN ‖ tree_size_be ‖ root_hash ‖ key_hash
+/// ```
+///
+/// All multi-byte integers are network byte order (big-endian) per
+/// Sigsum's protocol convention.
+#[must_use]
+pub fn build_tree_head_signing_input(
+    tree_size: u64,
+    root_hash: &[u8; 32],
+    log_key_hash: &[u8; 32],
+) -> Vec<u8> {
+    let mut input = Vec::with_capacity(
+        SIGSUM_TREE_HEAD_DOMAIN
+            .len()
+            .saturating_add(8)
+            .saturating_add(32)
+            .saturating_add(32),
+    );
+    input.extend_from_slice(SIGSUM_TREE_HEAD_DOMAIN);
+    input.extend_from_slice(&tree_size.to_be_bytes());
+    input.extend_from_slice(root_hash);
+    input.extend_from_slice(log_key_hash);
+    input
+}
+
+/// Decode a hex string (lowercase or uppercase, no whitespace, no
+/// `0x` prefix). Returns `None` on any structural error so the caller
+/// can surface a single typed error variant.
+fn decode_hex(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    let bytes = s.as_bytes();
+    let pairs = bytes.len() / 2;
+    for i in 0..pairs {
+        let hi = hex_value(*bytes.get(i.saturating_mul(2))?)?;
+        let lo = hex_value(*bytes.get(i.saturating_mul(2).saturating_add(1))?)?;
+        out.push((hi << 4) | lo);
+    }
+    Some(out)
+}
+
+const fn hex_value(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c.wrapping_sub(b'0')),
+        b'a'..=b'f' => Some(c.wrapping_sub(b'a').wrapping_add(10)),
+        b'A'..=b'F' => Some(c.wrapping_sub(b'A').wrapping_add(10)),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::indexing_slicing, clippy::panic, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use cairn_crypto::ed25519::SigningKey;
+    use rand_core::OsRng;
+
+    fn make_witness_toml(count: usize) -> String {
+        let mut rng = OsRng;
+        let mut out = String::new();
+        for i in 0..count {
+            let sk = SigningKey::generate(&mut rng);
+            let pubkey_hex =
+                sk.verifying_key()
+                    .to_bytes()
+                    .iter()
+                    .fold(String::new(), |mut acc, b| {
+                        use core::fmt::Write as _;
+                        let _ = write!(&mut acc, "{b:02x}");
+                        acc
+                    });
+            out.push_str(&format!(
+                "[[witness]]\nname = \"Witness {i}\"\npubkey_hex = \"{pubkey_hex}\"\nurl = \"https://witness-{i}.example.org\"\n\n"
+            ));
+        }
+        out
+    }
+
+    #[test]
+    fn parse_witness_pool_with_three_entries_succeeds() {
+        let toml_text = make_witness_toml(3);
+        let pool = parse_witness_pool(&toml_text).unwrap();
+        assert_eq!(pool.len(), 3);
+    }
+
+    #[test]
+    fn parse_witness_pool_with_two_entries_rejects() {
+        let toml_text = make_witness_toml(2);
+        let result = parse_witness_pool(&toml_text);
+        assert!(matches!(
+            result,
+            Err(SigsumError::WitnessPoolTooSmall {
+                configured: 2,
+                minimum: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_witness_pool_with_empty_rejects() {
+        let result = parse_witness_pool("");
+        assert!(matches!(
+            result,
+            Err(SigsumError::WitnessPoolTooSmall { configured: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn parse_witness_pool_with_malformed_toml_rejects() {
+        let result = parse_witness_pool("not valid toml at all!!!");
+        assert!(matches!(result, Err(SigsumError::WitnessConfigParse)));
+    }
+
+    #[test]
+    fn parse_witness_pool_with_bad_pubkey_hex_rejects() {
+        let toml = r#"
+            [[witness]]
+            name = "Witness A"
+            pubkey_hex = "this is not hex"
+            url = "https://example.org"
+        "#;
+        assert!(matches!(
+            parse_witness_pool(toml),
+            Err(SigsumError::WitnessConfigParse)
+        ));
+    }
+
+    #[test]
+    fn parse_witness_pool_with_short_pubkey_rejects() {
+        let toml = r#"
+            [[witness]]
+            name = "Witness A"
+            pubkey_hex = "abcdef"
+            url = "https://example.org"
+        "#;
+        assert!(matches!(
+            parse_witness_pool(toml),
+            Err(SigsumError::WitnessConfigParse)
+        ));
+    }
+
+    #[test]
+    fn build_signing_input_has_documented_shape() {
+        let tree_size: u64 = 0x1122_3344_5566_7788;
+        let root_hash = [0xAAu8; 32];
+        let log_key_hash = [0xBBu8; 32];
+        let input = build_tree_head_signing_input(tree_size, &root_hash, &log_key_hash);
+
+        // Domain prefix at the start.
+        assert!(input.starts_with(SIGSUM_TREE_HEAD_DOMAIN));
+        // tree_size in network byte order.
+        let after_domain = &input[SIGSUM_TREE_HEAD_DOMAIN.len()..];
+        assert_eq!(&after_domain[..8], &tree_size.to_be_bytes());
+        // root_hash next.
+        assert_eq!(&after_domain[8..40], &root_hash);
+        // log_key_hash last.
+        assert_eq!(&after_domain[40..72], &log_key_hash);
+    }
+
+    #[test]
+    fn verify_cosignature_succeeds_for_valid_signature() {
+        let mut rng = OsRng;
+        let witness_sk = SigningKey::generate(&mut rng);
+        let signing_input = build_tree_head_signing_input(1234, &[0x01; 32], &[0x02; 32]);
+        let signature = witness_sk.sign(&signing_input).unwrap();
+        let result = verify_cosignature(
+            &witness_sk.verifying_key(),
+            0,
+            &signing_input,
+            &signature.to_bytes(),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn verify_cosignature_rejects_wrong_signing_input() {
+        let mut rng = OsRng;
+        let witness_sk = SigningKey::generate(&mut rng);
+        let signing_input_a = build_tree_head_signing_input(1234, &[0x01; 32], &[0x02; 32]);
+        let signing_input_b = build_tree_head_signing_input(9999, &[0x01; 32], &[0x02; 32]);
+        let signature_a = witness_sk.sign(&signing_input_a).unwrap();
+        let result = verify_cosignature(
+            &witness_sk.verifying_key(),
+            0,
+            &signing_input_b,
+            &signature_a.to_bytes(),
+        );
+        assert!(matches!(
+            result,
+            Err(SigsumError::CosignatureVerifyFailed { witness_index: 0 })
+        ));
+    }
+
+    #[test]
+    fn verify_cosignature_rejects_wrong_key() {
+        let mut rng = OsRng;
+        let witness_sk = SigningKey::generate(&mut rng);
+        let imposter_sk = SigningKey::generate(&mut rng);
+        let signing_input = build_tree_head_signing_input(1234, &[0x01; 32], &[0x02; 32]);
+        let signature = imposter_sk.sign(&signing_input).unwrap();
+        let result = verify_cosignature(
+            &witness_sk.verifying_key(),
+            2,
+            &signing_input,
+            &signature.to_bytes(),
+        );
+        assert!(matches!(
+            result,
+            Err(SigsumError::CosignatureVerifyFailed { witness_index: 2 })
+        ));
+    }
+
+    #[test]
+    fn verify_cosignature_rejects_truncated_signature() {
+        let mut rng = OsRng;
+        let witness_sk = SigningKey::generate(&mut rng);
+        let signing_input = build_tree_head_signing_input(1234, &[0x01; 32], &[0x02; 32]);
+        let result = verify_cosignature(
+            &witness_sk.verifying_key(),
+            1,
+            &signing_input,
+            &[0u8; 32], // truncated; valid signatures are 64 bytes
+        );
+        assert!(matches!(
+            result,
+            Err(SigsumError::CosignatureVerifyFailed { witness_index: 1 })
+        ));
+    }
+
+    #[test]
+    fn decode_hex_handles_lowercase_and_uppercase() {
+        assert_eq!(decode_hex("abcdef"), Some(vec![0xab, 0xcd, 0xef]));
+        assert_eq!(decode_hex("ABCDEF"), Some(vec![0xab, 0xcd, 0xef]));
+        assert_eq!(decode_hex("AbCdEf"), Some(vec![0xab, 0xcd, 0xef]));
+    }
+
+    #[test]
+    fn decode_hex_rejects_odd_length() {
+        assert_eq!(decode_hex("abc"), None);
+    }
+
+    #[test]
+    fn decode_hex_rejects_non_hex_chars() {
+        assert_eq!(decode_hex("xx"), None);
+        assert_eq!(decode_hex("ab cd"), None);
+    }
+}
