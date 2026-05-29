@@ -56,12 +56,15 @@
 //!   `was_contributory()` enforcement per D0018 §1.2)
 //! - [`hkdf`] — HKDF-SHA256 extract/expand wrappers (RFC 5869) with cached
 //!   PRK pattern for multi-label derivation (X3DH / Triple Ratchet)
+//! - [`aead`] — XChaCha20-Poly1305 AEAD wrappers (24-byte extended nonces,
+//!   uniform decryption failure per D0006 / D0018 §1.4)
 //! - [`error`] — error types for the crate
 
+pub mod aead;
 pub mod ed25519;
 pub mod error;
 pub mod hkdf;
 pub mod never_export;
 pub mod x25519;
 
-pub use error::{AgreeError, CryptoError, HkdfError, SignError, VerifyError};
+pub use error::{AeadError, AgreeError, CryptoError, HkdfError, SignError, VerifyError};
