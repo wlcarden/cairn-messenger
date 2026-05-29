@@ -28,6 +28,18 @@ Apply four scope changes:
    - Multi-profile compartmentation UX deferred (v1 ships single-profile-only; the architectural slot is preserved but no profile-switcher chrome ships in v1).
    - In-app post-coercion recovery flow becomes documentation-only in v1; the in-app first-class action lands in v1.5.
 
+### Update (architecture-simplification review consensus cuts)
+
+Per the architecture-simplification adversarial review's Section A consensus cuts (F1, F2, F3, F12), four additional v1 scope reductions:
+
+5. **Project-operated SimpleX crash-reporting queue cut from v1 (F1).** Pilot crash reports and feedback flow through the partner-mediated reporting channel per [D0013](D0013-pilot-consent-exit.md). The §4.2 minimal-project-operated-infrastructure principle ships without exception at v1. v1.5+ may add an in-app encrypted crash-reporting flow if pilot evidence demonstrates the partner channel does not capture the operational data the project needs.
+
+6. **Multi-target build pipeline cut from v1 (F2).** v1 build pipeline produces the GrapheneOS-Pixel APK only; cross-compilation scaffolding for v2 USB images, v2 iOS bundles, or v3 mesh-node firmware is deferred to v2 when funding for platform-expansion engineering work closes. UniFFI binding maintenance for the Rust↔Kotlin v1 boundary remains a v1 working-set component per D0003.
+
+7. **Property-based migration test framework deferred to v1.5 (F3).** Schema-versioning _fields_ ship from v1 onward; the property-based migration test framework lands at v1.5 alongside the first real schema migration. v1 has one schema, so no migration-framework target exists at v1; basic forward/backward round-trip tests cover the single schema until v1.5.
+
+8. **UnifiedPush distributor-selection UX deferred to v1.5 (F12).** v1 ships polling-only with no in-app distributor-selection UX. The architectural slot for UnifiedPush integration is preserved per §6.4. The v1.5 revisitation of push-default plus distributor-selection UX depends on pilot feedback — distributor selection becomes operationally relevant when polling-vs-push becomes a user choice rather than a project default.
+
 ## Alternatives considered
 
 **Option B — Moderate cuts (2 cuts).** Defer two of the four candidates. Rejected because the engineering review's pattern was that the four together close the gap; partial cuts likely leave a residual 3-5 month overrun that surfaces under deadline pressure when scope has lost its margin.
