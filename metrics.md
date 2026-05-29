@@ -267,6 +267,31 @@ beyond the Tier 1 MDC line.
     deferred to higher-layer surface (will live in
     `cairn-trust-graph-state` or `cairn-recovery` once those land)
 
+- [x] **`cairn-trust-graph::chain` stateless chain-link validator per
+      D0006 §2 + §5** — 2026-05-29
+  - `verify_chain_links(ops, token_bytes, expected_op_identity)`
+    validates a sequence of `SignedTrustGraphOp`s for one
+    `(issuer, subject)` pair: each op runs through the existing
+    `verify_chain` (hops #1 + #2); plus chain-structure checks per
+    D0006 §5 — genesis op has empty `prior_hash`, each non-genesis
+    op's `prior_hash` equals `SHA-256(prior op's signature)`, all ops
+    share the same `(issuer, subject)` pair, timestamps are
+    non-decreasing
+  - Five new error variants in `TrustGraphError`: `ChainEmpty`,
+    `ChainGenesisNotEmpty`, `ChainPriorHashMismatch`,
+    `ChainPairMismatch`, `ChainTimestampRegression` — all carry the
+    offending index per D0018 §4.2 (no `Vec<u8>` payloads in error
+    bodies)
+  - 9 new tests covering: empty chain rejection; single-op genesis
+    happy path; 3-op well-formed chain with manual SHA-256 cross-check
+    of each link; non-empty genesis rejected; broken prior_hash link
+    rejected; cross-(issuer, subject) reordering rejected; timestamp
+    regression rejected; per-op verify failures propagated (wrong
+    expected operational identity); 16-op long-chain smoke test
+  - Stateful slice (cascade quarantine + 90-day stale-flag escalation)
+    remains deferred — requires persistent storage architecture
+    decisions outside D0018's current scope
+
 - [x] **D0006 §8 `external_aad` domain separation applied across
       cairn-identity + cairn-trust-graph + cairn-recovery** — 2026-05-29
   - Domain-separation tags exported as `pub const DOMAIN_TAG: &[u8]`

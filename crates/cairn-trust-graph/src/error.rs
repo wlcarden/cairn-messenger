@@ -82,4 +82,41 @@ pub enum TrustGraphError {
     /// the bound token as part of the trust-graph op chain).
     #[error("capability token verification failed: {0}")]
     CapabilityTokenVerify(#[from] cairn_identity::IdentityError),
+    /// Chain-walk: the first op in a chain claimed a non-empty
+    /// `prior_hash` (only the genesis op may have an empty `prior_hash`).
+    #[error("chain-walk: op at index {index} claimed to be genesis but has non-empty prior_hash")]
+    ChainGenesisNotEmpty {
+        /// Position of the offending op in the input slice.
+        index: usize,
+    },
+    /// Chain-walk: a non-genesis op's `prior_hash` did not match the
+    /// SHA-256 of the previous op's signature per D0006 §5.
+    #[error(
+        "chain-walk: op at index {index} prior_hash does not match SHA-256 of prior op signature"
+    )]
+    ChainPriorHashMismatch {
+        /// Position of the offending op in the input slice.
+        index: usize,
+    },
+    /// Chain-walk: ops in the chain disagree on the `(issuer, subject)`
+    /// pair. A chain is per-(issuer, subject) per D0006 §5; cross-pair
+    /// reordering is a structural error.
+    #[error("chain-walk: op at index {index} has (issuer, subject) pair different from chain head")]
+    ChainPairMismatch {
+        /// Position of the offending op in the input slice.
+        index: usize,
+    },
+    /// Chain-walk: timestamps must be non-decreasing along the chain
+    /// (each op was issued at or after its predecessor). A regression
+    /// indicates either a clock-rewind reuse attempt or a reordering
+    /// attack.
+    #[error("chain-walk: op at index {index} timestamp is earlier than its predecessor")]
+    ChainTimestampRegression {
+        /// Position of the offending op in the input slice.
+        index: usize,
+    },
+    /// Chain-walk: caller passed an empty slice. A chain must have at
+    /// least one op (the genesis).
+    #[error("chain-walk: empty chain — must contain at least one op")]
+    ChainEmpty,
 }
