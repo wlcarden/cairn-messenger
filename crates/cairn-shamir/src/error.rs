@@ -70,4 +70,11 @@ pub enum ShamirError {
     /// distinguishing them is the application layer's responsibility.
     #[error("Shamir commitment verification failed")]
     CommitmentMismatch,
+    /// The underlying `vsss-rs::Gf256` split operation returned an
+    /// error. Practically unreachable for inputs that pass Cairn's
+    /// pre-validation (`threshold` / `num_shares` / secret length), but
+    /// the variant exists so we never `unwrap` on the library's
+    /// `Result`.
+    #[error("vsss-rs split operation failed")]
+    VsssSplitFailed,
 }

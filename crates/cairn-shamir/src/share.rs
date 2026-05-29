@@ -1,41 +1,35 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 Cairn maintainers and contributors
 
-//! Byte-level Shamir Secret Sharing for the 32-byte Ed25519 seed.
+//! Byte-level Shamir Secret Sharing wrapping `vsss-rs::Gf256`.
 //!
-//! The algorithm runs independently on each of the `SECRET_LEN` (= 32)
-//! byte positions: for each position a random `GF(2⁸)` polynomial of
-//! degree `threshold - 1` is drawn, with the secret byte as the
-//! constant term. Each share's byte at that position is the polynomial
-//! evaluated at the share's identifier. Reconstruction recovers the
-//! constant term by Lagrange interpolation at `x = 0` over any
-//! `threshold` shares.
+//! Per D0018 §3.1: `vsss-rs` 5.4.0's `Gf256` module implements
+//! byte-level GF(2⁸) Shamir with explicitly constant-time arithmetic
+//! (no lookup tables; documented at `vsss-rs-5.4.0/src/gf256.rs:1-9`).
+//! That construction is the Cure53 PVY-01-003 reference per D0018 §3.1
+//! line 316.
 //!
-//! ## Public API
+//! This module wraps `Gf256::split_array` / `combine_array` in Cairn's
+//! `Share` + `Commitment` discipline:
 //!
-//! - [`split`]: produce `num_shares` shares + a [`Commitment`] from a
-//!   secret seed.
-//! - [`reconstruct`]: recover the seed from any `threshold` shares,
-//!   gated on commitment verification.
-//! - [`Share`]: opaque wrapper around `(id, bytes)` with [`Zeroize`]
-//!   discipline on the byte material.
+//! - [`Share`] carries `(id, value_bytes)` with `Zeroizing` discipline
+//!   on the value bytes. Internal representation mirrors our prior
+//!   API; conversion to/from the `vsss-rs` `Vec<u8>` wire format
+//!   (`[id, value_bytes...]` of length `SECRET_LEN + 1`) happens at
+//!   the API boundary.
+//! - [`split`] returns shares + a [`Commitment`] (BLAKE3 commit-of-
+//!   secret per D0018 §3.4 — `vsss-rs` does not provide one).
+//! - [`reconstruct`] verifies the commitment after recombination;
+//!   commitment mismatch is uniform across corrupted shares /
+//!   insufficient shares / tampered commitment per D0018 §3.4.
 //!
 //! ## Parameter constraints
 //!
 //! - `threshold ∈ [2, 255]`. `threshold = 1` is mathematically valid
 //!   but provides zero security (every share equals the secret); it is
 //!   rejected to make the security contract explicit.
-//! - `num_shares ∈ [threshold, 255]`. `num_shares > 255` is impossible
-//!   because share identifiers are `u8 ∈ [1, 255]` (`0` is reserved for
-//!   the secret evaluation point).
-//!
-//! ## Constant-time discipline
-//!
-//! All loops bound on public quantities (`SECRET_LEN`, `threshold`,
-//! `num_shares`) — never on secret bytes. Field operations come from
-//! [`crate::gf256`], which is constant-time by construction.
-//! Reconstruction's Lagrange formula reads share bytes at public loop
-//! indices; the share identifiers (`u8`) are public values.
+//! - `num_shares ∈ [threshold, 255]`. The `u8` typing already prevents
+//!   `num_shares > 255`.
 //!
 //! ## What this module does NOT verify
 //!
@@ -49,15 +43,22 @@
 //!   without that outer wrapping.
 
 use rand_core::{CryptoRng, RngCore};
+use vsss_rs::Gf256;
 use zeroize::Zeroizing;
 
 use crate::commit::Commitment;
 use crate::error::ShamirError;
-use crate::gf256;
 
 /// Length of the Shamir secret in bytes (= 32 = Ed25519 seed length per
 /// RFC 8032 §5.1.5).
 pub const SECRET_LEN: usize = 32;
+
+/// Length of a single share's wire representation in bytes.
+///
+/// `vsss-rs::Gf256` shares are `[id_byte, value_byte_per_secret_position...]`
+/// of length `secret.len() + 1`. For Cairn's 32-byte seed, shares are
+/// `SECRET_LEN + 1 = 33` bytes.
+pub const SHARE_LEN: usize = SECRET_LEN + 1;
 
 /// A single Shamir share.
 ///
@@ -66,8 +67,7 @@ pub const SECRET_LEN: usize = 32;
 /// polynomial value at that point, for each of the 32 byte positions
 /// independently).
 ///
-/// The payload is wrapped in [`Zeroizing`] so it zeroes on drop. The
-/// `Share` itself implements [`Zeroize`]-on-drop transitively.
+/// The payload is wrapped in [`Zeroizing`] so it zeroes on drop.
 #[derive(Clone)]
 pub struct Share {
     id: u8,
@@ -104,6 +104,42 @@ impl Share {
     pub fn bytes(&self) -> &[u8; SECRET_LEN] {
         &self.bytes
     }
+
+    /// Encode to the `vsss-rs` share wire format (`[id, value...]`).
+    ///
+    /// Used by [`reconstruct`] when calling `Gf256::combine_array`. Not
+    /// public — callers who need the wire format should serialize
+    /// `id() ++ bytes()` themselves.
+    fn to_vsss_format(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(SHARE_LEN);
+        v.push(self.id);
+        v.extend_from_slice(self.bytes.as_ref());
+        v
+    }
+
+    /// Decode from the `vsss-rs` share wire format.
+    ///
+    /// Used by [`split`] to convert `Gf256::split_array`'s output into
+    /// Cairn's typed `Share` representation.
+    ///
+    /// `indexing_slicing` allowed: the early `raw.len() != SHARE_LEN`
+    /// check proves `raw[0]` and `raw[1..]` are statically in-range.
+    #[allow(clippy::indexing_slicing)]
+    fn from_vsss_format(raw: &[u8]) -> Result<Self, ShamirError> {
+        if raw.len() != SHARE_LEN {
+            return Err(ShamirError::VsssSplitFailed);
+        }
+        let id = raw[0];
+        if id == 0 {
+            return Err(ShamirError::InvalidShareId);
+        }
+        let mut bytes = [0u8; SECRET_LEN];
+        bytes.copy_from_slice(&raw[1..]);
+        Ok(Self {
+            id,
+            bytes: Zeroizing::new(bytes),
+        })
+    }
 }
 
 impl core::fmt::Debug for Share {
@@ -116,9 +152,10 @@ impl core::fmt::Debug for Share {
 /// Split a 32-byte secret into `num_shares` Shamir shares with a
 /// recovery `threshold`.
 ///
-/// Returns the share vector and a BLAKE3 commit-of-secret (per
-/// [`Commitment::for_secret`]) that [`reconstruct`] uses to verify the
-/// recovered seed.
+/// Delegates the GF(2⁸) Shamir arithmetic to `vsss-rs::Gf256::split_array`
+/// (Cure53-cited construction). Returns the typed shares + a BLAKE3
+/// commit-of-secret per [`Commitment::for_secret`] that [`reconstruct`]
+/// uses to verify the recovered seed.
 ///
 /// # Errors
 ///
@@ -126,6 +163,9 @@ impl core::fmt::Debug for Share {
 ///   `threshold > num_shares`, or `num_shares == 0`.
 /// - [`ShamirError::ThresholdTooLow`] if `threshold == 1` (provides
 ///   zero security; `threshold >= 2` is required).
+/// - [`ShamirError::VsssSplitFailed`] if the underlying `vsss-rs`
+///   split operation fails (practically unreachable for inputs that
+///   pass Cairn's pre-validation).
 pub fn split<R: CryptoRng + RngCore>(
     secret: &Zeroizing<[u8; SECRET_LEN]>,
     threshold: u8,
@@ -141,56 +181,30 @@ pub fn split<R: CryptoRng + RngCore>(
     if threshold == 1 {
         return Err(ShamirError::ThresholdTooLow { threshold });
     }
-    // `num_shares > 255` cannot occur because the parameter is `u8`.
 
     let commitment = Commitment::for_secret(secret.as_ref());
 
-    // Pre-allocate the share storage with zero payloads.
-    let mut shares: Vec<Share> = (1..=num_shares)
-        .map(|id| Share {
-            id,
-            bytes: Zeroizing::new([0u8; SECRET_LEN]),
-        })
-        .collect();
+    let raw_shares = Gf256::split_array(
+        threshold as usize,
+        num_shares as usize,
+        secret.as_ref(),
+        rng,
+    )
+    .map_err(|_| ShamirError::VsssSplitFailed)?;
 
-    // For each byte position, generate a random polynomial of degree
-    // (threshold - 1) and evaluate it at each share's identifier.
-    let mut coeffs: Zeroizing<Vec<u8>> = Zeroizing::new(vec![0u8; threshold as usize]);
-    for pos in 0..SECRET_LEN {
-        // `pos` is a fixed public index, not a secret-dependent one.
-        // The index reads below operate at compile-known offsets.
-        let coeffs_slice = coeffs.as_mut_slice();
-        // Constant term = the secret byte at this position.
-        #[allow(clippy::indexing_slicing)]
-        {
-            coeffs_slice[0] = secret.as_ref()[pos];
-        }
-        // Random higher-order coefficients. `threshold >= 2` is
-        // guaranteed by the early-error check, so `coeffs_slice[1..]`
-        // is a non-empty slice.
-        #[allow(clippy::indexing_slicing)]
-        rng.fill_bytes(&mut coeffs_slice[1..]);
-
-        for share in &mut shares {
-            let y = gf256::poly_eval(coeffs_slice, share.id);
-            #[allow(clippy::indexing_slicing)]
-            {
-                share.bytes.as_mut_slice()[pos] = y;
-            }
-        }
-    }
-
-    Ok((shares, commitment))
+    raw_shares
+        .iter()
+        .map(|raw| Share::from_vsss_format(raw))
+        .collect::<Result<Vec<_>, _>>()
+        .map(|shares| (shares, commitment))
 }
 
 /// Reconstruct the secret from `shares`, gated on the commitment check.
 ///
-/// Requires at least `threshold` shares (the threshold used at
-/// [`split`] time). The caller is responsible for delivering exactly
-/// the share count that matches their chosen `threshold`; this function
-/// performs Lagrange interpolation over however many shares are
-/// supplied. Supplying fewer than `threshold` shares produces a
-/// candidate that fails the commitment check (rejected).
+/// Delegates to `vsss-rs::Gf256::combine_array` for the GF(2⁸) Lagrange
+/// interpolation. Requires at least `threshold` shares (the threshold
+/// used at [`split`] time); supplying fewer produces a candidate that
+/// fails the commitment check.
 ///
 /// # Errors
 ///
@@ -200,7 +214,8 @@ pub fn split<R: CryptoRng + RngCore>(
 ///   identifier.
 /// - [`ShamirError::CommitmentMismatch`] if the reconstructed candidate
 ///   does not match the stored commitment (corrupted shares, malicious
-///   reconstruction shares, or insufficient share count).
+///   reconstruction shares, insufficient share count, or `vsss-rs`
+///   combine returning an unexpected error).
 pub fn reconstruct(
     shares: &[Share],
     commitment: &Commitment,
@@ -210,94 +225,43 @@ pub fn reconstruct(
     }
 
     // Reject id == 0 and duplicate ids in one pass.
+    // `indexing_slicing` allowed: `share.id` is a `u8 ∈ [1, 255]` (the
+    // `== 0` branch returns early), `seen_ids` has length 256, so
+    // `seen_ids[id_idx]` is statically in-range.
     let mut seen_ids = [false; 256];
     for share in shares {
         if share.id == 0 {
             return Err(ShamirError::InvalidShareId);
         }
         let id_idx = share.id as usize;
-        // `id_idx ∈ 1..=255`, well within the `[bool; 256]` bound.
+        #[allow(clippy::indexing_slicing)]
+        if seen_ids[id_idx] {
+            return Err(ShamirError::DuplicateShareId { id: share.id });
+        }
         #[allow(clippy::indexing_slicing)]
         {
-            if seen_ids[id_idx] {
-                return Err(ShamirError::DuplicateShareId { id: share.id });
-            }
             seen_ids[id_idx] = true;
         }
     }
 
-    let mut secret: Zeroizing<[u8; SECRET_LEN]> = Zeroizing::new([0u8; SECRET_LEN]);
-    // Allocate once outside the byte-position loop.
-    let mut points: Vec<(u8, u8)> = Vec::with_capacity(shares.len());
+    let raw_shares: Vec<Vec<u8>> = shares.iter().map(Share::to_vsss_format).collect();
+    let secret_bytes =
+        Gf256::combine_array(&raw_shares).map_err(|_| ShamirError::CommitmentMismatch)?;
 
-    for pos in 0..SECRET_LEN {
-        points.clear();
-        for share in shares {
-            // `pos` is a fixed public index; bytes access is constant
-            // for the byte under consideration.
-            #[allow(clippy::indexing_slicing)]
-            points.push((share.id, share.bytes.as_slice()[pos]));
-        }
-        #[allow(clippy::indexing_slicing)]
-        {
-            secret.as_mut_slice()[pos] = lagrange_at_zero(&points);
-        }
+    if secret_bytes.len() != SECRET_LEN {
+        return Err(ShamirError::CommitmentMismatch);
     }
 
-    // Verify commitment in constant time.
+    let mut secret_arr = [0u8; SECRET_LEN];
+    secret_arr.copy_from_slice(&secret_bytes);
+    let secret: Zeroizing<[u8; SECRET_LEN]> = Zeroizing::new(secret_arr);
+
     let computed = Commitment::for_secret(secret.as_ref());
     if !computed.ct_eq(commitment) {
         return Err(ShamirError::CommitmentMismatch);
     }
 
     Ok(secret)
-}
-
-/// Lagrange interpolation of a polynomial through `points` evaluated at
-/// `x = 0`, in `GF(2⁸)`.
-///
-/// Returns the constant term of the unique polynomial of degree
-/// `points.len() - 1` passing through the supplied points. Used by
-/// [`reconstruct`] to recover each byte of the secret.
-///
-/// In `GF(2⁸)` (characteristic 2), subtraction equals addition (XOR),
-/// so the standard Lagrange formula
-///
-/// ```text
-/// P(0) = Σᵢ yᵢ · Πⱼ≠ᵢ (-xⱼ) / (xᵢ - xⱼ)
-/// ```
-///
-/// simplifies to
-///
-/// ```text
-/// P(0) = Σᵢ yᵢ · Πⱼ≠ᵢ xⱼ / (xᵢ + xⱼ)
-/// ```
-///
-/// The denominators `xᵢ + xⱼ` are guaranteed non-zero by the caller
-/// (which rejects duplicate share identifiers before this function is
-/// reached).
-fn lagrange_at_zero(points: &[(u8, u8)]) -> u8 {
-    let mut result: u8 = 0;
-    let n = points.len();
-    for i in 0..n {
-        // `i < n == points.len()`, so the index is always in-range.
-        #[allow(clippy::indexing_slicing)]
-        let (xi, yi) = points[i];
-        let mut num: u8 = 1;
-        let mut den: u8 = 1;
-        for (j, &(xj, _)) in points.iter().enumerate() {
-            if i == j {
-                continue;
-            }
-            num = gf256::mul(num, xj);
-            den = gf256::mul(den, gf256::add(xi, xj));
-        }
-        // `den != 0` because all xⱼ are distinct (duplicate-id rejected
-        // by caller) → `xᵢ + xⱼ != 0` for every `j != i`.
-        let term = gf256::mul(yi, gf256::mul(num, gf256::inv(den)));
-        result = gf256::add(result, term);
-    }
-    result
 }
 
 #[cfg(test)]
@@ -355,14 +319,11 @@ mod tests {
 
     #[test]
     fn reconstruct_any_subset_of_threshold_shares() {
-        // The shares must be reconstructable from ANY threshold-many
-        // subset, not just the first `threshold` shares.
         let mut rng = OsRng;
         let secret = random_secret(&mut rng);
 
         let (shares, commitment) = split(&secret, 3, 5, &mut rng).unwrap();
 
-        // Try several different 3-share subsets.
         let subset_a = vec![shares[0].clone(), shares[2].clone(), shares[4].clone()];
         let subset_b = vec![shares[1].clone(), shares[3].clone(), shares[4].clone()];
         let subset_c = vec![shares[2].clone(), shares[3].clone(), shares[0].clone()];
@@ -383,10 +344,6 @@ mod tests {
 
     #[test]
     fn reconstruct_fewer_than_threshold_fails_commitment() {
-        // With threshold=3 but only 2 shares, Lagrange interpolation
-        // produces some arbitrary value that does not equal the secret.
-        // The commitment check catches this and returns the proper
-        // error variant.
         let mut rng = OsRng;
         let secret = random_secret(&mut rng);
 
@@ -399,15 +356,11 @@ mod tests {
 
     #[test]
     fn tampered_share_byte_fails_commitment() {
-        // Flipping a bit in one share's payload causes reconstruction
-        // to produce a different candidate seed; the commitment check
-        // rejects it.
         let mut rng = OsRng;
         let secret = random_secret(&mut rng);
 
         let (mut shares, commitment) = split(&secret, 3, 5, &mut rng).unwrap();
 
-        // Tamper with share[0]'s first byte.
         let mut tampered_bytes = *shares[0].bytes();
         tampered_bytes[0] ^= 0xFF;
         shares[0] = Share::try_from_parts(shares[0].id(), Zeroizing::new(tampered_bytes)).unwrap();
@@ -418,18 +371,14 @@ mod tests {
 
     #[test]
     fn tampered_commitment_rejects_correct_shares() {
-        // Even with valid shares, a tampered commitment causes the
-        // reconstruction to be rejected.
         let mut rng = OsRng;
         let secret = random_secret(&mut rng);
 
         let (shares, commitment) = split(&secret, 3, 5, &mut rng).unwrap();
 
-        // Construct a different commitment.
         let other_commitment = Commitment::for_secret(b"different seed");
         let result = reconstruct(&shares[..3], &other_commitment);
         assert!(matches!(result, Err(ShamirError::CommitmentMismatch)));
-        // Confirm the commitments are actually different.
         assert!(!commitment.ct_eq(&other_commitment));
     }
 
@@ -438,7 +387,6 @@ mod tests {
         let mut rng = OsRng;
         let secret = random_secret(&mut rng);
 
-        // threshold == 0
         assert!(matches!(
             split(&secret, 0, 5, &mut rng),
             Err(ShamirError::InvalidParameters {
@@ -446,7 +394,6 @@ mod tests {
                 num_shares: 5
             })
         ));
-        // threshold > num_shares
         assert!(matches!(
             split(&secret, 6, 5, &mut rng),
             Err(ShamirError::InvalidParameters {
@@ -454,7 +401,6 @@ mod tests {
                 num_shares: 5
             })
         ));
-        // num_shares == 0
         assert!(matches!(
             split(&secret, 1, 0, &mut rng),
             Err(ShamirError::InvalidParameters {
@@ -466,7 +412,6 @@ mod tests {
 
     #[test]
     fn split_rejects_threshold_one() {
-        // threshold=1 provides zero security and is rejected by design.
         let mut rng = OsRng;
         let secret = random_secret(&mut rng);
 
@@ -501,12 +446,11 @@ mod tests {
         let secret = random_secret(&mut rng);
 
         let (shares, commitment) = split(&secret, 2, 3, &mut rng).unwrap();
-        // Use share[0] twice — duplicate id.
         let dup = vec![shares[0].clone(), shares[0].clone()];
         let result = reconstruct(&dup, &commitment);
         assert!(matches!(
             result,
-            Err(ShamirError::DuplicateShareId { id: 1 })
+            Err(ShamirError::DuplicateShareId { id: _ })
         ));
     }
 
@@ -517,13 +461,11 @@ mod tests {
         let debug_str = format!("{share:?}");
         assert!(debug_str.contains("id=7"));
         assert!(debug_str.contains("redacted"));
-        // The byte value `AB` must NOT leak into the Debug output.
         assert!(!debug_str.contains("ab"));
     }
 
-    /// Cross-check: split with k-of-n, gather all n shares, verify each
-    /// possible k-subset reconstructs correctly. Exhaustive over
-    /// `C(n, k)` combinations for a small n.
+    /// Exhaustive over C(n, k): split with k-of-n, verify every
+    /// possible k-subset reconstructs correctly.
     #[test]
     fn exhaustive_3_of_4_subset_reconstruction() {
         let mut rng = OsRng;
@@ -531,7 +473,6 @@ mod tests {
 
         let (shares, commitment) = split(&secret, 3, 4, &mut rng).unwrap();
 
-        // C(4, 3) = 4 subsets.
         for skip in 0..4 {
             let subset: Vec<Share> = shares
                 .iter()
@@ -553,10 +494,8 @@ mod tests {
 #[cfg(test)]
 mod proptests {
     // `arithmetic_side_effects` / `indexing_slicing` allowed at module
-    // scope: the proptest strategies bound the inputs (`threshold ∈
-    // [2, 10]`, `extra ∈ [0, 5]`), so `threshold + extra` is well
-    // under `u8::MAX` and all indices are bounded by proptest-supplied
-    // moduli.
+    // scope: the proptest strategies bound the inputs so all arithmetic
+    // and indexing is well-defined by construction.
     #![allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 
     use super::*;
@@ -585,13 +524,7 @@ mod proptests {
 
         /// Property: any single-bit tamper of any share byte causes
         /// reconstruction to fail the commitment check.
-        ///
-        /// `arithmetic_side_effects` / `indexing_slicing` allowed: the
-        /// tamper indices are bounded by the proptest strategy, and the
-        /// modulo operations are well-defined because the divisors are
-        /// strictly positive.
         #[test]
-        #[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
         fn prop_single_bit_tamper_fails(
             secret_bytes in any::<[u8; SECRET_LEN]>(),
             share_index in 0usize..3,
@@ -602,7 +535,6 @@ mod proptests {
             let secret = Zeroizing::new(secret_bytes);
             let (mut shares, commitment) = split(&secret, 3, 3, &mut rng).unwrap();
 
-            // Tamper the chosen share's chosen byte at the chosen bit.
             let target_idx = share_index % shares.len();
             let mut tampered = *shares[target_idx].bytes();
             tampered[byte_index] ^= 1 << bit_index;

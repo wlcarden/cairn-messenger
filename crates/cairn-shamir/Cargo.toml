@@ -4,7 +4,7 @@
 [package]
 name = "cairn-shamir"
 version = "0.1.0-dev"
-description = "Cairn Shamir Secret Sharing with BLAKE3 commit-of-secret per D0006 §9 + D0018 §3"
+description = "Cairn Shamir Secret Sharing wrapping vsss-rs::Gf256 with BLAKE3 commit-of-secret per D0006 §9 + D0018 §3"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -15,23 +15,14 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-# === Shamir Secret Sharing — byte-level GF(256), not vsss-rs ===
+# === Shamir Secret Sharing (D0018 §3.1) ===
 #
-# D0018 §3.1 originally pinned `vsss-rs` 4.3.8 for Shamir Secret Sharing.
-# Investigation during implementation revealed `vsss-rs` requires the
-# secret to live in a `PrimeField` (cryptographic-curve scalar field), not
-# at the byte level. Cairn splits the 32-byte Ed25519 *seed* (RFC 8032
-# §5.1.5), not the derived scalar — splitting at the seed layer preserves
-# Ed25519's deterministic-nonce contract per RFC 8032 §5.1.6 across
-# multi-site reconstruction (D0006 §9). The byte-level GF(2^8) Shamir
-# implementation lives in `src/gf256.rs` + `src/share.rs`. The algorithm
-# is small enough (~150 LoC core) that an audit-target implementation is
-# more auditable than wrapping `vsss-rs`'s generic abstractions.
-#
-# `vsss-rs` may return as a dependency if cairn-shamir grows verifiable
-# secret sharing (Feldman / Pedersen VSS) for trust-graph attestations
-# per D0006 §6 — that use case operates over curve scalars and fits
-# `vsss-rs`'s shape.
+# vsss-rs 5.4.0's `gf256` module implements byte-level GF(2⁸) Shamir
+# with explicitly constant-time arithmetic (no lookup tables). The
+# construction is the Cure53 PVY-01-003 reference per D0018 §3.1
+# line 316. We wrap `Gf256::split_array` / `combine_array` to carry
+# our Share / Commitment discipline.
+vsss-rs = { workspace = true }
 
 # === Commit-of-secret hash (D0018 §3.4) ===
 blake3 = { workspace = true }

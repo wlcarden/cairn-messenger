@@ -4,12 +4,14 @@
 //! # cairn-shamir
 //!
 //! Shamir Secret Sharing for the 32-byte Ed25519 seed per D0006 §9 + D0018
-//! §3. Splits a [`cairn_crypto::ed25519::SigningKey`]'s seed bytes into
-//! `n` shares such that any `k` shares reconstruct the seed, but any
-//! `< k` shares leak nothing about it (information-theoretic security in
-//! the sharing layer itself; identity confidentiality at the application
-//! layer depends on the trust-graph + recovery-peer authentication per
-//! D0006).
+//! §3. Wraps `vsss-rs` 5.4.0's `Gf256` byte-level GF(2⁸) implementation
+//! (Cure53 PVY-01-003 reference per D0018 §3.1 line 316) in Cairn's
+//! Share / Commitment discipline.
+//!
+//! Any `k` shares reconstruct the seed; any `< k` shares leak nothing
+//! about it (information-theoretic security in the sharing layer
+//! itself; identity confidentiality at the application layer depends
+//! on the trust-graph + recovery-peer authentication per D0006).
 //!
 //! ## Why seed-not-scalar
 //!
@@ -39,52 +41,32 @@
 //!    contributed the bad share — Cairn's trust-graph layer surfaces
 //!    that information separately.
 //! 3. **Implementation drift.** A peer running a different Shamir
-//!    implementation that produces subtly-different shares (different
-//!    field, different polynomial encoding) is caught at the commitment
-//!    check rather than producing a silently-wrong seed.
+//!    implementation that produces subtly-different shares is caught
+//!    at the commitment check rather than producing a silently-wrong
+//!    seed.
 //!
-//! The commitment is NOT a secret. It travels alongside the shares.
-//!
-//! ## Implementation strategy: byte-level GF(2⁸), not vsss-rs
-//!
-//! D0018 §3.1 originally pinned `vsss-rs` 4.3.8 for Shamir Secret
-//! Sharing. Investigation revealed `vsss-rs::shamir::split_secret`
-//! requires `F: PrimeField` (cryptographic-curve scalar field). Cairn's
-//! seed-not-scalar requirement means the secret is 32 *bytes*, not a
-//! scalar — byte-level GF(2⁸) Shamir is required, which `vsss-rs` does
-//! not implement at v4.3.8.
-//!
-//! The byte-level GF(2⁸) Shamir algorithm is small (~150 `LoC` core),
-//! well-known, and more auditable than wrapping a generic library. This
-//! crate implements it directly with documented constant-time intent
-//! across all secret-bearing intermediates. A future D-doc will record
-//! the D0018 §3.1 revision.
+//! `vsss-rs` does NOT provide a commit-of-secret primitive; this is
+//! the value-add of `cairn-shamir::commit` on top of the audited
+//! `Gf256` arithmetic.
 //!
 //! ## Constant-time discipline
 //!
-//! All field-arithmetic primitives ([`gf256`]) operate without
-//! data-dependent branches or table lookups indexed by secret values.
-//! The shift-and-conditional-XOR multiplication idiom uses bitmask
-//! arithmetic (`(b & 1).wrapping_neg()` to produce the all-ones or
-//! all-zeros mask) rather than a conditional branch. Reconstruction
-//! Lagrange interpolation evaluates over a fixed loop bound determined
-//! by the share count (not the secret bytes). The `dudect-bencher`
-//! constant-time gate per D0018 §5.3 is a separate surface that
-//! empirically validates this property.
+//! The field arithmetic comes from `vsss-rs::Gf256` which explicitly
+//! disclaims lookup tables (see `vsss-rs-5.4.0/src/gf256.rs:1-9`).
+//! Cairn adds the `dudect-bencher` constant-time gate per D0018 §5.3
+//! as the operational check (forthcoming surface).
 //!
-//! ## Module organization (incremental — surfaces land per
-//! `metrics.md`)
+//! ## Module organization
 //!
 //! - [`error`] — error types for the crate
-//! - [`gf256`] — GF(2⁸) field arithmetic (constant-time)
-//! - [`share`] — `Share` type + `split` / `reconstruct` API
+//! - [`share`] — `Share` type + `split` / `reconstruct` API over
+//!   `vsss-rs::Gf256`
 //! - [`commit`] — BLAKE3 commit-of-secret construction + verification
 
 pub mod commit;
 pub mod error;
-pub mod gf256;
 pub mod share;
 
 pub use commit::{COMMITMENT_LEN, Commitment};
 pub use error::ShamirError;
-pub use share::{SECRET_LEN, Share, reconstruct, split};
+pub use share::{SECRET_LEN, SHARE_LEN, Share, reconstruct, split};
