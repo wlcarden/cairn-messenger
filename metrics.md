@@ -330,7 +330,7 @@ implementation session because they demonstrate end-to-end
 functionality with the existing primitives.
 
 - [x] **`cairn-cli` minimum-demoable-capability binary** — 2026-05-29
-  - Twelve subcommands cover the full v1 protocol shape end-to-end
+  - Fourteen subcommands cover the full v1 protocol shape end-to-end
     across all three hops of the D0006 §9 verification chain: - `gen-key` / `pubkey` — Ed25519 keypair management - `issue-token` / `verify-token` — capability token issuance +
     verification (D0006 §9 hop #2) - `sign-message` / `verify-message` — device-key signs payload
     under a capability token; verifier enforces order (token first,
@@ -348,7 +348,14 @@ revoke-compromise | re-attest`) / `verify-trust-op` —
     `attest-operational-identity` composes
     `cairn-shamir::reconstruct` + `cairn-recovery::reconstruct_and_attest`
     with the master seed held in `Zeroizing` for the call and wiped
-    on exit — seed bytes never touch disk via this command
+    on exit — seed bytes never touch disk via this command -
+    `compute-prior-hash` / `compute-issuer-cert-hash` — D0006 §5 + §7
+    canonical hash helpers exposed at the CLI. The chain demo now
+    binds `--prior-hash` for follow-up ops to the actual genesis op
+    signature hash (D0006 §5) and `--cert-hash` for any trust-graph op
+    to the actual master attestation Sig_structure hash (D0006 §7) —
+    end-to-end demonstration that the byte-level chain composition
+    works without external hash-tool reliance
   - End-to-end demos validate the happy path plus negative paths:
     - Hop #3: wrong expected-master-pubkey → MasterPubkeyMismatch
     - Hop #2b: trust-op for capability NOT in issued token scope →

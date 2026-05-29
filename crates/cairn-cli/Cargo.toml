@@ -31,6 +31,12 @@ cairn-trust-graph = { path = "../cairn-trust-graph" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 
+# === SHA-256 for the compute-issuer-cert-hash unverified path ===
+# (cairn-cli decodes envelopes without verification for byte-level
+# hash inspection; for verified-envelope paths the underlying crates'
+# helpers cover the same construction internally.)
+sha2 = { workspace = true }
+
 # === Memory hygiene (D0018 §1.6) ===
 zeroize = { workspace = true }
 

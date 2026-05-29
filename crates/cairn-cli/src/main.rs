@@ -75,6 +75,7 @@ use cairn_shamir::{COMMITMENT_LEN, Commitment, SECRET_LEN, Share, reconstruct, s
 use cairn_trust_graph::{OpType, SignedTrustGraphOp, TrustGraphOp};
 use clap::{Parser, Subcommand, ValueEnum};
 use rand_core::OsRng;
+use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 #[derive(Debug, Parser)]
@@ -302,6 +303,33 @@ enum Command {
         #[arg(long)]
         expected_master_pubkey: PathBuf,
     },
+    /// Compute the canonical D0006 §5 `prior_hash` for a trust-graph op
+    /// envelope: `SHA-256( COSE_Sign1.signature_bytes( op ) )`. Writes
+    /// 32 raw bytes to the output file (suitable for direct use as
+    /// `--prior-hash` on the next op in the chain). Also prints the
+    /// hex form to stdout for inspection.
+    ComputePriorHash {
+        /// Path to the trust-graph op envelope.
+        #[arg(long)]
+        op: PathBuf,
+        /// Output path for the 32-byte SHA-256 hash.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Compute the canonical D0006 §7 `issuer_cert_hash` for a master
+    /// attestation envelope:
+    /// `SHA-256( deterministic_cbor_encode( Sig_structure ) )`. Writes
+    /// 32 raw bytes to the output file (suitable for direct use as
+    /// `--cert-hash` on a trust-graph op or as the chain reference
+    /// on a capability token). Prints the hex form to stdout.
+    ComputeIssuerCertHash {
+        /// Path to the master attestation envelope.
+        #[arg(long)]
+        attestation: PathBuf,
+        /// Output path for the 32-byte SHA-256 hash.
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 /// Variant flag for the `trust-op` subcommand.
@@ -331,6 +359,11 @@ impl From<TrustOpKind> for OpType {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "main() is a flat dispatch over the Command enum; collapsing arms into a \
+              helper just adds indirection — each arm calls one cmd_ function"
+)]
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -429,6 +462,10 @@ fn main() -> Result<()> {
             attestation,
             expected_master_pubkey,
         } => cmd_verify_master_attestation(&attestation, &expected_master_pubkey),
+        Command::ComputePriorHash { op, out } => cmd_compute_prior_hash(&op, &out),
+        Command::ComputeIssuerCertHash { attestation, out } => {
+            cmd_compute_issuer_cert_hash(&attestation, &out)
+        }
     }
 }
 
@@ -1174,5 +1211,61 @@ fn cmd_verify_master_attestation(
         hex_encode(&att.operational_identity.to_bytes())
     );
     println!("timestamp:            {} (Unix seconds)", att.timestamp);
+    Ok(())
+}
+
+/// Compute the canonical D0006 §5 `prior_hash` for a trust-graph op
+/// envelope. Decodes the envelope (does NOT verify the chain — this is
+/// a stateless byte-level hash helper) and emits 32 raw bytes per
+/// `SignedTrustGraphOp::prior_hash_bytes()`.
+fn cmd_compute_prior_hash(op: &PathBuf, out: &PathBuf) -> Result<()> {
+    let bytes = std::fs::read(op)
+        .with_context(|| format!("failed to read trust-op envelope from {}", op.display()))?;
+    let signed_op = SignedTrustGraphOp::from_bytes(&bytes)
+        .map_err(|e| anyhow!("trust-op envelope decode failed: {e}"))?;
+    let hash = signed_op.prior_hash_bytes();
+    std::fs::write(out, hash)
+        .with_context(|| format!("failed to write prior-hash to {}", out.display()))?;
+    println!("{}", hex_encode(&hash));
+    eprintln!(
+        "Computed D0006 §5 prior_hash (32 bytes) and wrote to {}",
+        out.display()
+    );
+    Ok(())
+}
+
+/// Compute the canonical D0006 §7 `issuer_cert_hash` for a master
+/// attestation envelope. Decodes the envelope without verification
+/// (this is a stateless byte-level hash helper) and emits 32 raw
+/// bytes per `SignedMasterAttestation::issuer_cert_hash()`.
+///
+/// Note: this command intentionally does NOT verify the master
+/// attestation against an expected master pubkey — the hash is a
+/// byte-level commitment that callers may want to compute even for
+/// envelopes they're inspecting before verification. Use
+/// `verify-master-attestation` if you need to verify before hashing.
+fn cmd_compute_issuer_cert_hash(attestation: &PathBuf, out: &PathBuf) -> Result<()> {
+    let bytes = std::fs::read(attestation).with_context(|| {
+        format!(
+            "failed to read attestation envelope from {}",
+            attestation.display()
+        )
+    })?;
+    // Decode the COSE_Sign1 envelope directly to reach
+    // sig_structure_bytes; we don't need to verify here (hash is a
+    // byte commitment).
+    let envelope = CoseSign1::from_bytes(&bytes)
+        .map_err(|e| anyhow!("attestation envelope decode failed: {e}"))?;
+    let sig_structure = envelope
+        .sig_structure_bytes(cairn_recovery::DOMAIN_TAG)
+        .map_err(|e| anyhow!("Sig_structure encode failed: {e}"))?;
+    let hash: [u8; 32] = Sha256::digest(&sig_structure).into();
+    std::fs::write(out, hash)
+        .with_context(|| format!("failed to write issuer-cert-hash to {}", out.display()))?;
+    println!("{}", hex_encode(&hash));
+    eprintln!(
+        "Computed D0006 §7 issuer_cert_hash (32 bytes) and wrote to {}",
+        out.display()
+    );
     Ok(())
 }
