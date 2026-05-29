@@ -90,7 +90,10 @@ anyhow = "=1.0.86"
 
 # === Error handling (D0018 §4.2) ===
 thiserror = "=1.0.63"
-displaydoc = "=0.2.5"
+# Note: `displaydoc` removed per D0021. `thiserror` covers the
+# error-with-Display surface used by `cairn-crypto`, `cairn-envelope`,
+# and `cairn-shamir` without a separate macro layer. Re-add via D-doc
+# if a future surface needs the markdown-style doc-comment derive.
 
 # === Async (cairn-cli + I/O adapters only; NOT crypto core; D0018 §4.1) ===
 tokio = { version = "=1.40.0", features = ["rt-multi-thread", "macros"] }
