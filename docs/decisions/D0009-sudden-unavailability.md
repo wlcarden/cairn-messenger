@@ -17,9 +17,37 @@ The risk is structural: the conditions that trigger sunset (developer unavailabl
 
 The developer performs a monthly check-in to a pre-arranged signal — a signed status message published to the project's transparency log on a fixed monthly schedule. The check-in mechanism is simple (signed message, cron-scheduled human action) and verifiable (the signing identity is the developer's Sigstore identity, anchored in Rekor). A missed check-in is the trigger for advisory authority below.
 
-### Pre-arranged partner advisory authority
+### Pre-arranged partner advisory authority (30-day first-contact + 60-day public advisory per consolidated external-reads triage X5)
 
-A named partner organization is pre-arranged with the authority to publish a project status advisory if the developer's monthly check-in misses by **60 days** (two consecutive missed cycles). The advisory states the developer's last verified status, names known-good alternatives for users to migrate to, and either declares the project temporarily suspended (if recovery is anticipated) or initiates the sunset process (if no recovery is anticipated).
+A named partner organization is pre-arranged with two trigger thresholds (revised from prior single 60-day threshold per the consolidated triage finding that the §3 threat tier requires earlier detection):
+
+- **30-day first-contact threshold.** If the developer's monthly check-in misses by 30 days (one consecutive missed cycle), the partner advisory authority initiates first contact through pre-arranged direct channels — out-of-band PGP-encrypted email, partner-organization-mediated phone call, or other private channel established at partner-recruitment time. The goal is to confirm the developer's status without escalating to public advisory; many missed-check-in cases at this threshold are recoverable (developer traveling, sick, or with administrative delay). The 30-day threshold catches the 14–45 day "something is wrong" cases without immediately escalating.
+- **60-day public-advisory threshold.** If first-contact attempts at the 30-day threshold fail to confirm developer status, and the check-in remains missed at 60 days (two consecutive missed cycles), the partner advisory authority publishes a project status advisory.
+
+The advisory states the developer's last verified status, names known-good alternatives for users to migrate to, and either declares the project temporarily suspended (if recovery is anticipated) or initiates the sunset process (if no recovery is anticipated).
+
+### Per-state response plan for in-flight users at trigger fire (per consolidated external-reads triage P18)
+
+Some pilot users may be in mid-recovery, mid-rotation, or have just initiated a partner-challenge cycle at the moment the trigger fires. Their operational state depends on the project's continued operation through the next 24–96 hours. The advisory authority's announcement that the project is suspended is operationally too coarse for those users — they need specific guidance about what to do with in-flight operations. The pre-staged successor documentation (below) includes runbooks for in-flight cases:
+
+- **User mid-recovery (peers contacted, cooling-off window active).** Recovery flow continues unaffected by trigger fire — peer-side enforcement of the 48h window means shares release through peer devices, not project infrastructure; reconstruction proceeds normally on the recovering device. Successor runbook: "Recovery does not require project intervention; complete the flow as normal; if recovery requires verification through the project that is not available, the advisory authority's communication identifies the partner who can confirm recovery legitimacy in lieu of the developer."
+- **User mid-rotation (proactive key rotation in progress).** Rotation requires the master, which is on the user's recovering device, not in project infrastructure. Successor runbook: "Complete rotation as normal; the operational identity rotation is a user-local cryptographic operation that does not require project intervention."
+- **User mid-partner-challenge (recovery initiated; peer challenges in progress).** Peer challenges run between user and peers, not through project infrastructure. Successor runbook: same as mid-recovery above.
+- **User awaiting CVE patch.** If a CVE is in disclosure-and-patch cycle when the trigger fires, the multi-party APK signing-key custody (below; trustees can initiate APK rotation) is the response path. Successor runbook: identifies the trustees and the procedure for initiating emergency-patch release without developer involvement.
+
+### Duress-canary mechanism (per consolidated external-reads triage X5, M18)
+
+The dead-man's-switch monthly check-in message includes a structured affirmation that the developer is acting freely. **Absence of the affirmation triggers the partner advisory regardless of timing**, addressing the coercion-induced-false-continuation residual (a developer compelled to issue continuation signals indefinitely is detected because the affirmation is omitted by an adversary unaware of its load-bearing role, or the developer can omit it under coercion as a quiet signal).
+
+The affirmation is structured as a small constant phrase or token included in the signed check-in message; the partner advisory authority verifies its presence as part of normal check-in processing. The phrase is not secret (the partner knows what to look for), but its omission is not trivially distinguishable from a typo or formatting error — the partner verifies through the established direct-channel confirmation before publishing the advisory, applying the same 30-day-first-contact discipline. The mechanism is adapted from the warrant-canary pattern (used by Tor Project, ISP transparency reports, and others) to the dead-man's-switch flow.
+
+Implementation cost: 1–2 hrs/month additional developer time (composing the affirmation as part of the check-in message); partner-side check-in-parsing infrastructure ~20 hrs one-time setup.
+
+### Multi-party APK signing-key custody (per consolidated external-reads triage X4)
+
+The APK signing token is held under an **N-of-M trustee arrangement with 2-of-3 access threshold at v1 ship** (specified in Section 5.5; cross-referenced here as the technical-execution capability the partner advisory authority can invoke). Trustees: developer, partner advisory authority partner, one additional named individual. The arrangement allows APK Signature Scheme v3 key rotation to be initiated by 2-of-3 trustees if the developer becomes unavailable. **This is the mechanism that lets the partner advisory authority's public announcement be paired with a patched release when sudden unavailability coincides with a CVE in disclosure** — closing the failure mode where the advisory publishes "the project is in crisis" simultaneously with "and here's an unpatched vulnerability that cannot be patched without developer access to signing material."
+
+Trustee identities are named in the successor-handover documentation. Trustee renewal is on the same cadence as Q14 partner advisory authority renewal.
 
 Selection of the partner organization is deferred to Q5 outreach but constrained by criteria: (a) organizational stability sufficient to maintain the role over years; (b) institutional independence from the developer; (c) operational capacity to issue a public advisory on short notice; (d) jurisdictional placement that does not concentrate the advisory authority in the same legal process the developer's primary jurisdiction is exposed to. Candidate organizations to approach: Software Freedom Conservancy, Open Tech Fund (as a notification recipient and channel), Front Line Defenders, Tactical Tech. The advisory authority is unconditional within the partner's own operational tempo — the partner does not require further developer authorization once the 60-day trigger fires.
 

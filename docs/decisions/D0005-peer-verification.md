@@ -13,24 +13,35 @@ Three mechanism options were considered (see [section-5-review.md F1](../section
 
 **Combine pre-shared peer challenges with a delay-and-confirm protocol.** Both mechanisms specified in Section 5.3 of the design brief.
 
-### Pre-shared peer challenges
+### Pre-shared peer challenges (single-use phrases per consolidated external-reads triage C8 / M2)
 
-At provisioning, the user and each designated recovery peer establish a unique secret phrase (or shared random token) known only to that pair. Phrases are stored:
+At provisioning, the user and each designated recovery peer establish a unique secret phrase (or shared random token) known only to that pair. **Phrases are single-use:** each successful peer challenge results in a NEW phrase agreed out-of-band for the next recovery attempt, surfaced to both parties through a structured renewal flow at the recovery's completion. This closes the cryptographer review's M2 finding (long-term static phrase reusable across recovery attempts becomes closer to a password than to a cryptographic nonce; a compromised peer who saw one recovery has the phrase indefinitely under the prior reusable model). Phrases are stored:
 
-- By the user: distributed across recovery-aware notes (paper, hardware-backed password manager, or another Cairn user's encrypted message archive), not on the device itself.
+- By the user: distributed across recovery-aware notes (paper, hardware-backed password manager, or another Cairn user's encrypted message archive), not on the device itself. The off-device storage problem is named as a known weak point at this threat tier; the provisioning ceremony walks the user through specific storage options matched to their context (Section 5.3 expanded operational guidance).
 - By each peer: held in the peer's Cairn application, encrypted at rest by the peer's full-disk-encryption key.
 
 To release a share, the peer requires the user to repeat the phrase through a channel of the peer's choosing (not the recovery-request channel). The peer never transmits the phrase first — only verifies that the user can produce it independently. An adversary holding the user's seized device does not have the phrase even after full unlock (it is not stored on-device); voice cloning does not yield the phrase (the user must speak it from independent memory or recovery notes); social engineering through the recovery request itself does not yield the phrase (the peer asks for the phrase, does not provide it).
 
-### Delay-and-confirm protocol
+### Delay-and-confirm protocol (peer-side enforcement per consolidated external-reads triage C5 / H5)
 
-After all required shares have arrived and verification challenges have passed, share release is held for a mandatory **48-hour cooling-off period** before the master is reconstructed. During the window:
+After all required shares have arrived and verification challenges have passed, share release is held for a mandatory **48-hour cooling-off period** before the master is reconstructed. **The 48-hour timer runs on the peer device, not the fresh device** — closing the cryptographer review's H5 finding (the prior architectural framing had the fresh device counting down 48 hours after shares arrived, against a clock that the fresh device's owner — including a Cellebrite-class adversary holding the device — could advance to compress the window to seconds). Peer-side enforcement means:
 
-- The legitimate user can cancel the recovery through any channel they control — sending a cancellation request from any device the user has authenticated identity for, or contacting any of the peers through any out-of-band channel.
-- The fresh device displays the time remaining and the channels through which the user can cancel.
+- Each peer, upon completing challenge verification, schedules share release at its own device's current-time + 48h. The peer's device clock controls the timing, not the recovering device's clock.
+- Shares are NOT delivered to the recovering device until 48h after the peer completes challenge verification. The recovering device receives shares only at the end of the cooling-off window, not before.
+- The legitimate user can cancel the recovery during the window through any channel they control — sending a cancellation request from any device the user has authenticated identity for, or contacting any of the peers through any out-of-band channel. Cancellation reaches the peer through any channel; the peer discards its scheduled share-release.
+- The recovering device displays the time remaining and the channels through which the user can cancel; this display is informational (telling the user when shares will arrive) rather than security-enforcing (which is what the prior architecture incorrectly assumed).
 - An adversary holding the user under continuous control can prevent the user from issuing a cancellation, but the delay creates a non-zero window in which a coercion event must be either continuous (24-48h of physical control over both the user and any device the user might use to cancel) or detectable by the user's network (the user disappears for two days, peers notice).
 
-After the cooling-off period without cancellation, the master is reconstructed and the new operational identity is issued.
+After the cooling-off period without cancellation, peers release shares to the recovering device; the master is reconstructed and the new operational identity is issued.
+
+### Master re-split atomicity under interruption (per consolidated external-reads triage C10 / M4)
+
+The master re-split flow that follows reconstruction is **atomic with respect to the master's lifetime**. Specifically:
+
+- The reconstructed master seed is held in `secrecy`-wrapped pinned memory across the full re-split-and-distribute operation, not zeroized between sub-steps.
+- All N peers receive their new shares before any zeroize step fires. If new shares cannot all be delivered (network failure, peer offline, partial distribution failure), the master is zeroized, the new-share fragments are discarded by recipient peers via a re-split-failed signal, and the recovery is treated as failed-but-non-leaking. The flow does not enter a partial-completion state where the master is leaked because re-split partially completed and then crashed.
+- The new operational identity is signed by the master **only after** the re-split has succeeded across all N peers, not before. This prevents the failure mode where the master signs the new operational identity, then crashes before re-split completes, leaving the user with a new operational identity signed by a master whose re-split-distribution status is indeterminate.
+- The flow either completes in full (all peers have new shares; new operational identity is signed and propagated; master is zeroized) or no observable state change occurs (no peer has a new share; no new operational identity exists; master is zeroized).
 
 ## Alternatives considered
 

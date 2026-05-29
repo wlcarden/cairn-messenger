@@ -111,7 +111,9 @@ These checks gate the transition from working name to committed name, not from p
 
 ## Q8. Specific technical library / approach choices
 
-**Status:** Partially resolved. Architectural shape decided across D0003 (language stack), D0004 (scope cuts), D0006 (cryptographic envelope). Remaining items are library-selection within the decided architecture, deferred to system design spec.
+**Status:** **Resolved 2026-05-29 by [D0018](decisions/D0018-engineering-foundation.md), [D0019](decisions/D0019-license.md), and [D0020](decisions/D0020-integration-architecture.md).** Library selections, license, and integration architectures are now specified at the architectural-engineering level (crate names + version pinning + rationale). Remaining library-level items (specific Sigsum client implementation; specific UnifiedPush distributor catalog; etc.) are now system-design specification work that follows from the foundation D0018-D0020 establish. D0018 §1-3 specify crypto + encoding + Shamir primitives; D0020 §1-3 specify SimpleX + Tor + FFI integration mechanisms.
+
+**Pre-D0018 resolution context (kept for provenance):** the question was partially resolved at the architectural level (D0003 language stack; D0004 scope cuts; D0006 cryptographic envelope; D0017 GrapheneOS-only v1 baseline) with library-selection deferred to system design. Sprint 3 of the consolidated external-reads triage promoted library-selection resolution as a Sprint 3 priority per the MDC pathway commitment (working code before partner conversations); seven parallel deep-research agents covered current 2026 state-of-the-art across Rust cryptographic primitives, CBOR + COSE, Shamir Secret Sharing, Tor + arti on Android, SimpleX integration approaches, Rust ecosystem cross-cutting, and UniFFI + Android crypto bindings. D0018 + D0020 synthesize the research output into concrete decisions; D0019 captures the license choice (AGPL-3.0-only) which interacts with D0020's SimpleX-integration license-isolation rationale.
 
 **Resolved at the architectural level.**
 
@@ -393,7 +395,7 @@ Selection requires engagement with partner organizations who facilitate the excl
 
 ## Q26. GrapheneOS-only requirement vs CalyxOS inclusion in v1.x
 
-**Status:** Open. Surfaced by the §2 adversarial review (§2.3 update; CalyxOS as Tails/SecureDrop adjacent comparator).
+**Status:** **Resolved 2026-05-29 by [D0017](decisions/D0017-calyxos-inclusion.md).** v1 ships GrapheneOS-on-Pixel only; CalyxOS evaluation deferred to v1.x based on pilot evidence and post-pilot technical investigation. Q26.1 (v1.x CalyxOS re-evaluation) opens at v1 pilot completion as the successor question.
 
 **Context.** Section 2.2 and Section 5 commit v1 to GrapheneOS-on-Pixel hardware as the security baseline. CalyxOS is an alternative Android-hardening distribution that some users in some jurisdictions adopt instead of GrapheneOS, particularly where GrapheneOS adoption is operationally riskier (more identifiable security choice; smaller user base; specific national-software-availability conditions). Adding CalyxOS as an acceptable v1.x baseline would expand the addressable audience meaningfully.
 
@@ -403,7 +405,35 @@ Selection requires engagement with partner organizations who facilitate the excl
 - §5 architectural-commitments evaluation: does the tier-separated identity model assume specific GrapheneOS hardening properties CalyxOS does not provide?
 - §3.4 trust roots: GrapheneOS-and-CalyxOS as trust roots would need separate enumeration.
 
-**Next step.** Defer to v1.x scope evaluation after v1 pilot. Pilot feedback may indicate whether CalyxOS inclusion is operationally valuable for the populations the v1 pilot reaches. If pilot users include candidates in jurisdictions where GrapheneOS is operationally constrained, the question becomes active; otherwise it remains deferred.
+**Next step (updated per consolidated external-reads triage X10 / P3).** Resolution committed **before formal pilot recruitment** rather than after pilot evidence. Partner organizations evaluating facilitation cannot evaluate feasibility without knowing the v1 device baseline; pilot recruitment math is materially different at GrapheneOS-only vs GrapheneOS-and-CalyxOS scope. Decision dimensions: (a) which GrapheneOS-specific hardening properties Cairn depends on (StrongBox-backed key storage; verified-boot attestation; specific sandbox properties); (b) whether CalyxOS provides equivalent properties in current versions and across release cycles; (c) whether §3.4 trust-roots framing extends cleanly to a two-OS baseline; (d) whether §5.5 release-security stack operates identically on CalyxOS. Target resolution: as part of Sprint 2 of the consolidated external-reads triage execution sequence; documented as D0017 or similar if resolution requires structural decision-doc treatment.
+
+---
+
+## Q27. Contributor-attraction and retention strategy
+
+**Status:** Open. Surfaced by consolidated external-reads triage M24.
+
+**Context.** The brief frames team scaling (§8.1) as funding-conditional rather than as a contributor-attraction-and-retention problem. The maintainer external review identified that comparable projects (Briar, Cwtch) attracted contributors via mission alignment as much as compensation; treating team scaling as funding-gated misses the contribution-attraction dimension. A solo project at volunteer cadence with strong security commitments creates specific barriers to attracting a useful second contributor whose joining would meaningfully reduce solo-developer SPOF.
+
+**Specific barriers identified by the maintainer external review.**
+
+- **Technical onboarding floor.** A contributor's first meaningful security-critical PR must understand Rust + UniFFI + COSE + Shamir + GrapheneOS device specifics + trust-graph operation semantics + the §3 threat model + the §5 architecture detail. A contributor who can only contribute non-security changes has limited surface (UI polish, documentation; localization is partner-organization-mediated translator work per §8.6, not OSS contribution).
+- **Single-maintainer code-review bottleneck.** At v1, the recruited reviewer pool does not exist (deferred per D0015); the maintainer is the entire review path. Contributors who experience >2 week review windows tend to drift away.
+- **Decision-velocity bottleneck.** Every architectural change goes through one person; D0001–D0016 were all single-author decisions. A second contributor who wants to make architectural-level contributions does not have a path; they can suggest decisions, but the maintainer holds the architectural lock.
+
+**What it blocks.**
+
+- §9.1 solo-developer SPOF risk — sustained mitigation depends on contributor-attraction strategy, not only on funding for additional engineering hires.
+- §8.3 review-path scalability — the "subset designated for code review specifically" mechanism §8.3 names cannot operate until the reviewer pool exists and the architectural-decision delegation path is specified.
+- §8.4 governance evolution — under D0016 deferral, the partner advisory authority does not have architectural authority; under foundation-operating posture, the board does; the brief currently has no transition specification for the deferral-permanent case.
+
+**Next step.** Pre-implementation work: (a) identify three concrete "first-PR-friendly" surfaces and document them as such (candidates per maintainer external review: property-based test additions to the trust-graph CRDT; fuzz test corpus expansion; user-facing onboarding documentation for the facilitator handbook; reviewer toolkit Docker/Nix environment improvements per §8.2); (b) specify the architectural-decision delegation path for the deferral-permanent case; (c) commit to contributor-mentorship cadence at v1 ship (e.g., 2–4 hours/month of pair-review time with prospective second contributors). Track resolution as part of v1 documentation work and §8.3 commit-signing-requirements specification.
+
+---
+
+## Q12 update / partial resolution (per consolidated external-reads triage E1)
+
+Q12 framing updated from "is 15-min polling operationally usable" to "what is the right default for incoming notification when app is backgrounded." **The push-vs-polling default question is resolved 2026-05-29 by Sprint 2 of the consolidated external-reads triage**: v1 ships push-opt-in-with-explicit-disclosure as the default (with polling-only as an explicit user-selectable alternative for users who prefer the metadata-clean posture). Resolution documented in §5.4 and §6.1. Remaining Q12 items — pilot-feedback-tunable parameters beyond the push-default (cooling-off-window duration; stale-flag escalation timing; trust-badge UI specifics) — remain open for pilot-evidence input per the original Q12 framing.
 
 ---
 

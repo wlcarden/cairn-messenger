@@ -13,7 +13,29 @@ The §5 adversarial review (sections-5-review.md, applied via [D0005](D0005-reco
 
 ## Decision
 
-**Acknowledge non-peer recovery as out of scope for v1; commit to evaluating a non-peer recovery path for v1.x or v2 with explicit candidate paths named; surface the architecture-vs-audience gap honestly in §2.2 and §9.2 rather than leaving it implicit.**
+**Updated 2026-05-29 per consolidated external-reads triage (X9 / E11): Paper shares are accepted as a v1 alternative recovery path alongside peer recovery.** The earlier framing — non-peer recovery as v1.x/v2 candidate — is updated to ship paper shares at v1 as an alternative path users can choose at provisioning instead of (or alongside) the peer-recovery path. Remaining candidate paths (time-locked self-recovery; single-trustee with attorney-client privilege; explicit no-recovery option) remain v1.x/v2 evaluation candidates as the prior decision named.
+
+**Acknowledge time-locked self-recovery, single-trustee with attorney-client privilege, and explicit no-recovery as v1.x or v2 candidates with explicit framing; surface the architecture-vs-audience gap honestly in §2.2 and §9.2 rather than leaving it implicit.**
+
+### Paper shares: v1 alternative recovery path
+
+Multi-persona convergence across the consolidated external-reads triage (partner P8/X9 on recovery operational tempo; end-user E11 on paper shares being the realistic recovery path for working journalists) supports adding paper shares as a v1 first-class alternative recovery path. The reasoning:
+
+- **Eliminates the recovery-network surface.** Paper shares do not require a peer network the user can trust to refuse coercion; the security property rests on the user's physical-storage security rather than on peers' coercion-resistance.
+- **Eliminates the peer-maintenance burden.** Users do not need to coordinate share renewal with peers (single-use phrases per D0005); the user holds their own shares.
+- **Closes the recovery-tempo gap for journalists and time-critical users.** The 48–96 hour peer-recovery window is incompatible with journalism workflows where a source's situation escalates in hours; paper-share recovery can complete in the time it takes the user to physically retrieve their stored shares.
+- **Serves part of the v1.x non-peer recovery exclusion set.** While paper shares do not serve all the populations §2.2 names as v1 audience exclusions (sex workers under criminalization whose physical environment is itself surveilled; abuse survivors whose physical home is the threat environment; prisoners' families whose mobility is constrained), it does serve the subset of those populations who have access to off-environment storage (work locations, partner-organization offices, trusted attorney offices, safe-deposit boxes) — a non-trivial expansion of the v1 addressable audience without the full v1.x non-peer-recovery candidate set.
+
+**Engineering scope at v1:** ~40–80 hours absorbed into v1's working set. Implementation: at provisioning, the user generates Shamir 3-of-5 shares using the same scheme as peer recovery (per [D0006](D0006-cryptographic-envelope.md) and [D0005](D0005-peer-verification.md)). Shares are printed (or formatted as QR codes for camera-based recovery on a fresh device) in a format suitable for physical distribution; the user stores them in physically-distributed locations of their choosing. Recovery on a fresh device requires reassembling 3 of 5 physical shares (camera-scanned QR or manual entry). The 48-hour cooling-off window does not apply to paper-share recovery — there is no peer to enforce it, and the threat model the cooling-off window addresses (peer impersonation; coerced peer cooperation) does not apply to user-held physical shares. **Coercion resistance for paper shares rests on physical-storage security**, which the user controls and the provisioning ceremony walks through.
+
+**User-facing framing at v1:** the in-app post-coercion recovery flow (per consolidated triage E3) presents both paths at provisioning. The provisioning ceremony walks the user through the tradeoffs:
+
+- **Peer recovery:** stronger cryptographic protection against impersonation (the peers verify the user is who they claim to be); 48-hour cooling-off provides cancel window against adversary-initiated recovery; requires peer network that can refuse coercion; recovery takes 48–96 hours.
+- **Paper shares:** no peer dependency; recovery completes in hours rather than days; depends on physical-storage security the user controls; no built-in cancel window against an adversary who has gathered the physical shares (the user's primary defense is keeping the shares physically dispersed and themselves secured).
+
+The user can choose either path, or both (peer recovery + paper shares can coexist; the user has two ways to recover, each with different threat-model characteristics). The provisioning ceremony surfaces the choice rather than imposing a default.
+
+**Pilot evidence input.** Paper-share adoption rates and operational success patterns in the v1 pilot inform whether paper shares should become the default, an explicit user-selected alternative, or revert to v1.x candidate-only status. The pilot specifically tests whether paper-share users can store and retrieve their shares operationally across the 6-month pilot window without loss or compromise events.
 
 ### v1 posture: explicit acknowledgment, not silent exclusion
 

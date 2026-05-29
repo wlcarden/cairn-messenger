@@ -35,6 +35,26 @@ At v1.5 broader-release planning, the project evaluates foundation incorporation
 
 The "two or more activate" threshold reflects that any single trigger by itself may be addressable through alternative means (Safe Harbor partnership letter; partner advisory authority renewal cycle; etc.); two activating simultaneously indicates the cumulative case has become operational.
 
+### Partner-mediated trigger re-evaluation (per consolidated external-reads triage X6 / M15)
+
+The trigger evaluation is partner-mediated rather than developer-self-evaluated to close the self-bias problem identified in the consolidated external-reads triage: a developer in late-pilot burnout-denial will not assess "I am operating under structural-mitigation cascade" as true; the same developer will recognize the situation a year later when capacity has collapsed. At each trigger-evaluation moment, the project:
+
+- **Consults the D0009 partner advisory authority partner (Q14) about observed trigger criteria.** The partner sees the project's operational state from a different vantage point — partner-organization-mediated consent channel volume, partner-side reports of structural-mitigation needs, partner-organization-level signals about whether sustained engagement is operationally viable — and brings independent perspective on whether the trigger criteria are active.
+- **Consults the fiscal-sponsor partner (Q15) about funding-scale trajectory and funder-requirement observations.** The fiscal sponsor sees grant intake trends, funder application outcomes, and grantor feedback that the developer may not have integrated into trigger assessment.
+- **Documents the consultation outcome in the trigger-evaluation record.** If the partner-mediated re-evaluation surfaces trigger activation that the developer's self-evaluation did not, the partner-mediated assessment governs. This adds Q5-cycle work; the alternative is the self-bias the brief's framing currently absorbs silently.
+
+### Trigger re-evaluation at every subsequent broader-release planning cycle (per consolidated external-reads triage M20)
+
+The earlier brief versions committed to trigger evaluation at v1.5 broader-release planning. The triggers are detection-late by design (they activate after operational stress has already materialized); a single point-in-time evaluation at v1.5 may not catch criteria that activate later. D0016 now commits to **trigger re-evaluation at every subsequent broader-release planning cycle (v1.5, v1.6, v2, v3, v4+)** using the same five criteria and the same partner-mediated process. The deferral is not one-time; it is the ongoing operational state until a trigger evaluation activates incorporation work.
+
+### Broader-release sequencing during trigger-to-foundation lag (per consolidated external-reads triage M16)
+
+If a trigger activates at a broader-release planning cycle, foundation incorporation per D0010 requires 12–24 months from trigger fire to operational foundation (legal consultation; jurisdictional selection; fiscal-sponsor transition; incorporation filing; board recruitment; foundation operational state). During the lag, the project operates without the structural mitigations that triggered the activation. The decision:
+
+**Broader release waits until the foundation is operational** (12–24 month deferral from trigger fire). The alternative (release proceeds during incorporation work) produces a window where users are on broader-release software without the structural mitigations the broader-release credibility rests on — defeating the purpose of the trigger activation. The project commits to the deferral as the honest sequencing: trigger activates → broader-release planning pauses → foundation incorporation proceeds → broader release resumes once foundation is operational.
+
+The implication for the v1.5/v1.6/v2/v3 release cadence: if any trigger evaluation activates incorporation, the next release in the sequence delays by 12–24 months. Partner organizations and pilot users are informed of this sequencing at the trigger-activation announcement.
+
 ### Permanent fiscal-sponsor arrangement framing
 
 The fiscal-sponsor arrangement per [D0010](D0010-foundation-jurisdiction.md) is reframed from "pre-incorporation 18–24-month transition stage" to "operational grant-receipt structure for the duration of the deferral, which may be permanent." Section 10.5 funding-source roster surfaces this as the working assumption: fiscal sponsor is the route through which all grants are received until and unless the trigger activates. The 5–15% fee per §10.2 / §10.8 is permanent operational overhead under this framing, not transitional.

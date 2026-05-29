@@ -272,7 +272,7 @@ flowchart TB
     class Sigsum,SimpleXProp audit
 ```
 
-**Operation envelope:** each operation is a nine-field COSE_Sign1 structure per [D0006](decisions/D0006-cryptographic-envelope.md) — operation type, issuer, subject, prior hash, issuer-cert-hash, scope, timestamp, payload, signature. The prior-hash chain creates an append-only sequence per issuer; the issuer-cert-hash binding enables per-(issuer, subject) anti-equivocation.
+**Operation envelope:** each operation is a nine-field COSE_Sign1 structure per [D0006](decisions/D0006-cryptographic-envelope.md). The canonical schema is specified in D0006 §4 (consolidated external-reads triage C1 / H1 resolution); enumerated common fields: operation_type, issuer, issuer_cert_hash, subject, prior_hash, context, strength, timestamp, expiry. Operation-type-conditional fields (revocation_kind, revoked_as_of) appear on revocation operations. **The prior-hash chain is per-(issuer, subject), not per-issuer-global** (corrected per consolidated external-reads triage C2 / H2): the chain links operations by the same issuer against the same subject; cross-subject equivocation detection depends on observers comparing operations they receive against the Sigsum commitment log, not on a single global chain. The issuer-cert-hash binding anchors each operation to the master attestation that authorized the issuer's operational key.
 
 **Why the withdrawal/compromise split matters:** an adversary who silently compromises a user's key could otherwise re-issue attestations under their identity, then claim "I'm rotating my key" — laundering the compromised attestations into the post-rotation graph. The split makes the user state explicitly _which_ they're doing: withdrawal preserves the legitimate attestations forward (the issuer is just signaling "I no longer endorse"); compromise revocation invalidates retroactively (the key was never under user control).
 
@@ -282,7 +282,7 @@ flowchart TB
 
 ## 5. Recovery flow (sequence diagram)
 
-The Shamir-among-peers recovery flow per [§5.3](design-brief.md#53-recovery-model) with peer-verification per [D0005](decisions/D0005-peer-verification.md). The 48-hour delay-and-confirm window is the user's mechanism to cancel an adversary-initiated recovery; pre-shared challenges raise the cost of impersonation by anyone without out-of-band challenge material.
+The Shamir-among-peers recovery flow per [§5.3](design-brief.md#53-recovery-model) with peer-verification per [D0005](decisions/D0005-peer-verification.md). **Peer-side enforcement of the 48-hour delay-and-confirm window** (corrected per consolidated external-reads triage C5 / H5): the 48-hour timer runs on the peer device, not the fresh device. Each peer, upon completing challenge verification, schedules share release at its own device's current-time + 48h; shares are NOT delivered to the recovering device until after 48h. This closes the fresh-device clock-manipulation attack the prior architecture admitted. The pre-shared challenge raises the cost of impersonation by anyone without out-of-band challenge material; the peer-side timer prevents an adversary with the fresh device from compressing the delay window.
 
 ```mermaid
 sequenceDiagram
@@ -306,28 +306,36 @@ sequenceDiagram
     Peer1->>User: Pre-shared challenge prompt<br/>("What was the answer we agreed on?")
     User->>Peer1: Challenge answer
     Peer1->>Peer1: Verify answer matches stored expected value<br/>(per D0005 pre-shared challenge mechanism)
-    Peer1->>App: Release encrypted share<br/>(via SimpleX or out-of-band)
+    Peer1->>Peer1: Schedule share release at peer-device-clock + 48h<br/>(peer-side enforcement per C5 / H5)
 
-    Note right of Peer1: Same flow for Peer 2 and Peer 3 independently
+    Note right of Peer1: Same flow for Peer 2 and Peer 3 independently<br/>(each peer's own clock controls its own timer)
 
-    Peer2->>App: Release share (after challenge)
-    Peer3->>App: Release share (after challenge)
-
-    Note over User,Sigsum: 48-hour delay-and-confirm window
+    Peer2->>Peer2: Verify challenge + schedule share release (peer-side)
+    Peer3->>Peer3: Verify challenge + schedule share release (peer-side)
 
     App->>Sigsum: Log "recovery initiated" commitment<br/>(visible to user's other devices, if any)
-    App->>User: Recovery confirmed pending<br/>48-hour window begins
+    App->>User: Recovery initiated<br/>48-hour window begins<br/>(timer runs on peer devices, not fresh device)
     Note over App: Window allows legitimate user to cancel<br/>if they didn't initiate this
 
+    Note over User,Sigsum: 48-hour delay window (peer-side enforced)
+
     alt User cancels within 48 hours
-        User->>App: Cancel recovery
-        App->>Sigsum: Log "recovery cancelled"
-        Note over App: Shares discarded; no master reconstruction
-    else 48 hours elapse
-        App->>App: Reconstruct master seed from shares<br/>(zeroize on scope exit per cairn-shamir)
-        App->>App: Generate new operational identity
+        User->>Peer1: Cancel through any out-of-band channel
+        User->>Peer2: Cancel through any out-of-band channel
+        User->>Peer3: Cancel through any out-of-band channel
+        Peer1->>Peer1: Discard scheduled share release
+        Peer2->>Peer2: Discard scheduled share release
+        Peer3->>Peer3: Discard scheduled share release
+        App->>Sigsum: Log "recovery cancelled" (optional)
+        Note over App: No shares delivered; no master reconstruction
+    else 48 hours elapse (per peer's own clock)
+        Peer1->>App: Release encrypted share<br/>(via SimpleX or out-of-band)
+        Peer2->>App: Release encrypted share
+        Peer3->>App: Release encrypted share
+        App->>App: Reconstruct master seed from shares<br/>(secrecy-wrapped pinned memory; atomic re-split per C10)
+        App->>App: Re-split master, distribute new shares to peers<br/>(atomic — all peers receive or none)
+        App->>App: Generate new operational identity<br/>(only after re-split completes)
         App->>App: Sign new operational identity with master
-        App->>App: Re-split master, distribute new shares to peers
         App->>App: Zeroize master from memory
         App->>Sigsum: Log "key rotation" operation<br/>(propagates via trust graph)
     end
