@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Cairn maintainers and contributors
+
+[package]
+name = "cairn-storage"
+version = "0.1.0-dev"
+description = "Cairn persistent storage layer per D0022 (rusqlite + per-value XChaCha20-Poly1305)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# === Foundational primitives ===
+cairn-crypto = { path = "../cairn-crypto" }
+cairn-envelope = { path = "../cairn-envelope" }
+
+# === Storage engine (D0022 §1) ===
+rusqlite = { workspace = true }
+
+# === Password-stretching (D0022 §2.2) ===
+argon2 = { workspace = true }
+
+# === At-rest AEAD per D0018 §1.4 + D0022 §2 ===
+chacha20poly1305 = { workspace = true }
+
+# === Key derivation (D0022 §2.2) ===
+hkdf = { workspace = true }
+sha2 = { workspace = true }
+
+# === CSPRNG for per-record nonces (D0022 §2.3) ===
+rand_core = { workspace = true }
+getrandom = { workspace = true }
+
+# === Memory hygiene (D0018 §1.6 + D0022 §6.4) ===
+zeroize = { workspace = true }
+
+# === Error handling (D0018 §4.2) ===
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+hex-literal = { workspace = true }

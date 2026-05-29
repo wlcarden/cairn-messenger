@@ -30,6 +30,8 @@ members = [
     "crates/cairn-trust-graph",
     # Recovery: master-attestation of new operational identity (Tier 2)
     "crates/cairn-recovery",
+    # Persistent storage layer per D0022 (rusqlite + per-value AEAD)
+    "crates/cairn-storage",
 ]
 # Future members per D0018 §8.6 (added incrementally as Tier 1/2/3 lands):
 #   "crates/cairn-identity",
@@ -88,6 +90,18 @@ vsss-rs = { version = "=5.4.0", default-features = false, features = [
     "std",
     "zeroize",
 ] }
+
+# === Storage layer (D0022) ===
+# SQLite via rusqlite with the `bundled` feature so libsqlite3-sys
+# ships its own SQLite source rather than relying on the platform's
+# version. WAL mode + synchronous=FULL applied at connection open per
+# D0022 §1.1. SQLite is treated as an audit trust root per D0011 per
+# D0022 §6.3.
+rusqlite = { version = "=0.32.1", features = ["bundled"] }
+# Password-stretching primitive for the passphrase → KEK derivation
+# per D0022 §2.2. Argon2id is the chosen variant; default-features =
+# false trims OS-specific code we don't need at the storage layer.
+argon2 = { version = "=0.5.3", default-features = false, features = ["alloc"] }
 
 # === Logging facade (D0018 §4.3) ===
 log = { version = "=0.4.22", features = ["release_max_level_info"] }
