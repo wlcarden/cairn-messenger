@@ -39,6 +39,9 @@
 //!   D0023 §3.
 //! - [`cache`] — log-head + inclusion-proof cache types per D0023 §4.
 //! - [`client`] — the `SigsumClient` async surface per D0023 §5.
+//! - [`emit`] — combined persist + Sigsum-emit wrapper per D0023 §6.1
+//!   (hosted here instead of in `cairn-trust-graph` to avoid the
+//!   dependency cycle the literal §6.1 placement would create).
 //! - [`error`] — typed error enum per D0018 §4.2 + D0023 §7.
 //!
 //! ## Implementation status (v1 skeleton)
@@ -62,12 +65,14 @@
 
 pub mod cache;
 pub mod client;
+pub mod emit;
 pub mod error;
 pub mod leaf;
 pub mod witness;
 
 pub use cache::{InclusionProof, TreeHead, cache_record_id_for_leaf, cache_record_id_for_log};
 pub use client::{RetryBudget, SigsumClient, SigsumClientConfig};
+pub use emit::{EmissionStatus, EmitOutcome, sigsum_emit};
 pub use error::SigsumError;
 pub use leaf::{LEAF_HASH_LEN, LeafHash, leaf_hash_for};
 pub use witness::{

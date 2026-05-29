@@ -114,6 +114,18 @@ pub enum SigsumError {
     #[error("sigsum: trust-graph encode failure: {0}")]
     Encode(#[from] cairn_trust_graph::TrustGraphError),
 
+    /// A [`cairn_trust_graph::StoreError`] variant landed that this
+    /// build's mapping logic doesn't explicitly cover.
+    ///
+    /// The trust-graph crate marks `StoreError` `#[non_exhaustive]`
+    /// per D0018 §4.2 — a future variant will compile against this
+    /// wildcard until an explicit mapping is added in
+    /// [`crate::emit`]. The error is intentionally minimal: no
+    /// `Vec<u8>` payload, no peer-controlled string — only the type
+    /// tag, so the no-error-oracle discipline holds.
+    #[error("sigsum: unmapped cairn-trust-graph store error variant")]
+    TrustGraphStoreUnknown,
+
     /// Witness pool config parse failure (malformed TOML, missing
     /// required fields, invalid pubkey hex, invalid URL).
     #[error("sigsum: witness pool config parse failed")]
