@@ -754,3 +754,172 @@ mod proptests {
         }
     }
 }
+
+/// Cross-implementation interop tests.
+///
+/// Per D0018 §2.5 + D0021 §2.3: the canonical `COSE_Sign1` bytes Cairn
+/// emits must decode and verify correctly through an independent COSE
+/// implementation. The full D0018 §2.4 reference is
+/// `veraison/go-cose` (Go); coset 0.4.2 plays the Rust-side oracle
+/// role per D0021 §2.3 — both must agree that Cairn-emitted bytes are
+/// well-formed `COSE_Sign1` envelopes with valid signatures.
+///
+/// The Go-side `veraison/go-cose` check is deferred until the Go
+/// toolchain is set up in CI; the harness will read fixture files
+/// emitted from a future `cairn-envelope` example binary. Until
+/// then, the coset cross-check below provides the v1 interop
+/// evidence at the Rust side.
+#[cfg(test)]
+mod interop_tests {
+    use super::*;
+    use cairn_crypto::ed25519::{SIGNATURE_LEN, Signature, SigningKey, VerifyingKey};
+    use coset::{CborSerializable, CoseSign1 as CosetCoseSign1};
+    use rand_core::OsRng;
+
+    /// Verify a Cairn signature using `coset`'s `verify_signature`
+    /// closure pattern. Returns `Ok(())` on success, `Err(())` on
+    /// any verification failure (uniform, matching `coset`'s API
+    /// shape).
+    fn coset_verify_with_cairn_key(
+        sig_bytes: &[u8],
+        tbs_bytes: &[u8],
+        vk: &VerifyingKey,
+    ) -> Result<(), ()> {
+        let sig_array: [u8; SIGNATURE_LEN] = sig_bytes.try_into().map_err(|_| ())?;
+        let signature = Signature::from_bytes(sig_array);
+        vk.verify(tbs_bytes, &signature).map_err(|_| ())
+    }
+
+    #[test]
+    fn cairn_emitted_bytes_decode_via_coset_and_verify_signature() {
+        let mut rng = OsRng;
+        let sk = SigningKey::generate(&mut rng);
+        let vk = sk.verifying_key();
+
+        let envelope = Sign1Builder::new()
+            .with_payload(b"interop test payload".to_vec())
+            .finalize(&sk)
+            .expect("Cairn finalize should succeed");
+
+        let bytes = envelope.encode(false).expect("Cairn encode should succeed");
+
+        // Decode via coset.
+        let coset_envelope =
+            CosetCoseSign1::from_slice(&bytes).expect("coset should decode Cairn bytes");
+
+        // Verify via coset's verify_signature closure, using
+        // ed25519-dalek (through cairn-crypto's wrapper) inside.
+        coset_envelope
+            .verify_signature(b"", |sig, tbs| coset_verify_with_cairn_key(sig, tbs, &vk))
+            .expect("coset should verify Cairn-emitted signature");
+    }
+
+    #[test]
+    fn cairn_emitted_tagged_bytes_decode_via_coset() {
+        let mut rng = OsRng;
+        let sk = SigningKey::generate(&mut rng);
+        let vk = sk.verifying_key();
+
+        let envelope = Sign1Builder::new()
+            .with_payload(b"tagged interop payload".to_vec())
+            .finalize(&sk)
+            .unwrap();
+
+        let bytes = envelope.encode(true).unwrap();
+
+        // Tagged form: coset's `from_tagged_slice` strips the
+        // outer CBOR tag 18 then decodes the inner 4-tuple.
+        let coset_envelope =
+            <CosetCoseSign1 as coset::TaggedCborSerializable>::from_tagged_slice(&bytes)
+                .expect("coset should decode Cairn tagged bytes");
+
+        coset_envelope
+            .verify_signature(b"", |sig, tbs| coset_verify_with_cairn_key(sig, tbs, &vk))
+            .expect("coset should verify Cairn-emitted tagged signature");
+    }
+
+    #[test]
+    fn cairn_emitted_bytes_with_kid_decode_via_coset() {
+        let mut rng = OsRng;
+        let sk = SigningKey::generate(&mut rng);
+        let vk = sk.verifying_key();
+        let kid = b"interop-kid-v1".to_vec();
+
+        let envelope = Sign1Builder::new()
+            .with_kid(kid.clone())
+            .with_payload(b"interop payload with kid".to_vec())
+            .finalize(&sk)
+            .unwrap();
+
+        let bytes = envelope.encode(false).unwrap();
+
+        let coset_envelope =
+            CosetCoseSign1::from_slice(&bytes).expect("coset should decode Cairn+kid bytes");
+
+        // Coset should see the kid in the unprotected header.
+        let coset_kid_label = coset::Label::Int(crate::cose_sign1::COSE_HEADER_KID);
+        let kid_value = coset_envelope
+            .unprotected
+            .rest
+            .iter()
+            .find(|(label, _)| *label == coset_kid_label)
+            .map(|(_, v)| v.clone());
+        // Coset stores the kid as either ciborium::Value::Bytes in
+        // `rest` (older versions) or the typed `unprotected.key_id`
+        // field (newer versions). Check both for robustness.
+        let key_id_field = coset_envelope.unprotected.key_id.clone();
+        let kid_recovered: Vec<u8> = if let Some(ciborium::Value::Bytes(b)) = kid_value {
+            b
+        } else {
+            key_id_field
+        };
+        assert!(
+            !kid_recovered.is_empty(),
+            "coset should expose Cairn-emitted kid"
+        );
+        assert_eq!(kid_recovered, kid);
+
+        coset_envelope
+            .verify_signature(b"", |sig, tbs| coset_verify_with_cairn_key(sig, tbs, &vk))
+            .expect("coset should verify Cairn+kid signature");
+    }
+
+    #[test]
+    fn tampered_cairn_bytes_fail_coset_verify() {
+        let mut rng = OsRng;
+        let sk = SigningKey::generate(&mut rng);
+        let vk = sk.verifying_key();
+
+        let envelope = Sign1Builder::new()
+            .with_payload(b"interop tamper test".to_vec())
+            .finalize(&sk)
+            .unwrap();
+        let mut bytes = envelope.encode(false).unwrap();
+
+        // Tamper at mid-bytes. Any of:
+        //  - CBOR structure → coset decode fails
+        //  - payload bytes → signature verify fails (Sig_structure
+        //    no longer matches the original signing input)
+        //  - signature bytes → signature verify fails
+        let mid = bytes.len() / 2;
+        // `indexing_slicing` allowed: `encode()` always returns a
+        // non-empty Vec for finalized envelopes.
+        #[allow(clippy::indexing_slicing)]
+        {
+            bytes[mid] ^= 0x01;
+        }
+
+        // Either decode fails OR verify fails — both are valid
+        // outcomes for a tampered envelope. We check that no
+        // pass-through verification succeeds.
+        if let Ok(coset_envelope) = CosetCoseSign1::from_slice(&bytes) {
+            let verify_result: Result<(), ()> = coset_envelope
+                .verify_signature(b"", |sig, tbs| coset_verify_with_cairn_key(sig, tbs, &vk));
+            assert!(
+                verify_result.is_err(),
+                "tampered envelope should not pass coset verification"
+            );
+        }
+        // If coset's `from_slice` failed, that's also a valid outcome.
+    }
+}

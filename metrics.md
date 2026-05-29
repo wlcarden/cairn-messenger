@@ -111,7 +111,26 @@ this baseline.
     wrong arity), and determinism
   - 2 property tests: random-payload round-trip + payload-tamper-fails-
     verify
-- [ ] **`cairn-envelope` test vectors validated against `veraison/go-cose`**
+- [x] **`cairn-envelope` cross-implementation interop validation** —
+      2026-05-29
+  - Rust-side oracle: coset 0.4.2 per D0021 §2.3 role assignment
+  - 4 interop tests in `cairn-envelope::cose_sign1::interop_tests`:
+    untagged decode + verify, tagged decode + verify, kid header
+    round-trip through coset's typed `unprotected.key_id` field,
+    tamper rejection at coset's verify-signature path
+  - All 4 tests pass: Cairn's canonical-CBOR + COSE_Sign1 bytes
+    decode and verify correctly through an independent Rust COSE
+    implementation. 51 cairn-envelope tests total (47 original + 4
+    interop)
+  - **Deferred to follow-up**: Go-side `veraison/go-cose` check
+    requires Go toolchain setup in CI. Future surface will: add a
+    `cairn-envelope` example binary that emits fixture files to disk
+    (a fixed-seed CapabilityToken + its expected pubkey); add a
+    `tests/interop_go/` directory with a Go program using
+    github.com/veraison/go-cose v1.3.0+ that reads each fixture and
+    verifies the signature; wire into CI as a separate job that
+    installs Go alongside Rust. Tracked as a v1.5 candidate in §6
+    of D0021's implementation-status table.
 
 - [x] **`cairn-shamir` crate skeleton** — 2026-05-29
   - Workspace member added; package builds with `vsss-rs` 4.3.8 +
