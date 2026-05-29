@@ -59,11 +59,13 @@
 //! All fields are canonical-CBOR-encoded per D0018 §2.3 so two
 //! implementations sign byte-identical inputs.
 
+pub mod cascade;
 pub mod chain;
 pub mod error;
 pub mod op;
 pub mod signed;
 
+pub use cascade::{QuarantineStatus, compute_quarantine_state};
 pub use chain::verify_chain_links;
 pub use error::TrustGraphError;
 pub use op::{OpType, TrustGraphOp};

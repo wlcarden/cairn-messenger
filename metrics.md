@@ -288,9 +288,42 @@ beyond the Tier 1 MDC line.
     rejected; cross-(issuer, subject) reordering rejected; timestamp
     regression rejected; per-op verify failures propagated (wrong
     expected operational identity); 16-op long-chain smoke test
-  - Stateful slice (cascade quarantine + 90-day stale-flag escalation)
-    remains deferred — requires persistent storage architecture
+  - Stateful slice (90-day stale-flag escalation) remains deferred —
+    requires persistent storage architecture
     decisions outside D0018's current scope
+
+- [x] **`cairn-trust-graph::cascade` quarantine-state primitive per
+      D0006 §2** — 2026-05-29
+  - `compute_quarantine_state(ops) -> Vec<QuarantineStatus>` walks a
+    slice of verified `TrustGraphOp`s and returns the cascade-
+    quarantine status of each attestation per D0006 §2's
+    anti-laundering rules:
+    - `CompromiseRevoke(*, B, revoked_as_of=t)` cascades: B's
+      attestations at `timestamp > t` are `HardSuspended`; B's
+      attestations at `timestamp <= t` are `SoftFlaggedPreCompromise`
+    - `WithdrawRevoke(*, B)` at op-timestamp `t_w` cascades less
+      aggressively: B's attestations at `timestamp >= t_w` are
+      `SoftFlaggedByWithdrawal`; B's earlier attestations stay
+      `Active`
+    - Multiple revocations on the same subject combine via
+      severity precedence: `HardSuspended > SoftFlaggedPreCompromise
+      > SoftFlaggedByWithdrawal > Active`
+  - `QuarantineStatus` enum carries the revoking peer's pubkey and
+    the revocation anchor timestamp so callers can surface the cause
+    to the user
+  - 11 unit tests covering: empty input; no-revocations baseline;
+    revocation ops themselves return `NotApplicable`; CompromiseRevoke
+    hard-suspends post-revoke attestations; CompromiseRevoke soft-flags
+    pre-revoke attestations; exact-boundary attestation goes to soft-
+    flag (inclusive of "before"); WithdrawRevoke soft-flags post-
+    withdrawal; pre-withdrawal attestations stay Active; CompromiseRevoke
+    takes precedence over WithdrawRevoke when both apply;
+    non-cascading subject unaffected; ReAttest variants get classified
+    too
+  - 90-day stale-flag escalation deferred (needs time-evolution +
+    persistent storage; the timer starts at first-flag-observation,
+    not at revocation time)
+  - 188 tests passing across workspace (was 177; +11 cascade tests)
 
 - [x] **D0006 §8 `external_aad` domain separation applied across
       cairn-identity + cairn-trust-graph + cairn-recovery** — 2026-05-29
