@@ -72,7 +72,7 @@ use cairn_envelope::cose_sign1::{CoseSign1, Sign1Builder};
 use cairn_identity::{CapabilityToken, SignedCapabilityToken};
 use cairn_recovery::{SignedMasterAttestation, reconstruct_and_attest};
 use cairn_shamir::{COMMITMENT_LEN, Commitment, SECRET_LEN, Share, reconstruct, split};
-use cairn_trust_graph::{OpType, SignedTrustGraphOp, TrustGraphOp};
+use cairn_trust_graph::{OpType, SignedTrustGraphOp, TrustGraphOp, verify_chain_links};
 use clap::{Parser, Subcommand, ValueEnum};
 use rand_core::OsRng;
 use sha2::{Digest as _, Sha256};
@@ -330,6 +330,26 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Verify a sequence of trust-graph op envelopes as a single
+    /// chain per D0006 §2 + §5. Each op is verified individually via
+    /// `verify-trust-op` semantics (hops #1 + #2), plus the chain
+    /// structure is checked: genesis op has empty `prior_hash`; each
+    /// non-genesis op's `prior_hash` equals `SHA-256(prior op
+    /// signature)`; all ops share the same `(issuer, subject)` pair;
+    /// timestamps are non-decreasing.
+    VerifyTrustChain {
+        /// Path to a trust-graph op envelope. Supply once per op in
+        /// chain order (ops[0] = genesis, ops[N-1] = chain head).
+        #[arg(long = "op", action = clap::ArgAction::Append)]
+        ops: Vec<PathBuf>,
+        /// Path to the capability-token envelope authorizing the
+        /// device that signed the ops.
+        #[arg(long)]
+        token: PathBuf,
+        /// Path to the expected operational identity pubkey.
+        #[arg(long)]
+        expected_issuer_pubkey: PathBuf,
+    },
 }
 
 /// Variant flag for the `trust-op` subcommand.
@@ -466,6 +486,11 @@ fn main() -> Result<()> {
         Command::ComputeIssuerCertHash { attestation, out } => {
             cmd_compute_issuer_cert_hash(&attestation, &out)
         }
+        Command::VerifyTrustChain {
+            ops,
+            token,
+            expected_issuer_pubkey,
+        } => cmd_verify_trust_chain(&ops, &token, &expected_issuer_pubkey),
     }
 }
 
@@ -1266,6 +1291,74 @@ fn cmd_compute_issuer_cert_hash(attestation: &PathBuf, out: &PathBuf) -> Result<
     eprintln!(
         "Computed D0006 §7 issuer_cert_hash (32 bytes) and wrote to {}",
         out.display()
+    );
+    Ok(())
+}
+
+/// Verify a sequence of trust-graph op envelopes as a single chain
+/// per D0006 §2 + §5 via [`verify_chain_links`].
+///
+/// On success prints a per-op summary (`op_type` + `timestamp` +
+/// `prior_hash` length + `issuer_cert_hash` length) so the caller can
+/// audit the chain shape. On failure surfaces the precise structural
+/// error (which op index failed, which check failed).
+fn cmd_verify_trust_chain(
+    op_paths: &[PathBuf],
+    token: &PathBuf,
+    expected_issuer_pubkey: &PathBuf,
+) -> Result<()> {
+    if op_paths.is_empty() {
+        bail!("at least one --op must be supplied");
+    }
+    let token_bytes = std::fs::read(token)
+        .with_context(|| format!("failed to read token from {}", token.display()))?;
+    let expected_issuer = read_pubkey(expected_issuer_pubkey)?;
+
+    let mut signed_ops: Vec<SignedTrustGraphOp> = Vec::with_capacity(op_paths.len());
+    for path in op_paths {
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("failed to read trust-op envelope from {}", path.display()))?;
+        let signed = SignedTrustGraphOp::from_bytes(&bytes).map_err(|e| {
+            anyhow!(
+                "trust-op envelope decode failed for {}: {e}",
+                path.display()
+            )
+        })?;
+        signed_ops.push(signed);
+    }
+
+    let verified_ops = verify_chain_links(&signed_ops, &token_bytes, &expected_issuer)
+        .map_err(|e| anyhow!("chain-walk verification failed: {e}"))?;
+
+    println!("VERIFIED ({} ops in chain)", verified_ops.len());
+    for (i, op) in verified_ops.iter().enumerate() {
+        println!(
+            "  [{i}] op_type={:?} timestamp={} prior_hash_len={} cert_hash_len={}",
+            op.op_type,
+            op.timestamp,
+            op.prior_hash.len(),
+            op.issuer_cert_hash.len()
+        );
+    }
+    println!(
+        "issuer-pubkey:     {}",
+        hex_encode(
+            &verified_ops
+                .first()
+                .ok_or_else(|| anyhow!("internal: empty verified slice"))?
+                .issuer
+                .to_bytes()
+        )
+    );
+    println!(
+        "subject-pubkey:    {}",
+        hex_encode(
+            &verified_ops
+                .first()
+                .ok_or_else(|| anyhow!("internal: empty verified slice"))?
+                .subject
+                .to_bytes()
+        )
     );
     Ok(())
 }
