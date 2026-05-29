@@ -451,44 +451,78 @@ against actual development cadence rather than borrowed projections.
 
 ## Empirical-cadence summary (running)
 
-Updated at each surface-completion milestone:
+Updated at each surface-completion milestone.
 
-- **Surfaces complete**: 8 / ~15+ Tier 1 MDC surfaces (workspace
-  scaffolding, ed25519, x25519, hkdf, aead, cairn-envelope skeleton,
-  canonical CBOR, `COSE_Sign1`)
-- **Cumulative hours**: TBD
-- **Cumulative LoC (impl + docs)**: ~1900 LoC across `cairn-crypto/src/` +
-  `cairn-envelope/src/`
-- **Cumulative LoC (tests)**: ~1680 LoC (unit + property tests + RFC / KAT
-  vectors inline; 3581 total file LoC across both crates)
-- **Test:code ratio**: ~0.88:1 at this stage and rising (canonical CBOR
-  added 32 tests for 580 file LoC; `COSE_Sign1` added 15 tests for 756
-  file LoC with extensive round-trip + tamper-resistance coverage). Target
-  per D0018 §2.4 + audit-target practice is 2:1 to 3:1 for audit-target
-  surfaces; the next acceleration comes from `cairn-shamir`'s
-  `dudect-bencher` constant-time harnesses and the `veraison/go-cose`
-  interop vectors.
-- **Test pass count**: 95 unit + property tests + 1 doctest = 96 across
-  6 modules (cairn-crypto: ed25519, x25519, hkdf, aead + cairn-envelope:
-  canonical, `COSE_Sign1`)
-- **RFC / KAT vector coverage**:
-  - RFC 5869 §A.1–A.3 (HKDF-SHA256, 3/3 vectors)
-  - draft-irtf-cfrg-xchacha-03 §A.3 (`XChaCha20`-`Poly1305`, 1/1 vector)
-  - RFC 8949 §3 head-encoding boundary cases (canonical CBOR, exhaustive
-    coverage of int / nint / bytes / text / array / map heads)
-  - RFC 9052 §4.4 `Sig_structure` construction discipline (round-trip
-    - tamper-resistance proven at the wrapper layer; the
-      `veraison/go-cose` cross-implementation oracle is the next surface)
-  - Ed25519 covered by ed25519-dalek's audited test suite plus property
-    tests at the wrapper layer
-- **Commits**: 0 (first commit pending)
-- **Clippy diagnostics fixed in CI iteration**: 49 cumulative across both
-  crates (doc_markdown dominant, plus must_use, const_fn,
-  disallowed_types, needless_pass_by_value, useless_conversion,
-  indexing_slicing, arithmetic_side_effects, checked_conversions,
-  cast_sign_loss, manual_let_else, option_if_let_else, redundant_clone —
-  fixed at source, not blanket-allowed; allows applied only at test-code
-  sites with proven safety bounds)
+### As of 2026-05-29 (end of run)
+
+- **Cryptographic + protocol-layer surfaces complete**: 17
+  - Tier 1 MDC: workspace, ed25519, x25519, hkdf, aead, envelope
+    skeleton, canonical CBOR, `COSE_Sign1`, shamir, capability tokens,
+    dudect-bencher CT gate, coset interop tests (12)
+  - Tier 2 protocol: cairn-recovery, cairn-trust-graph, D0006 §8
+    domain separation, D0006 §5+§7 hash helpers + reference test
+    vector, chain-link validator (§2 + §5), cascade-quarantine state
+    (§2), property tests (5)
+- **D0006 v1 decision coverage** (the cryptographic-envelope
+  completion decisions, F4 + F5 + F23 + consolidated triage C/H/M
+  findings):
+  - §1 `issuer_cert_hash` field — implemented in cairn-trust-graph
+  - §2 two revocation types + cascade quarantine — op types DONE;
+    chain integrity DONE; cascade quarantine state DONE; 90-day
+    stale-flag timer deferred (needs storage architecture decisions
+    outside D0018's current scope)
+  - §3 vocabulary precision — pre-existing
+  - §4 nine-field schema — implemented
+  - §5 `prior_hash` hash function + byte input — helper + chain
+    validator + CLI DONE
+  - §6 `Sig_structure` construction — DONE in cairn-envelope
+  - §7 `issuer_cert_hash` byte input + reference test vector — DONE
+  - §8 `external_aad` domain separation — DONE across all three
+    protocol crates with cross-domain substitution tests
+  - §9 three-hop chain — DONE in cairn-identity + cairn-trust-graph
+- **Application surface**: `cairn-cli` ships 16 subcommands covering
+  the complete D0006 v1 protocol shape end-to-end. Single ~5 MB
+  binary; no external tooling required beyond `xxd` for hex display.
+- **Test pass count**: 196 across the workspace
+  - cairn-crypto: 47
+  - cairn-envelope: 51
+  - cairn-identity: 17
+  - cairn-shamir: 22
+  - cairn-trust-graph: 37 (26 unit + 8 chain proptests subsumed) +
+    cascade proptests = 41 cumulative
+  - cairn-recovery: 12
+  - cairn-cli: 1 (doctest)
+  - cairn-ct-bench: 1
+- **RFC / KAT vector coverage** (audit-target surfaces):
+  - RFC 5869 §A.1–A.3 HKDF-SHA256: 3/3 vectors
+  - draft-irtf-cfrg-xchacha-03 §A.3 XChaCha20-Poly1305: 1/1 vector
+  - RFC 8949 §3 head-encoding boundary cases (canonical CBOR,
+    exhaustive coverage of int/nint/bytes/text/array/map heads)
+  - RFC 9052 §4.4 `Sig_structure` discipline (round-trip + tamper-
+    resistance proven at the wrapper layer + coset cross-validation)
+  - D0006 §7 issuer_cert_hash reference test vector pinned with
+    deterministic fixed-seed construction
+  - Ed25519 wrapper layer covered by ed25519-dalek's audited suite
+    plus property tests
+- **Empirical-CT gates**: dudect-bencher harness in cairn-ct-bench;
+  Shamir split + reconstruct + Ed25519 sign all measured |t| < 4.5
+  on local validation (10⁶ iterations on dedicated hardware per
+  D0018 §5.3 line 460 spec is the production validation cadence)
+- **Cumulative commits**: 26 (initial commit + 25 surface commits)
+- **Deferred until architecture decisions**:
+  - 90-day stale-flag escalation per D0006 §2 (needs persistent state
+    decisions — the timer starts at first-flag-observation across
+    sessions)
+  - `cairn-storage` crate skeleton (needs storage architecture
+    decisions; D0018 enumerates but doesn't specify)
+  - `cairn-simplex-adapter` / `cairn-tor-transport` / `cairn-sigsum-
+client` / `cairn-sigstore-verify` (network surfaces; need
+    transport decisions)
+  - `cairn-uniffi` FFI skeleton (depends on stable Rust API)
+  - X3DH + Double Ratchet primitives (Cairn integrates with SimpleX
+    rather than implementing from scratch; not enumerated as a
+    distinct Cairn crate)
+  - Go-cose interop fixtures (needs Go toolchain in CI per D0021 §6)
 
 ## Reference comparable-project cadence
 
