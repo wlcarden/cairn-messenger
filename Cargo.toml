@@ -16,9 +16,10 @@ resolver = "2"
 members = [
     # Foundational cryptographic primitives (Tier 1 MDC)
     "crates/cairn-crypto",
+    # Canonical CBOR + COSE_Sign1 envelope construction (Tier 1 MDC)
+    "crates/cairn-envelope",
 ]
 # Future members per D0018 §8.6 (added incrementally as Tier 1/2/3 lands):
-#   "crates/cairn-envelope",
 #   "crates/cairn-shamir",
 #   "crates/cairn-identity",
 #   "crates/cairn-trust-graph",

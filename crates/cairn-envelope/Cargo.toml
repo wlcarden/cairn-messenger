@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Cairn maintainers and contributors
+
+[package]
+name = "cairn-envelope"
+version = "0.1.0-dev"
+description = "Cairn canonical CBOR + COSE_Sign1 envelope construction per D0006 + D0018 §2"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# === Foundational primitives ===
+cairn-crypto = { path = "../cairn-crypto" }
+
+# === CBOR + COSE (D0018 §2.1-2.2) ===
+ciborium = { workspace = true }
+coset = { workspace = true }
+
+# === Memory hygiene (D0018 §1.6) ===
+zeroize = { workspace = true }
+secrecy = { workspace = true }
+subtle = { workspace = true }
+
+# === Error handling (D0018 §4.2) ===
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+hex-literal = { workspace = true }
+rand_core = { workspace = true }
