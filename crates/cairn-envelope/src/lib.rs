@@ -62,6 +62,7 @@
 // envelope assembly → cross-implementation interop.
 
 pub mod canonical;
+pub mod cose_sign1;
 pub mod error;
 
 pub use error::EnvelopeError;
