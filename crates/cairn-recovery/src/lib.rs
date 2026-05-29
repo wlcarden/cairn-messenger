@@ -50,9 +50,16 @@
 
 pub mod attestation;
 pub mod error;
+pub mod peer_store;
 
 pub use attestation::{
     DOMAIN_TAG, ISSUER_CERT_HASH_LEN, MasterAttestation, SignedMasterAttestation,
     reconstruct_and_attest,
 };
 pub use error::RecoveryError;
+pub use peer_store::{
+    HeldShare, PeerRecord, PeerStoreError, RECORD_ID_LEN as PEER_STORE_RECORD_ID_LEN,
+    RECOVERY_PEERS_SCHEMA_VERSION, RECOVERY_SHARES_SCHEMA_VERSION, delete_held_share, delete_peer,
+    initialize_schema as initialize_peer_schema, load_all_peers, load_held_share, load_peer,
+    peer_record_id, share_record_id, store_held_share, store_peer,
+};
