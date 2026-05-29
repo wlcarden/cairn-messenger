@@ -1,0 +1,25 @@
+{
+  "name": "master_attestation_001",
+  "description": "Master attestation envelope per D0006 §6 with the master-attestation external_aad domain tag (extends D0006 §8 by analogy per cairn_recovery::DOMAIN_TAG). Payload schema matches cairn_recovery::attestation (master pubkey at key 1, operational_identity pubkey at key 2, timestamp uint at key 3). Signing key = the master (which is also key 1 in the payload — masters sign their own attestations directly, no capability-token wrapping). This vector also matches the pinned D0006 §7 reference test vector for issuer_cert_hash discovery (master seed 0x42, op identity seed 0x37, timestamp 1700000000).",
+  "domain_separation_tag": "cairn-v1-master-attestation",
+  "signing_key_seed_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+  "master_verifying_key_hex": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+  "operational_identity_seed_hex": "3737373737373737373737373737373737373737373737373737373737373737",
+  "operational_identity_verifying_key_hex": "2c848ad8664ee651e4896c13a84a89a2964aca5eb77a8b881e60ded5c81b4e9d",
+  "timestamp_unix_seconds": 1700000000,
+  "protected_header_cbor_hex": "a10127",
+  "protected_header_decoded": {
+    "alg": -8,
+    "comment": "alg = -8 = EdDSA per RFC 9053 §2.2"
+  },
+  "unprotected_header_cbor_hex": "a0",
+  "payload_cbor_hex": "a30158202152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db120258202c848ad8664ee651e4896c13a84a89a2964aca5eb77a8b881e60ded5c81b4e9d031a6553f100",
+  "external_aad_utf8": "cairn-v1-master-attestation",
+  "external_aad_hex": "636169726e2d76312d6d61737465722d6174746573746174696f6e",
+  "sig_structure_cbor_hex": "846a5369676e61747572653143a10127581b636169726e2d76312d6d61737465722d6174746573746174696f6e584da30158202152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db120258202c848ad8664ee651e4896c13a84a89a2964aca5eb77a8b881e60ded5c81b4e9d031a6553f100",
+  "expected_issuer_cert_hash_hex": "e3ee2121f19366b59ede1d48cd9bc4f7ad6f8177ac348f2a992bf32d1aee04b9",
+  "expected_issuer_cert_hash_derivation_comment": "issuer_cert_hash := SHA-256(sig_structure_cbor_hex) per D0006 §7. This is the same reference vector pinned in cairn_recovery::attestation::tests::issuer_cert_hash_pinned_test_vector_d0006_section_7.",
+  "signature_hex": "c554d4041cb8ce957848feca91a2ffe1a4d8f4c62862ea9dcf9e401659ce73809e64cb7058a6999fa0de6ac87e41e31e5bc092204cbe7a6d4add6aca92366908",
+  "envelope_cbor_hex": "8443a10127a0584da30158202152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db120258202c848ad8664ee651e4896c13a84a89a2964aca5eb77a8b881e60ded5c81b4e9d031a6553f1005840c554d4041cb8ce957848feca91a2ffe1a4d8f4c62862ea9dcf9e401659ce73809e64cb7058a6999fa0de6ac87e41e31e5bc092204cbe7a6d4add6aca92366908",
+  "verification_expectation": "Decoding envelope_cbor_hex via COSE_Sign1::from_bytes and verifying against master_verifying_key_hex with external_aad_hex must succeed. The Rust-side reference implementation pins this in crates/cairn-envelope/tests/test_vectors.rs::vector_master_attestation_001."
+}

@@ -1,0 +1,29 @@
+{
+  "name": "trust_graph_op_001",
+  "description": "Trust-graph operation (attest variant) envelope per D0006 §2 with D0006 §8 external_aad domain tag. Payload schema matches cairn_trust_graph::op (op_type uint at key 1, issuer pubkey at key 2, subject pubkey at key 3, timestamp uint at key 4, prior_hash bytes at key 5, issuer_cert_hash bytes at key 6). Genesis attest (prior_hash empty); cert hash empty for fixture simplicity. Signing key is the device key (seed 0x77) distinct from the issuer/subject pubkeys in the payload.",
+  "domain_separation_tag": "cairn-v1-trust-graph-operation",
+  "signing_key_seed_hex": "7777777777777777777777777777777777777777777777777777777777777777",
+  "signing_key_verifying_key_hex": "be67f4bbb24ec0b03b80f7afaf76dd5a7cd2f7c1e9a2eb59fad99020cd2dd8a3",
+  "op_type": 1,
+  "op_type_name": "Attest",
+  "issuer_seed_hex": "5555555555555555555555555555555555555555555555555555555555555555",
+  "issuer_verifying_key_hex": "c6822637c7d310ec57627be00ba259d253749f4aaf644470cffbe53a35f73242",
+  "subject_seed_hex": "3333333333333333333333333333333333333333333333333333333333333333",
+  "subject_verifying_key_hex": "17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce",
+  "timestamp_unix_seconds": 1700000000,
+  "prior_hash_hex": "",
+  "issuer_cert_hash_hex": "",
+  "protected_header_cbor_hex": "a10127",
+  "protected_header_decoded": {
+    "alg": -8,
+    "comment": "alg = -8 = EdDSA per RFC 9053 §2.2"
+  },
+  "unprotected_header_cbor_hex": "a0",
+  "payload_cbor_hex": "a60101025820c6822637c7d310ec57627be00ba259d253749f4aaf644470cffbe53a35f7324203582017cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce041a6553f10005400640",
+  "external_aad_utf8": "cairn-v1-trust-graph-operation",
+  "external_aad_hex": "636169726e2d76312d74727573742d67726170682d6f7065726174696f6e",
+  "sig_structure_cbor_hex": "846a5369676e61747572653143a10127581e636169726e2d76312d74727573742d67726170682d6f7065726174696f6e5853a60101025820c6822637c7d310ec57627be00ba259d253749f4aaf644470cffbe53a35f7324203582017cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce041a6553f10005400640",
+  "signature_hex": "6e378cee93e9fe5219038552c677d0961a5e11c681a39452c9cfc97d0518960f219f8ffd8447d871a91d7761cdde4a1d88f0347dab738a56964bf678c55ffc0f",
+  "envelope_cbor_hex": "8443a10127a05853a60101025820c6822637c7d310ec57627be00ba259d253749f4aaf644470cffbe53a35f7324203582017cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce041a6553f1000540064058406e378cee93e9fe5219038552c677d0961a5e11c681a39452c9cfc97d0518960f219f8ffd8447d871a91d7761cdde4a1d88f0347dab738a56964bf678c55ffc0f",
+  "verification_expectation": "Decoding envelope_cbor_hex via COSE_Sign1::from_bytes and verifying against signing_key_verifying_key_hex with external_aad_hex must succeed. The Rust-side reference implementation pins this in crates/cairn-envelope/tests/test_vectors.rs::vector_trust_graph_op_001."
+}

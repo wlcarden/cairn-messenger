@@ -1,0 +1,25 @@
+{
+  "name": "capability_token_001",
+  "description": "Capability-token envelope per D0006 §9 with D0006 §8 external_aad domain tag. Payload schema matches cairn_identity::token (issuer pubkey at key 1, subject pubkey at key 2, scope array at key 3, expiry uint at key 4, chain bytes at key 5). Signing key = the issuer, derived from a fixed-seed pattern so the signature is reproducible across runs and implementations.",
+  "domain_separation_tag": "cairn-v1-capability-token",
+  "signing_key_seed_hex": "5555555555555555555555555555555555555555555555555555555555555555",
+  "issuer_verifying_key_hex": "c6822637c7d310ec57627be00ba259d253749f4aaf644470cffbe53a35f73242",
+  "subject_seed_hex": "3333333333333333333333333333333333333333333333333333333333333333",
+  "subject_verifying_key_hex": "17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce",
+  "scope": ["messaging:send"],
+  "expiry_unix_seconds": 1700000000,
+  "chain": "",
+  "protected_header_cbor_hex": "a10127",
+  "protected_header_decoded": {
+    "alg": -8,
+    "comment": "alg = -8 = EdDSA per RFC 9053 §2.2"
+  },
+  "unprotected_header_cbor_hex": "a0",
+  "payload_cbor_hex": "a5015820c6822637c7d310ec57627be00ba259d253749f4aaf644470cffbe53a35f7324202582017cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce03816e6d6573736167696e673a73656e64041a6553f1000540",
+  "external_aad_utf8": "cairn-v1-capability-token",
+  "external_aad_hex": "636169726e2d76312d6361706162696c6974792d746f6b656e",
+  "sig_structure_cbor_hex": "846a5369676e61747572653143a101275819636169726e2d76312d6361706162696c6974792d746f6b656e5860a5015820c6822637c7d310ec57627be00ba259d253749f4aaf644470cffbe53a35f7324202582017cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce03816e6d6573736167696e673a73656e64041a6553f1000540",
+  "signature_hex": "92f40d185e8eefb1761bcffb6089f58f230e7eeabd96dcbfa186cd95d3c014a3d72b5b4fe66d43ea7df7211ffb367609347621fa842b71f831d83eaa1eba2a0a",
+  "envelope_cbor_hex": "8443a10127a05860a5015820c6822637c7d310ec57627be00ba259d253749f4aaf644470cffbe53a35f7324202582017cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce03816e6d6573736167696e673a73656e64041a6553f1000540584092f40d185e8eefb1761bcffb6089f58f230e7eeabd96dcbfa186cd95d3c014a3d72b5b4fe66d43ea7df7211ffb367609347621fa842b71f831d83eaa1eba2a0a",
+  "verification_expectation": "Decoding envelope_cbor_hex via COSE_Sign1::from_bytes and verifying against issuer_verifying_key_hex with external_aad_hex must succeed. The Rust-side reference implementation pins this in crates/cairn-envelope/tests/test_vectors.rs::vector_capability_token_001."
+}
