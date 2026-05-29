@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Cairn maintainers and contributors
+
+[package]
+name = "cairn-sigstore-verify"
+version = "0.1.0-dev"
+description = "Cairn release-artifact identity verification: Sigstore + Rekor + Sigsum-anchored release log per D0024"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Gated network integration tests against real Rekor + Fulcio
+# endpoints. Disabled by default so CI doesn't depend on external
+# network availability per D0024 §10.
+integration-tests = []
+
+[dev-dependencies]
+rand_core = { workspace = true }
+# zeroize is consumed in the client-module tests to construct
+# in-memory Storage handles via Zeroizing<Vec<u8>> passphrases.
+zeroize = { workspace = true }
+
+[dependencies]
+# === Foundational primitives ===
+cairn-crypto = { path = "../cairn-crypto" }
+cairn-envelope = { path = "../cairn-envelope" }
+cairn-storage = { path = "../cairn-storage" }
+# === Composition with the Sigsum substrate per D0024 §5 ===
+cairn-sigsum-client = { path = "../cairn-sigsum-client" }
+
+# === SHA-256 for the release-leaf-hash + build-provenance digests per D0024 §4-§5 ===
+sha2 = { workspace = true }
+
+# === Async runtime + HTTPS (D0024 §6) ===
+reqwest = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
+
+# === Serde for Rekor JSON shapes (D0024 §3) ===
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# === CBOR for the canonical-CBOR release-manifest schema (D0024 §4) ===
+ciborium = { workspace = true }
+
+# === Error handling (D0018 §4.2) ===
+thiserror = { workspace = true }
+
+# x509-parser will be added when the Fulcio cert-chain validation
+# body lands per D0024 §2 + §6.5. The v1 skeleton's fulcio module
+# returns SigstoreVerifyError::NetworkUnreached without parsing
+# certs, so the pin is deferred to keep the skeleton's dep surface
+# minimal.

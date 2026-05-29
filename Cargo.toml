@@ -34,6 +34,9 @@ members = [
     "crates/cairn-storage",
     # Sigsum integration: commitment-only logging per D0023
     "crates/cairn-sigsum-client",
+    # Sigstore release verification: identity-based signing + Rekor
+    # + Sigsum-anchored release log composition per D0024
+    "crates/cairn-sigstore-verify",
 ]
 # Future members per D0018 §8.6 (added incrementally as Tier 1/2/3 lands):
 #   "crates/cairn-identity",
