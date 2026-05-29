@@ -3,6 +3,9 @@
 
 //! Cascade-quarantine state computation per D0006 §2.
 //!
+//! Stateless slice: [`compute_quarantine_state`] in this file.
+//! Stateful 90-day stale-flag escalation: [`timer`] sub-module.
+//!
 //! ## Semantics
 //!
 //! Per D0006 §2 a [`OpType::CompromiseRevoke`] of subject `X` with
@@ -45,6 +48,8 @@
 //!   have already been verified via [`crate::verify_chain_links`] or
 //!   [`crate::SignedTrustGraphOp::verify_chain`] — this module
 //!   computes status assuming the ops are cryptographically valid.
+
+pub mod timer;
 
 use std::collections::HashMap;
 
