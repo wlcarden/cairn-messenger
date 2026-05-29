@@ -32,8 +32,8 @@
 //! ## Module organization (incremental — surfaces land per
 //! `metrics.md`)
 //!
-//! - [`canonical`] — canonical CBOR encoding helper (forthcoming;
-//!   per D0018 §2.3, project-owned because `ciborium` does not enforce
+//! - [`canonical`] — canonical CBOR encoding per RFC 8949 §4.2 +
+//!   D0018 §2.3 (project-owned because `ciborium` does not enforce
 //!   deterministic encoding alone)
 //! - [`cose_sign1`] — `COSE_Sign1` construction + verification
 //!   (forthcoming; per RFC 9052 §4.4 `Sig_structure`)
@@ -61,6 +61,7 @@
 // progression per metrics.md is: canonical CBOR → `COSE_Sign1` →
 // envelope assembly → cross-implementation interop.
 
+pub mod canonical;
 pub mod error;
 
 pub use error::EnvelopeError;

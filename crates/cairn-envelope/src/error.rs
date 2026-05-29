@@ -7,33 +7,31 @@
 //! only — never `Vec<u8>` or `&[u8]` payloads. This prevents secret-leak
 //! vectors through error-propagation logging and matches the discipline
 //! established in `cairn-crypto::error`.
-//!
-//! Variants are added incrementally as the surfaces land:
-//!
-//! - canonical-CBOR encoding errors will land with the `canonical` module
-//! - `COSE_Sign1` construction / verification errors will land with the
-//!   `cose_sign1` module
-//! - envelope-assembly errors will land with the top-level encrypt /
-//!   verify entry points
 
 use thiserror::Error;
 
 /// Top-level error type for `cairn-envelope`, re-exported from the crate
 /// root.
 ///
-/// Currently a placeholder until the first concrete surface (canonical
-/// CBOR helper, per task 44) defines its variants. The `#[non_exhaustive]`
-/// attribute is the discipline default per D0018 §4.2 so new variants do
-/// not require a major version bump.
+/// `#[non_exhaustive]` per D0018 §4.2 so new variants do not require a
+/// major version bump as surfaces land.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum EnvelopeError {
-    /// Placeholder variant. Removed when the first real variant lands;
-    /// kept here so the empty enum compiles cleanly under
-    /// `#[non_exhaustive]`.
+    /// A [`crate::canonical::Value::Map`] contained duplicate
+    /// canonical-encoded keys.
     ///
-    /// Marked `#[doc(hidden)]` so it does not appear in published docs.
-    #[doc(hidden)]
-    #[error("placeholder — surface not yet implemented")]
-    Placeholder,
+    /// RFC 8949 §4.2 forbids duplicate keys in canonical CBOR. Two
+    /// `Value` entries are considered duplicates when their canonical
+    /// encodings are byte-identical, not when they are `PartialEq`-equal
+    /// at the `Value` level — the encoder rejects, e.g., `{0i64: ...,
+    /// 0i64: ...}` even though the duplicates are obvious at the type
+    /// level.
+    #[error("canonical CBOR map contains duplicate encoded keys ({entries} entries)")]
+    CanonicalCborDuplicateMapKey {
+        /// Number of entries in the input map (pre-deduplication). Carried
+        /// for diagnostic clarity only; per the no-payload discipline
+        /// (D0018 §4.2) no key bytes are included.
+        entries: usize,
+    },
 }
