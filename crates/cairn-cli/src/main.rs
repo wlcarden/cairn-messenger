@@ -24,6 +24,8 @@
 //!
 //! ## Subcommands
 //!
+//! ### Key + token management
+//!
 //! - `gen-key` — generate a fresh Ed25519 seed (32 bytes), write to a
 //!   file. The seed is the operational-identity OR device-key
 //!   secret material.
@@ -37,6 +39,18 @@
 //!   pubkey file, decode + verify via
 //!   `SignedCapabilityToken::from_bytes`. Prints scope + expiry +
 //!   subject pubkey on success.
+//!
+//! ### Message signing (hops #1 + #2 of D0006 §9)
+//!
+//! - `sign-message` — sign an arbitrary payload (text or file) with
+//!   a device key, producing a `COSE_Sign1` envelope. Supports
+//!   `--external-aad` for protocol binding per RFC 9052 §4.4.
+//! - `verify-message` — verify a message envelope against a
+//!   capability token + expected issuer pubkey. Order of checks
+//!   defends against subject-substitution: verify the token first
+//!   so the embedded subject pubkey is trusted, THEN verify the
+//!   message against that subject. Optionally checks that the
+//!   token's scope contains a `--required-capability`.
 //!
 //! ## Discipline notes
 //!
@@ -54,6 +68,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
 use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, SEED_LEN, SigningKey, VerifyingKey};
+use cairn_envelope::cose_sign1::{CoseSign1, Sign1Builder};
 use cairn_identity::{CapabilityToken, SignedCapabilityToken};
 use clap::{Parser, Subcommand};
 use rand_core::OsRng;
@@ -112,6 +127,54 @@ enum Command {
         #[arg(long)]
         expected_issuer_pubkey: PathBuf,
     },
+    /// Sign a message payload with a device key, producing a
+    /// `COSE_Sign1` envelope. This is hop #1 of the D0006 §9 chain;
+    /// pair with a capability token (from `issue-token`) at verify
+    /// time.
+    SignMessage {
+        /// Path to the device key's 32-byte seed file.
+        #[arg(long)]
+        device_key: PathBuf,
+        /// Message payload (UTF-8 text). For binary payloads use
+        /// `--payload-file`.
+        #[arg(long, conflicts_with = "payload_file")]
+        payload: Option<String>,
+        /// Path to a file containing the raw message payload bytes.
+        #[arg(long, conflicts_with = "payload")]
+        payload_file: Option<PathBuf>,
+        /// External AAD (text) bound into the signature input per
+        /// RFC 9052 §4.4. Both signer and verifier must supply the
+        /// same value out-of-band; default is empty.
+        #[arg(long, default_value = "")]
+        external_aad: String,
+        /// Output path for the message envelope bytes.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Verify a message envelope against a capability token (per
+    /// D0006 §9 hops #1 + #2). Order: verify the token first so the
+    /// embedded subject pubkey is trusted, then verify the message
+    /// against that subject pubkey. Optionally checks that the
+    /// token's scope authorizes a named capability.
+    VerifyMessage {
+        /// Path to the message `COSE_Sign1` envelope.
+        #[arg(long)]
+        message: PathBuf,
+        /// Path to the capability-token envelope (from
+        /// `issue-token`).
+        #[arg(long)]
+        token: PathBuf,
+        /// Path to the expected token-issuer's pubkey (operational
+        /// identity).
+        #[arg(long)]
+        expected_issuer_pubkey: PathBuf,
+        /// External AAD (text) supplied at sign time. Must match.
+        #[arg(long, default_value = "")]
+        external_aad: String,
+        /// Optional capability string the token must authorize.
+        #[arg(long)]
+        required_capability: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -130,6 +193,32 @@ fn main() -> Result<()> {
             envelope,
             expected_issuer_pubkey,
         } => cmd_verify_token(&envelope, &expected_issuer_pubkey),
+        Command::SignMessage {
+            device_key,
+            payload,
+            payload_file,
+            external_aad,
+            out,
+        } => cmd_sign_message(
+            &device_key,
+            payload.as_deref(),
+            payload_file.as_ref(),
+            &external_aad,
+            &out,
+        ),
+        Command::VerifyMessage {
+            message,
+            token,
+            expected_issuer_pubkey,
+            external_aad,
+            required_capability,
+        } => cmd_verify_message(
+            &message,
+            &token,
+            &expected_issuer_pubkey,
+            &external_aad,
+            required_capability.as_deref(),
+        ),
     }
 }
 
@@ -294,4 +383,134 @@ fn hex_encode(bytes: &[u8]) -> String {
         write!(&mut s, "{b:02x}").expect("writing to String cannot fail");
     }
     s
+}
+
+/// Sign a payload with a device key, producing a `COSE_Sign1`
+/// envelope. The envelope is hop #1 of the D0006 §9 verification
+/// chain; it carries the device-key signature over the payload plus
+/// the optional external AAD.
+fn cmd_sign_message(
+    device_key: &PathBuf,
+    payload_text: Option<&str>,
+    payload_file: Option<&PathBuf>,
+    external_aad: &str,
+    out: &PathBuf,
+) -> Result<()> {
+    let payload_bytes: Vec<u8> = match (payload_text, payload_file) {
+        (Some(s), None) => s.as_bytes().to_vec(),
+        (None, Some(path)) => std::fs::read(path)
+            .with_context(|| format!("failed to read payload from {}", path.display()))?,
+        (None, None) => bail!("either --payload or --payload-file must be supplied"),
+        (Some(_), Some(_)) => bail!("--payload and --payload-file are mutually exclusive"),
+    };
+
+    let device_seed = read_seed(device_key)?;
+    let device_signing_key = SigningKey::from_seed(&device_seed);
+
+    let mut builder = Sign1Builder::new().with_payload(payload_bytes);
+    if !external_aad.is_empty() {
+        builder = builder.with_external_aad(external_aad.as_bytes().to_vec());
+    }
+
+    let envelope = builder
+        .finalize(&device_signing_key)
+        .map_err(|e| anyhow!("message sign failed: {e}"))?;
+    let bytes = envelope
+        .encode(false)
+        .map_err(|e| anyhow!("envelope encode failed: {e}"))?;
+
+    std::fs::write(out, &bytes)
+        .with_context(|| format!("failed to write message envelope to {}", out.display()))?;
+
+    eprintln!(
+        "Signed message: {} byte envelope (payload bound to external AAD of {} bytes)",
+        bytes.len(),
+        external_aad.len()
+    );
+    eprintln!("Wrote envelope to {}", out.display());
+    Ok(())
+}
+
+/// Verify a message envelope against a capability token + expected
+/// issuer pubkey, demonstrating the D0006 §9 hop #1 + hop #2 chain.
+///
+/// Order of checks (defends against subject substitution): verify
+/// the token first so the subject pubkey is trusted, THEN verify the
+/// message against that pubkey.
+fn cmd_verify_message(
+    message: &PathBuf,
+    token: &PathBuf,
+    expected_issuer_pubkey: &PathBuf,
+    external_aad: &str,
+    required_capability: Option<&str>,
+) -> Result<()> {
+    // === Hop #2: verify the capability token ===
+    let token_bytes = std::fs::read(token)
+        .with_context(|| format!("failed to read token from {}", token.display()))?;
+    let expected_issuer = read_pubkey(expected_issuer_pubkey)?;
+    let signed_token = SignedCapabilityToken::from_bytes(&token_bytes, &expected_issuer)
+        .map_err(|e| anyhow!("token verification failed: {e}"))?;
+    let cap_token = signed_token.token();
+    let device_verifying_key = cap_token.subject;
+
+    // === Hop #1: verify the message against the token's subject ===
+    let message_bytes = std::fs::read(message)
+        .with_context(|| format!("failed to read message from {}", message.display()))?;
+    let message_envelope = CoseSign1::from_bytes(&message_bytes)
+        .map_err(|e| anyhow!("message envelope decode failed: {e}"))?;
+    message_envelope
+        .verify(&device_verifying_key, external_aad.as_bytes())
+        .map_err(|e| anyhow!("message signature verification failed: {e}"))?;
+
+    // === Scope check (optional) ===
+    if let Some(cap) = required_capability {
+        if !cap_token.has_capability(cap) {
+            bail!(
+                "token does not authorize the required capability: {} (token scope: {:?})",
+                cap,
+                cap_token.scope
+            );
+        }
+    }
+
+    println!("VERIFIED");
+    println!(
+        "token-issuer:    {}",
+        hex_encode(&cap_token.issuer.to_bytes())
+    );
+    println!(
+        "device-pubkey:   {}",
+        hex_encode(&device_verifying_key.to_bytes())
+    );
+    println!("token-scope:");
+    for c in &cap_token.scope {
+        println!("  - {c}");
+    }
+    println!(
+        "token-expiry:    {} (Unix seconds)",
+        cap_token.expiry_unix_seconds
+    );
+    if let Some(cap) = required_capability {
+        println!("required-capability: {cap} (satisfied)");
+    }
+
+    let payload = message_envelope
+        .payload()
+        .ok_or_else(|| anyhow!("message has no payload"))?;
+    println!("payload ({} bytes):", payload.len());
+    if let Ok(s) = core::str::from_utf8(payload) {
+        println!("{s}");
+    } else {
+        // `min(4)` guarantees the slice end <= payload.len();
+        // `indexing_slicing` allowed at the site since the bound is
+        // statically provable.
+        let preview_len = payload.len().min(4);
+        #[allow(clippy::indexing_slicing)]
+        let preview = &payload[..preview_len];
+        println!(
+            "(non-UTF-8 payload; first {preview_len} bytes hex: {})",
+            hex_encode(preview)
+        );
+    }
+    Ok(())
 }

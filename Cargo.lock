@@ -185,6 +185,7 @@ version = "0.1.0-dev"
 dependencies = [
  "anyhow",
  "cairn-crypto",
+ "cairn-envelope",
  "cairn-identity",
  "clap 4.6.1",
  "rand_core 0.6.4",

@@ -21,6 +21,7 @@ path = "src/main.rs"
 [dependencies]
 # === Foundational primitives ===
 cairn-crypto = { path = "../cairn-crypto" }
+cairn-envelope = { path = "../cairn-envelope" }
 cairn-identity = { path = "../cairn-identity" }
 
 # === App-layer utilities (D0018 §4.1-4.3) ===
