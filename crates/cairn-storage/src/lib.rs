@@ -108,9 +108,11 @@ pub mod encryption;
 pub mod error;
 pub mod key_provider;
 pub mod schema;
+pub mod storage;
 
 pub use error::StorageError;
 pub use key_provider::{KeyProvider, KeyProviderError, UnlockState};
+pub use storage::{ALL_CATEGORIES, KEK_SALT_LEN, Storage};
 
 /// Length of the per-record nonce in bytes (XChaCha20-Poly1305
 /// 192-bit nonce per D0018 §1.4 + D0022 §2.3).

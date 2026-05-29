@@ -108,4 +108,12 @@ pub enum StorageError {
         /// The migration step's target version.
         to_version: u32,
     },
+
+    /// The internal `Mutex` guarding the SQLite connection was
+    /// poisoned. Happens iff a panic occurred while a thread held
+    /// the lock; surfaces here so the caller can decide whether to
+    /// re-open or fail the request. The storage handle should be
+    /// considered unusable after this error.
+    #[error("storage internal mutex was poisoned by a panicking thread")]
+    MutexPoisoned,
 }
