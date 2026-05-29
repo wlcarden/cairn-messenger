@@ -138,11 +138,25 @@ jobs:
   #           cargo fuzz run "$target" -- -max_total_time=60
   #         done
 
-  # dudect placeholder — runs once dudect benches are wired.
-  # dudect:
-  #   name: dudect-bencher CI gate
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - run: cargo bench --bench dudect_signing --release -- --continuous false --runs 1000000
+  # dudect-bencher smoke test: builds the cairn-ct-bench harness in
+  # release mode (per D0018 §5.3 — release-profile timing tests
+  # because `subtle`'s historical `opt-level` regressions reintroduced
+  # variable time at lower opt levels) and runs the default one-shot
+  # iteration count (10_000 per harness's N_INPUTS). This verifies the
+  # harness compiles + runs without panic + produces well-formed
+  # t-statistic output. The harness does NOT currently fail the build
+  # on t > 4.5 because CI hosted runners are too noisy for reliable
+  # threshold gating; production validation runs (per D0018 §5.3 line
+  # 460's 10⁶ recommendation) should use `--continuous` on dedicated
+  # hardware. Strict t < 4.5 gating in CI is a follow-up surface that
+  # requires either a wrapper script parsing dudect output or
+  # dudect-bencher API support for programmatic threshold checks.
+  dudect-bencher:
+    name: dudect-bencher smoke test (release profile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --package cairn-ct-bench
+      - run: ./target/release/cairn-ct-bench

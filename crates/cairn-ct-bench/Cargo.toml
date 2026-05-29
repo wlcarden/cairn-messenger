@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Cairn maintainers and contributors
+
+[package]
+name = "cairn-ct-bench"
+version = "0.1.0-dev"
+description = "Cairn empirical constant-time verification (dudect-bencher harness per D0018 §5.3)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "cairn-ct-bench"
+path = "src/main.rs"
+
+[dependencies]
+# === Constant-time benchmarking harness (D0018 §5.3) ===
+dudect-bencher = { workspace = true }
+
+# === Crates under test ===
+cairn-crypto = { path = "../cairn-crypto" }
+cairn-shamir = { path = "../cairn-shamir" }
+
+# === Memory hygiene (D0018 §1.6) ===
+zeroize = { workspace = true }
+
+# === CSPRNG for input generation ===
+rand_core = { workspace = true }

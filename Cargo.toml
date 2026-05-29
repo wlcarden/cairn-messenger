@@ -22,6 +22,8 @@ members = [
     "crates/cairn-shamir",
     # Capability-token construction per D0006 §9 (Tier 1 MDC)
     "crates/cairn-identity",
+    # Constant-time benchmarks per D0018 §5.3 (Tier 1 MDC infrastructure)
+    "crates/cairn-ct-bench",
 ]
 # Future members per D0018 §8.6 (added incrementally as Tier 1/2/3 lands):
 #   "crates/cairn-identity",
