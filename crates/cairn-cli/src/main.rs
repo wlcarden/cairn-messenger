@@ -70,6 +70,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, SEED_LEN, SigningKey, VerifyingKey};
 use cairn_envelope::cose_sign1::{CoseSign1, Sign1Builder};
 use cairn_identity::{CapabilityToken, SignedCapabilityToken};
+use cairn_shamir::{COMMITMENT_LEN, Commitment, SECRET_LEN, Share, reconstruct, split};
 use clap::{Parser, Subcommand};
 use rand_core::OsRng;
 use zeroize::Zeroizing;
@@ -175,6 +176,44 @@ enum Command {
         #[arg(long)]
         required_capability: Option<String>,
     },
+    /// Split a 32-byte seed into Shamir shares per D0006 §9. Writes
+    /// N share files (`<prefix>-share-NN.bin`, each 33 bytes:
+    /// 1 id byte + 32 share-value bytes) plus a commitment file
+    /// (`<prefix>-commitment.bin`, 32 bytes BLAKE3).
+    SplitSeed {
+        /// Path to the 32-byte seed file to split.
+        #[arg(long)]
+        seed: PathBuf,
+        /// Recovery threshold (`k` in k-of-n). Must be `>= 2`.
+        #[arg(long)]
+        threshold: u8,
+        /// Total number of shares (`n` in k-of-n). Must be
+        /// `>= threshold` and `<= 255`.
+        #[arg(long)]
+        num_shares: u8,
+        /// Output filename prefix. Files written:
+        /// `<prefix>-share-01.bin`, ..., `<prefix>-share-NN.bin`,
+        /// `<prefix>-commitment.bin`.
+        #[arg(long)]
+        out_prefix: PathBuf,
+    },
+    /// Reconstruct a 32-byte seed from threshold-many Shamir share
+    /// files + a commitment file. The BLAKE3 commitment check
+    /// rejects corrupted / malicious / insufficient shares
+    /// uniformly per D0018 §3.4.
+    ReconstructSeed {
+        /// Path to a share file (33 bytes). May be supplied
+        /// multiple times.
+        #[arg(long = "share", action = clap::ArgAction::Append)]
+        shares: Vec<PathBuf>,
+        /// Path to the commitment file (32 bytes BLAKE3) emitted
+        /// alongside the shares at split time.
+        #[arg(long)]
+        commitment: PathBuf,
+        /// Output path for the recovered 32-byte seed.
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -219,6 +258,17 @@ fn main() -> Result<()> {
             &external_aad,
             required_capability.as_deref(),
         ),
+        Command::SplitSeed {
+            seed,
+            threshold,
+            num_shares,
+            out_prefix,
+        } => cmd_split_seed(&seed, threshold, num_shares, &out_prefix),
+        Command::ReconstructSeed {
+            shares,
+            commitment,
+            out,
+        } => cmd_reconstruct_seed(&shares, &commitment, &out),
     }
 }
 
@@ -512,5 +562,125 @@ fn cmd_verify_message(
             hex_encode(preview)
         );
     }
+    Ok(())
+}
+
+/// Split a 32-byte seed into Shamir shares + a BLAKE3 commitment.
+///
+/// Each share file is 33 bytes (`[id_byte, value_bytes...]`); the
+/// commitment file is 32 bytes (BLAKE3-derived). File naming:
+/// `<prefix>-share-NN.bin` (`NN` is zero-padded 2-digit) +
+/// `<prefix>-commitment.bin`. Distribute shares to N peers per the
+/// trust-graph layer; one share per peer with the commitment
+/// duplicated to each.
+fn cmd_split_seed(
+    seed: &PathBuf,
+    threshold: u8,
+    num_shares: u8,
+    out_prefix: &std::path::Path,
+) -> Result<()> {
+    let seed_bytes = read_seed(seed)?;
+    let mut rng = OsRng;
+    let (shares, commitment) = split(&seed_bytes, threshold, num_shares, &mut rng)
+        .map_err(|e| anyhow!("Shamir split failed: {e}"))?;
+
+    let prefix_str = out_prefix.to_string_lossy();
+    for share in &shares {
+        let share_path = PathBuf::from(format!("{}-share-{:02}.bin", prefix_str, share.id()));
+        let mut share_bytes = [0u8; SECRET_LEN + 1];
+        #[allow(clippy::indexing_slicing)]
+        {
+            // Statically safe: array bounds are compile-time constants.
+            share_bytes[0] = share.id();
+            share_bytes[1..].copy_from_slice(share.bytes());
+        }
+        std::fs::write(&share_path, share_bytes)
+            .with_context(|| format!("failed to write share to {}", share_path.display()))?;
+        eprintln!(
+            "Wrote share id={} (33 bytes) to {}",
+            share.id(),
+            share_path.display()
+        );
+    }
+
+    let commitment_path = PathBuf::from(format!("{prefix_str}-commitment.bin"));
+    std::fs::write(&commitment_path, commitment.to_bytes()).with_context(|| {
+        format!(
+            "failed to write commitment to {}",
+            commitment_path.display()
+        )
+    })?;
+    eprintln!(
+        "Wrote BLAKE3 commitment ({} bytes) to {}",
+        COMMITMENT_LEN,
+        commitment_path.display()
+    );
+
+    eprintln!("Split complete: {threshold} of {num_shares} shares required for reconstruction");
+    Ok(())
+}
+
+/// Reconstruct a 32-byte seed from threshold-many share files +
+/// the commitment file, gated on the commitment check.
+fn cmd_reconstruct_seed(
+    share_paths: &[PathBuf],
+    commitment_path: &PathBuf,
+    out: &PathBuf,
+) -> Result<()> {
+    if share_paths.is_empty() {
+        bail!("at least one --share must be supplied");
+    }
+
+    let mut shares: Vec<Share> = Vec::with_capacity(share_paths.len());
+    for path in share_paths {
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("failed to read share from {}", path.display()))?;
+        if bytes.len() != SECRET_LEN + 1 {
+            bail!(
+                "share file {} has {} bytes (expected {})",
+                path.display(),
+                bytes.len(),
+                SECRET_LEN + 1
+            );
+        }
+        // Statically safe: bytes.len() == SECRET_LEN + 1 verified above.
+        #[allow(clippy::indexing_slicing)]
+        let id = bytes[0];
+        let mut value = [0u8; SECRET_LEN];
+        #[allow(clippy::indexing_slicing)]
+        value.copy_from_slice(&bytes[1..]);
+        let share = Share::try_from_parts(id, Zeroizing::new(value))
+            .map_err(|e| anyhow!("invalid share in {}: {e}", path.display()))?;
+        shares.push(share);
+    }
+
+    let commitment_bytes = std::fs::read(commitment_path).with_context(|| {
+        format!(
+            "failed to read commitment from {}",
+            commitment_path.display()
+        )
+    })?;
+    if commitment_bytes.len() != COMMITMENT_LEN {
+        bail!(
+            "commitment file {} has {} bytes (expected {})",
+            commitment_path.display(),
+            commitment_bytes.len(),
+            COMMITMENT_LEN
+        );
+    }
+    let mut commitment_arr = [0u8; COMMITMENT_LEN];
+    commitment_arr.copy_from_slice(&commitment_bytes);
+    let commitment = Commitment::from_bytes(commitment_arr);
+
+    let recovered = reconstruct(&shares, &commitment)
+        .map_err(|e| anyhow!("Shamir reconstruction failed: {e}"))?;
+
+    std::fs::write(out, recovered.as_ref())
+        .with_context(|| format!("failed to write recovered seed to {}", out.display()))?;
+    eprintln!(
+        "Reconstructed seed from {} shares; commitment verified.",
+        shares.len()
+    );
+    eprintln!("Wrote 32-byte seed to {}", out.display());
     Ok(())
 }

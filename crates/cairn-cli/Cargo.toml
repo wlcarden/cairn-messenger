@@ -23,6 +23,7 @@ path = "src/main.rs"
 cairn-crypto = { path = "../cairn-crypto" }
 cairn-envelope = { path = "../cairn-envelope" }
 cairn-identity = { path = "../cairn-identity" }
+cairn-shamir = { path = "../cairn-shamir" }
 
 # === App-layer utilities (D0018 §4.1-4.3) ===
 anyhow = { workspace = true }

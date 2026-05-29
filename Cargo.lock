@@ -187,6 +187,7 @@ dependencies = [
  "cairn-crypto",
  "cairn-envelope",
  "cairn-identity",
+ "cairn-shamir",
  "clap 4.6.1",
  "rand_core 0.6.4",
  "zeroize",
