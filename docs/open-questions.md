@@ -387,17 +387,7 @@ Selection requires engagement with partner organizations who facilitate the excl
 
 ## Q25. v3 mesh radio hardware partnership timing (§6.2 vs §10.5 inconsistency)
 
-**Status:** Open. Surfaced by the §§6/7 review (F6, F18) as cross-section inconsistency.
-
-**Context.** Section 6.2 lists hardware partnerships as v4+; Section 10.5 lists them as v3+ aspiration; Section 7.1 commits a v3 mesh-radio release that needs the hardware path resolved. The boundary between v3 and v4+ for hardware-partnership work is unsettled.
-
-**What it blocks.**
-
-- §7.1 v3 ship-conditions cannot fully specify "hardware partnership in place" if the brief does not commit to whether hardware partnerships are in v3 or v4+.
-- Partner-organization outreach for mesh-radio communities (Meshtastic, MeshCore communities) — the partnership shape depends on whether Cairn is asking for community-protocol-stability partnership (v3) or hardware-distribution partnership (v3 or v4+).
-- §10.5 funding-source roster for hardware partnerships — v3 vs v4+ timing affects when this category becomes active.
-
-**Next step.** Decision document to resolve, likely at the time §7.1 v3 work approaches (Phase D timing per §10.4). Defer until v1.5/v1.6 ship and v2 begins to firm up; the mesh-radio question is genuinely v3-timing-or-later, and earlier resolution may be premature.
+**Status:** Resolved 2026-05-28 by architecture-simplification review F8a application. Mesh radio integration moves from v3 commitment to v4+ candidate per [D0004](decisions/D0004-v1-scope-cuts.md) update; the v3-vs-v4+ inconsistency dissolves because both §6.2 and §10.5 now align on mesh integration as v4+ candidate. Hardware-partnership timing question remains open conceptually for if/when mesh integration ships at v4+, but is no longer blocking any committed roadmap item. See [D0004 update items 10-11](decisions/D0004-v1-scope-cuts.md) for the roadmap restructure.
 
 ---
 

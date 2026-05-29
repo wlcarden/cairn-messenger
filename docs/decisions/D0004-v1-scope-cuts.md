@@ -40,6 +40,16 @@ Per the architecture-simplification adversarial review's Section A consensus cut
 
 8. **UnifiedPush distributor-selection UX deferred to v1.5 (F12).** v1 ships polling-only with no in-app distributor-selection UX. The architectural slot for UnifiedPush integration is preserved per §6.4. The v1.5 revisitation of push-default plus distributor-selection UX depends on pilot feedback — distributor selection becomes operationally relevant when polling-vs-push becomes a user choice rather than a project default.
 
+### Update (architecture-simplification review Section B split-lens recommendations)
+
+Per the project's adoption of three Section B split-lens recommendations, three additional roadmap-level adjustments:
+
+9. **90-day stale-flag auto-escalation timer deferred to v1.5 (F9 partial).** Stale-flag _visibility_ ships at v1 — the trust-graph evaluation exposes stale-attestation state and the developer-as-facilitator surfaces stale attestations during partner debriefs per §6.3. The dedicated 90-day auto-escalation timer (the logic that promotes stale-flags to hard-quarantine after the timer fires) defers to v1.5 alongside the deferred-UX work. No schema change is required for the deferral; v1's stale-flag state is preserved and v1.5 adds the timer over it. Cascade quarantine semantics (the five operation types and the withdrawal-vs-compromise split that closes the cascade-laundering attack) are NOT deferred — they remain v1 commitments per D0006.
+
+10. **iOS support split from v2 to v3 (F8c).** v2 was previously committed as USB form-factor + iOS support together. The iOS upstream-dependency surface (Apple App Store policies; iOS code-signing posture; Briar iOS unavailability) is meaningfully separate from USB form-factor work; the brief now commits v2 as USB-only and v3 as iOS. v2 ask becomes cleaner; v3 inherits the iOS-specific dependency framing.
+
+11. **Mesh radio integration moved from v3 to v4+ candidate (F8a).** Previously committed as v3 (Meshtastic + MeshCore protocol-agnostic integration), mesh integration becomes a v4+ candidate evaluated when v2 ships. The deferral reflects Meshtastic/MeshCore upstream stability (both communities have made breaking changes within 18-month windows), the partner-organization outreach extension that mesh-radio communities would require, and the hardware-partnership question (previously tracked as Q25; now subsumed into the v4+ candidacy framing). The §10.4 Phase D upstream-roadmap-tracking estimate is reduced accordingly (~30-80 hrs/yr from earlier 40-100 hrs/yr).
+
 ## Alternatives considered
 
 **Option B — Moderate cuts (2 cuts).** Defer two of the four candidates. Rejected because the engineering review's pattern was that the four together close the gap; partial cuts likely leave a residual 3-5 month overrun that surfaces under deadline pressure when scope has lost its margin.
