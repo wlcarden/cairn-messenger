@@ -78,3 +78,33 @@ pub mod never_export_gate;
 
 pub use error::CairnFfiError;
 pub use hardware::{AttestationCertificate, HardwareKeySigner, HardwarePublicKey, KeyGenSpec};
+
+// UniFFI scaffolding entrypoint per D0027 §5 / D0020 §3.1. Generates
+// the FFI scaffolding the Kotlin bindings bind against. Gated on the
+// `uniffi-bindings` feature so the default build stays uniffi-free.
+#[cfg(feature = "uniffi-bindings")]
+uniffi::setup_scaffolding!();
+
+/// The cairn-uniffi ABI version string.
+///
+/// A representative `#[uniffi::export]` proving the pipeline end-to-end
+/// per D0027 §8 (the minimal vertical slice: Rust export →
+/// uniffi-bindgen → Kotlin → APK call). The full per-domain export
+/// surface (D0027 §2) fills in behind this proven pipeline. Returns the
+/// crate version so the Kotlin shell can assert it loaded the expected
+/// Rust core at startup.
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
+#[must_use]
+pub fn cairn_ffi_abi_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abi_version_is_crate_version() {
+        assert_eq!(cairn_ffi_abi_version(), env!("CARGO_PKG_VERSION"));
+    }
+}

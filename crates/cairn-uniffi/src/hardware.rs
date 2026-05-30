@@ -38,6 +38,7 @@ use crate::error::CairnFfiError;
 /// Plain-data record (`uniffi::Record` once bindings land). Carries
 /// no secret material — only the generation parameters.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
 pub struct KeyGenSpec {
     /// Whether the key requires user authentication (biometric /
     /// device-credential) before each use.
@@ -51,6 +52,7 @@ pub struct KeyGenSpec {
 ///
 /// The PUBLIC key only — the private key never leaves StrongBox.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
 pub struct HardwarePublicKey {
     /// Encoded public-key bytes (e.g., the SubjectPublicKeyInfo DER).
     pub encoded: Vec<u8>,
@@ -62,6 +64,7 @@ pub struct HardwarePublicKey {
 /// attestation root + the GrapheneOS verified-boot fingerprint per
 /// D0020 §3.9.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
 pub struct AttestationCertificate {
     /// Encoded X.509 certificate bytes (DER).
     pub encoded: Vec<u8>,
@@ -80,6 +83,7 @@ pub struct AttestationCertificate {
 ///
 /// `Send + Sync` because the callback may be invoked from any thread
 /// driving an async export per D0027 §5.
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export(callback_interface))]
 pub trait HardwareKeySigner: Send + Sync {
     /// Sign `payload` with the StrongBox key named `key_alias`. The
     /// private key never leaves hardware; the signature bytes return.

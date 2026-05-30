@@ -137,6 +137,15 @@ serde = { version = "=1.0.215", features = ["derive"] }
 serde_json = "=1.0.133"
 toml = "=0.8.23"
 
+# === FFI boundary (D0020 §3 + D0027) ===
+# UniFFI for the Kotlin<->Rust boundary per D0020 §3.1, pinned exact
+# per D0020 §3.11. The `tokio` feature enables async exports
+# (suspend funs in Kotlin) for the four async I/O crates per D0027 §5.
+# `cli` enables the uniffi-bindgen entrypoint used to generate the
+# Kotlin bindings from the compiled library. Consumed ONLY by
+# cairn-uniffi, behind its `uniffi-bindings` feature, per D0027 §8.
+uniffi = { version = "=0.31.1", features = ["tokio", "cli"] }
+
 # === Logging facade (D0018 §4.3) ===
 log = { version = "=0.4.22", features = ["release_max_level_info"] }
 

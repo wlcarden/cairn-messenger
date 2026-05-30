@@ -57,6 +57,7 @@ use thiserror::Error;
 /// When the `uniffi-bindings` feature lands this enum additionally
 /// derives `uniffi::Error` per D0027 §8.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Error))]
 #[non_exhaustive]
 pub enum CairnFfiError {
     // === Cross-cutting ===

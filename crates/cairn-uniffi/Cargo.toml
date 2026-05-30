@@ -14,15 +14,23 @@ repository.workspace = true
 [lints]
 workspace = true
 
+# cdylib produces the libcairn_uniffi.so that ships in the APK + that
+# uniffi-bindgen reads to generate the Kotlin bindings (D0020 §3.10).
+# `lib` (rlib) keeps the crate usable as a normal Rust dependency for
+# the uniffi-bindgen bin + the host test build.
+[lib]
+crate-type = ["cdylib", "lib"]
+
 [features]
 default = []
-# Gated UniFFI binding generation. Disabled by default so the v1
-# skeleton compiles + tests the error facade + NeverExport gate +
-# trait declarations WITHOUT pulling the uniffi proc-macro / the
-# cargo-ndk-android-gradle pipeline per D0027 §8. The actual
-# #[uniffi::export] attributes + UDL generation land behind this flag
-# when the Android-shell build pipeline is stood up (D0020 §3.10).
-uniffi-bindings = []
+# UniFFI binding surface per D0027 §8. When enabled, pulls uniffi
+# 0.31.1 (the D0020 §3.11 pin) + applies the #[uniffi::export] /
+# #[derive(uniffi::Error)] / callback_interface macros + the
+# setup_scaffolding entrypoint. Disabled by default so the pure-Rust
+# error facade + NeverExport gate + trait declarations compile + test
+# WITHOUT the uniffi dep tree. The workspace gate runs --all-features,
+# which exercises this path.
+uniffi-bindings = ["dep:uniffi"]
 
 [dependencies]
 # === The NeverExport sealed marker (D0020 §3.7) lives in cairn-crypto ===
@@ -43,7 +51,11 @@ cairn-simplex-adapter = { path = "../cairn-simplex-adapter" }
 #     crosses) per D0018 §4.2 ===
 thiserror = { workspace = true }
 
-# uniffi = "=0.31.1" is added behind the `uniffi-bindings` feature per
-# D0020 §3.11 when the binding-generation body lands (D0027 §8 step 4-5).
-# The skeleton's error facade + NeverExport gate + trait declarations
-# are plain Rust + fully testable without it.
+# === UniFFI boundary surface per D0020 §3 + D0027, behind the
+#     uniffi-bindings feature. Optional so the default build stays
+#     uniffi-free; the workspace --all-features gate exercises it. ===
+uniffi = { workspace = true, optional = true }
+
+# The uniffi-bindgen entrypoint (src/bin/uniffi-bindgen.rs) generates
+# the Kotlin bindings from the compiled library; it is gated on the
+# same feature.
