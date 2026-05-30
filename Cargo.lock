@@ -425,7 +425,6 @@ dependencies = [
  "cairn-envelope",
  "cairn-sigsum-client",
  "cairn-storage",
- "cairn-tor-transport",
  "cairn-trust-graph",
  "ciborium",
  "getrandom 0.2.15",
