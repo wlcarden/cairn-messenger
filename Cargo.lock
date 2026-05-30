@@ -418,6 +418,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "cairn-simplex-adapter"
+version = "0.1.0-dev"
+dependencies = [
+ "cairn-crypto",
+ "cairn-envelope",
+ "cairn-sigsum-client",
+ "cairn-storage",
+ "cairn-tor-transport",
+ "cairn-trust-graph",
+ "ciborium",
+ "getrandom 0.2.15",
+ "rand_core 0.6.4",
+ "sha2",
+ "thiserror 1.0.63",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
 name = "cairn-storage"
 version = "0.1.0-dev"
 dependencies = [

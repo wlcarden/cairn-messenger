@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Cairn maintainers and contributors
+
+[package]
+name = "cairn-simplex-adapter"
+version = "0.1.0-dev"
+description = "Cairn project-owned Rust SMP client + Cairn message envelope per D0026"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Gated network integration tests against a local SMP server harness
+# or a public SMP relay. Disabled by default so CI doesn't depend on
+# external network availability per D0026 §12.
+integration-tests = []
+
+[dev-dependencies]
+rand_core = { workspace = true }
+
+[dependencies]
+# === Foundational primitives ===
+cairn-crypto = { path = "../cairn-crypto" }
+cairn-envelope = { path = "../cairn-envelope" }
+cairn-storage = { path = "../cairn-storage" }
+cairn-trust-graph = { path = "../cairn-trust-graph" }
+
+# === Tor transport composition per D0026 §8 ===
+cairn-tor-transport = { path = "../cairn-tor-transport" }
+# === RetryBudget reuse per D0026 §7.1 + D0023 §5.3 ===
+cairn-sigsum-client = { path = "../cairn-sigsum-client" }
+
+# === SHA-256 for record-ids + prior_envelope_hash per D0026 §2-§3 ===
+sha2 = { workspace = true }
+
+# === CBOR for the envelope schema (D0026 §2) ===
+ciborium = { workspace = true }
+
+# === CSPRNG for padding bytes per D0026 §4 + D0018 §1.7 ===
+getrandom = { workspace = true }
+
+# === Async runtime (D0026 §7) ===
+tokio = { workspace = true }
+
+# === Memory hygiene (D0018 §1.6) ===
+zeroize = { workspace = true }
+
+# === Error handling (D0018 §4.2) ===
+thiserror = { workspace = true }

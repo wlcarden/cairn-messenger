@@ -40,6 +40,9 @@ members = [
     # Tor transport: Arti-embedded client + pluggable-transports
     # architecture per D0025
     "crates/cairn-tor-transport",
+    # SimpleX adapter: project-owned Rust SMP client + Cairn message
+    # envelope per D0026
+    "crates/cairn-simplex-adapter",
 ]
 # Future members per D0018 §8.6 (added incrementally as Tier 1/2/3 lands):
 #   "crates/cairn-identity",
