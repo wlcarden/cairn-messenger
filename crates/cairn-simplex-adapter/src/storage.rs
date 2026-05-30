@@ -1,16 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 Cairn maintainers and contributors
 
-//! Storage record-id derivation per D0026 §3.2.
+//! Storage record-id derivation per D0026 §3.2 (re-anchored under
+//! D0020 §1).
 //!
 //! Two record-id schemes:
 //!
-//! - **Ratchet state**: one record per conversation.
-//!   `record_id = SHA-256(local_operational_pubkey ‖ peer_operational_pubkey)`.
-//!   Lives in [`cairn_storage::categories::RATCHET_STATE`].
-//! - **Message history**: one record per message.
+//! - **Message history** (Cairn-owned): one record per message.
 //!   `record_id = SHA-256(sender_operational_pubkey ‖ recipient_operational_pubkey ‖ envelope_message_number_be)`.
-//!   Lives in [`cairn_storage::categories::MESSAGES`].
+//!   Lives in [`cairn_storage::categories::MESSAGES`]. Cairn persists
+//!   its own application-level message history (the decrypted
+//!   envelopes the user sees), decryptable under unlock per D0006
+//!   §3.5.
+//! - **Ratchet state** (RESERVED — not used in the SimplOxide model).
+//!   `record_id = SHA-256(local_operational_pubkey ‖ peer_operational_pubkey)`.
+//!   Per D0026 §4.1, the SimpleX Chat CLI sidecar persists its own
+//!   ratchet + queue state in its data directory; Cairn's
+//!   [`cairn_storage::categories::RATCHET_STATE`] category is
+//!   therefore NOT used for SimpleX ratchet state. The
+//!   [`ratchet_record_id_for`] helper is retained (per D0026 §4.2's
+//!   flagged-for-removal-or-retention note) against a possible
+//!   future Cairn-owned ratchet — e.g., a v1.5 Briar tier that needs
+//!   Cairn-side ratchet persistence.
 //!
 //! Both ids are 32 bytes; the storage layer's AAD-binding per
 //! D0022 §2.4 binds them to their categories so cross-category swap
@@ -19,10 +30,11 @@
 //! ## v1 skeleton status
 //!
 //! The record-id helpers are real + tested. The put/get wrappers
-//! that consume them via [`cairn_storage::Storage`] live in
-//! [`crate::client`] once the ratchet + SMP bodies land; the
-//! skeleton stops at the id-derivation layer so consumers can pin
-//! the deterministic-id property before the wire body exists.
+//! that consume [`message_record_id_for`] via
+//! [`cairn_storage::Storage`] live in [`crate::adapter`] once the
+//! SimplOxide body lands; the skeleton stops at the id-derivation
+//! layer so consumers can pin the deterministic-id property before
+//! the sidecar body exists.
 
 use cairn_crypto::ed25519::PUBLIC_KEY_LEN;
 use sha2::{Digest, Sha256};
@@ -33,8 +45,10 @@ pub const RECORD_ID_LEN: usize = 32;
 /// Compute the [`cairn_storage::categories::RATCHET_STATE`] record
 /// id for a conversation pair per D0026 §3.2.
 ///
-/// Deterministic: same `(local, peer)` pair always produces the
-/// same id.
+/// RESERVED: not used in the SimplOxide model (the CLI sidecar owns
+/// SimpleX ratchet state per D0026 §4.1). Retained against a possible
+/// future Cairn-owned ratchet (v1.5 Briar tier). Deterministic: same
+/// `(local, peer)` pair always produces the same id.
 #[must_use]
 pub fn ratchet_record_id_for(
     local_operational_pubkey: &[u8; PUBLIC_KEY_LEN],

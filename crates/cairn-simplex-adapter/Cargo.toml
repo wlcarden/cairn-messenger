@@ -31,10 +31,18 @@ cairn-envelope = { path = "../cairn-envelope" }
 cairn-storage = { path = "../cairn-storage" }
 cairn-trust-graph = { path = "../cairn-trust-graph" }
 
-# === Tor transport composition per D0026 §8 ===
-cairn-tor-transport = { path = "../cairn-tor-transport" }
 # === RetryBudget reuse per D0026 §7.1 + D0023 §5.3 ===
 cairn-sigsum-client = { path = "../cairn-sigsum-client" }
+# Note: this crate does NOT depend on cairn-tor-transport. Per the
+# D0020 re-anchor (D0026 §8), the SimpleX Chat CLI sidecar owns its
+# own Tor routing through the shared C-Tor proxy; Cairn-Rust talks to
+# the sidecar over loopback WebSocket and does not open raw Tor
+# streams for SimpleX traffic.
+
+# === SimplOxide client (the SimpleX integration per D0020 §1) will be
+# pinned when the network body lands per D0026 §12 step 5. The v1
+# skeleton's adapter methods return NetworkUnreached without opening a
+# WebSocket, so the pin is deferred to keep the dep surface minimal. ===
 
 # === SHA-256 for record-ids + prior_envelope_hash per D0026 §2-§3 ===
 sha2 = { workspace = true }
