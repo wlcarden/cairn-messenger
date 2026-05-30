@@ -483,6 +483,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cairn-uniffi"
+version = "0.1.0-dev"
+dependencies = [
+ "cairn-crypto",
+ "cairn-sigstore-verify",
+ "cairn-sigsum-client",
+ "cairn-simplex-adapter",
+ "cairn-storage",
+ "cairn-tor-transport",
+ "cairn-trust-graph",
+ "thiserror 1.0.63",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.63"
 source = "registry+https://github.com/rust-lang/crates.io-index"

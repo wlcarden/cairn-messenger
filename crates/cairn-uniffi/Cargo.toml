@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Cairn maintainers and contributors
+
+[package]
+name = "cairn-uniffi"
+version = "0.1.0-dev"
+description = "Cairn FFI boundary crate: the curated Kotlin-facing surface per D0027 (downstream of D0020 §3)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Gated UniFFI binding generation. Disabled by default so the v1
+# skeleton compiles + tests the error facade + NeverExport gate +
+# trait declarations WITHOUT pulling the uniffi proc-macro / the
+# cargo-ndk-android-gradle pipeline per D0027 §8. The actual
+# #[uniffi::export] attributes + UDL generation land behind this flag
+# when the Android-shell build pipeline is stood up (D0020 §3.10).
+uniffi-bindings = []
+
+[dependencies]
+# === The NeverExport sealed marker (D0020 §3.7) lives in cairn-crypto ===
+cairn-crypto = { path = "../cairn-crypto" }
+
+# === The six typed-error sources the CairnFfiError facade maps from
+#     per D0027 §3. The flat type-tag mapping discards source payloads
+#     so no source Display string crosses the boundary (no-error-oracle
+#     per D0018 §4.2). ===
+cairn-storage = { path = "../cairn-storage" }
+cairn-trust-graph = { path = "../cairn-trust-graph" }
+cairn-sigsum-client = { path = "../cairn-sigsum-client" }
+cairn-sigstore-verify = { path = "../cairn-sigstore-verify" }
+cairn-tor-transport = { path = "../cairn-tor-transport" }
+cairn-simplex-adapter = { path = "../cairn-simplex-adapter" }
+
+# === Error Display (Cairn-authored strings only; no source Display
+#     crosses) per D0018 §4.2 ===
+thiserror = { workspace = true }
+
+# uniffi = "=0.31.1" is added behind the `uniffi-bindings` feature per
+# D0020 §3.11 when the binding-generation body lands (D0027 §8 step 4-5).
+# The skeleton's error facade + NeverExport gate + trait declarations
+# are plain Rust + fully testable without it.

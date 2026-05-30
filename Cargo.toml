@@ -43,6 +43,9 @@ members = [
     # SimpleX adapter: project-owned Rust SMP client + Cairn message
     # envelope per D0026
     "crates/cairn-simplex-adapter",
+    # FFI boundary crate: the curated Kotlin-facing surface per D0027
+    # (downstream of D0020 §3)
+    "crates/cairn-uniffi",
 ]
 # Future members per D0018 §8.6 (added incrementally as Tier 1/2/3 lands):
 #   "crates/cairn-identity",

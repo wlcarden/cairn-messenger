@@ -1,0 +1,557 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Cairn maintainers and contributors
+
+//! The FFI error facade per D0027 §3.
+//!
+//! UniFFI requires exported fallible functions to return
+//! `Result<_, E>` where `E` derives `uniffi::Error`. The workspace's
+//! typed errors (`SigsumError`, `StorageError`, `TrustGraphError`,
+//! `SimplexAdapterError`, `TorTransportError`, `SigstoreVerifyError`)
+//! are NOT directly exported. Instead this module defines
+//! [`CairnFfiError`] — a curated, flattened facade whose variants are
+//! a TYPE-TAG mapping of the source errors.
+//!
+//! ## Why a flat mapping, not `#[from]`-nesting (the security point)
+//!
+//! Per D0027 §3.2 (the most security-relevant gap D0020 §3 leaves
+//! open): if `CairnFfiError` wrapped the source errors (`#[from]
+//! SigsumError`), UniFFI would lower the source error's `Display`
+//! string to Kotlin — reopening the no-error-oracle hole (D0018 §4.2)
+//! at exactly the boundary an attacker probes. The flat mapping
+//! reproduces only the type-tag + the bounded scalars the source
+//! error already exposes; it DISCARDS the source payload. No
+//! `Vec<u8>`, no peer-supplied string, no nested source `Display`
+//! crosses to Kotlin.
+//!
+//! ## Forward-compat
+//!
+//! Every source error is `#[non_exhaustive]`, so each mapping `match`
+//! carries a wildcard arm → [`CairnFfiError::UnmappedInternal`]. A
+//! future source variant this build does not explicitly map degrades
+//! to `UnmappedInternal` rather than failing to compile or leaking a
+//! default `Display` — same posture as D0023's `TrustGraphStoreUnknown`
+//! sentinel.
+//!
+//! ## v1 skeleton status
+//!
+//! `CairnFfiError` is a plain enum here. The `#[derive(uniffi::Error)]`
+//! attribute lands behind the `uniffi-bindings` feature per D0027 §8;
+//! the mapping logic + its no-error-oracle discipline are plain Rust
+//! and fully tested without UniFFI.
+
+use cairn_sigstore_verify::SigstoreVerifyError;
+use cairn_sigsum_client::SigsumError;
+use cairn_simplex_adapter::SimplexAdapterError;
+use cairn_storage::StorageError;
+use cairn_tor_transport::TorTransportError;
+use cairn_trust_graph::TrustGraphError;
+use thiserror::Error;
+
+/// The curated Kotlin-facing error facade per D0027 §3.
+///
+/// `#[non_exhaustive]` so adding facade variants later is not a
+/// breaking change for Rust consumers. The `Display` strings are
+/// Cairn-authored — type-tag + bounded scalars only, never a source
+/// `Display`, never a `Vec<u8>`, never a peer-supplied string.
+///
+/// When the `uniffi-bindings` feature lands this enum additionally
+/// derives `uniffi::Error` per D0027 §8.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum CairnFfiError {
+    // === Cross-cutting ===
+    /// A network-bound surface is not yet implemented (v1 skeleton)
+    /// or the operation is offline. Distinct so the shell can render
+    /// "connecting / unavailable" vs. a hard failure.
+    #[error("cairn: network surface unreached")]
+    NetworkUnreached,
+    /// Network failure after the retry budget was exhausted.
+    #[error("cairn: network failure after {retry_budget_used} retries")]
+    Network {
+        /// Retries consumed before surfacing.
+        retry_budget_used: u8,
+    },
+
+    // === Identity / trust-graph / capability ===
+    /// An Ed25519 signature did not verify (envelope, op, token, or
+    /// device-token binding).
+    #[error("cairn: signature verify failed")]
+    SignatureVerifyFailed,
+    /// A capability token did not authorize the attempted operation.
+    #[error("cairn: capability not authorized")]
+    CapabilityNotAuthorized,
+    /// A trust-graph chain-link structural check failed (genesis,
+    /// prior-hash, pair, timestamp, or empty chain).
+    #[error("cairn: trust-graph chain invalid")]
+    ChainInvalid,
+    /// Canonical-CBOR / schema decode failed, or a structural field
+    /// was malformed. Covers the various "malformed bytes" source
+    /// variants without leaking which byte.
+    #[error("cairn: malformed data")]
+    MalformedData,
+
+    // === Storage ===
+    /// The requested storage record was not found.
+    #[error("cairn: storage record not found")]
+    StorageRecordNotFound,
+    /// Storage AEAD verification failed (wrong key, tamper, or AAD
+    /// mismatch — uniform per D0018 §1.4).
+    #[error("cairn: storage decrypt failed")]
+    StorageDecryptFailed,
+    /// Any other storage failure (open, migration, mutex-poison,
+    /// truncation, encode). Flattened — the shell's response is the
+    /// same: surface "local data error", do not retry blindly.
+    #[error("cairn: storage failure")]
+    StorageFailure,
+
+    // === Transparency: Sigsum ===
+    /// Fewer witnesses than the threshold (pool-too-small at config
+    /// time, or insufficient cosignatures at verify time).
+    #[error("cairn: sigsum witness threshold not met: {valid} valid, {required} required")]
+    SigsumWitnessThreshold {
+        /// Witnesses that were valid / configured.
+        valid: u8,
+        /// Witnesses required by the threshold.
+        required: u8,
+    },
+    /// A Sigsum inclusion / consistency / cosignature verification
+    /// failed.
+    #[error("cairn: sigsum verify failed")]
+    SigsumVerifyFailed,
+    /// The Sigsum log presented a split view (tree-size regression or
+    /// same-size-different-root). Halt per D0023 §7.1.
+    #[error("cairn: sigsum split-view detected")]
+    SigsumSplitView,
+
+    // === Transparency: Sigstore ===
+    /// The Fulcio cert's OIDC identity claims did not match the
+    /// pinned issuer / email per D0024 §1.
+    #[error("cairn: sigstore identity mismatch")]
+    SigstoreIdentityMismatch,
+    /// The Fulcio cert chain did not validate to the pinned root /
+    /// was expired at signing time per D0024 §2.
+    #[error("cairn: sigstore cert chain invalid")]
+    SigstoreChainInvalid,
+    /// A Rekor inclusion / checkpoint / manifest-signature
+    /// verification failed per D0024 §3-§4.
+    #[error("cairn: sigstore verify failed")]
+    SigstoreVerifyFailed,
+
+    // === Messaging (SimpleX adapter) ===
+    /// The SimpleX Chat CLI sidecar is unavailable or misbehaving, or
+    /// a connection was not found (D0026 §9 sidecar-layer variants).
+    #[error("cairn: SimpleX sidecar failure")]
+    SidecarFailure,
+    /// A received Cairn message envelope failed verification
+    /// (signature, AAD domain tag, or decode) per D0026 §9.
+    #[error("cairn: message envelope verify failed")]
+    EnvelopeVerifyFailed,
+    /// The peer's envelope chain has a gap — a message is missing
+    /// between the last-observed and the current one per D0026 §9.
+    #[error(
+        "cairn: envelope chain gap: last observed msg #{last_observed_message_number}, current #{observed_message_number}"
+    )]
+    EnvelopeChainGap {
+        /// Last in-order message number observed.
+        last_observed_message_number: u64,
+        /// Message number the just-received envelope claims.
+        observed_message_number: u64,
+    },
+
+    // === Transport (Tor) ===
+    /// The C-Tor ForegroundService has not finished bootstrapping, or
+    /// no bridge bootstrapped (D0025 §6 bootstrap-layer variants).
+    #[error("cairn: tor bootstrap incomplete")]
+    TorBootstrapIncomplete,
+    /// A Tor connection failed (host resolution, refused/reset,
+    /// control-port protocol, stream-closed) per D0025 §6.
+    #[error("cairn: tor connection failed")]
+    TorConnectionFailed,
+
+    // === Catch-all ===
+    /// A source-error variant this build does not explicitly map
+    /// (absorbs each source's `#[non_exhaustive]` future variants).
+    #[error("cairn: unmapped internal error")]
+    UnmappedInternal,
+}
+
+impl From<SigsumError> for CairnFfiError {
+    fn from(e: SigsumError) -> Self {
+        match e {
+            SigsumError::NetworkUnreached => Self::NetworkUnreached,
+            SigsumError::Network { retry_budget_used } => Self::Network { retry_budget_used },
+            SigsumError::WitnessPoolTooSmall {
+                configured,
+                minimum,
+            } => Self::SigsumWitnessThreshold {
+                valid: configured,
+                required: minimum,
+            },
+            SigsumError::InsufficientWitnessCosignatures {
+                valid, required, ..
+            } => Self::SigsumWitnessThreshold { valid, required },
+            SigsumError::CosignatureVerifyFailed { .. }
+            | SigsumError::InclusionProofVerifyFailed
+            | SigsumError::ConsistencyProofVerifyFailed { .. } => Self::SigsumVerifyFailed,
+            SigsumError::LogTreeSizeRegression { .. } | SigsumError::LogSplitView { .. } => {
+                Self::SigsumSplitView
+            }
+            SigsumError::WitnessConfigParse
+            | SigsumError::MalformedResponse
+            | SigsumError::MalformedCacheRecord
+            | SigsumError::Encode(_) => Self::MalformedData,
+            SigsumError::Storage(_) => Self::StorageFailure,
+            // TrustGraphStoreUnknown + any future variant.
+            _ => Self::UnmappedInternal,
+        }
+    }
+}
+
+impl From<StorageError> for CairnFfiError {
+    fn from(e: StorageError) -> Self {
+        match e {
+            StorageError::RecordNotFound { .. } => Self::StorageRecordNotFound,
+            StorageError::DecryptFailed => Self::StorageDecryptFailed,
+            // OpenFailed / KeyProvider / CanonicalEncode /
+            // UnsupportedRecordVersion / UnexpectedRecordLength /
+            // CiphertextTruncated / MigrationFailed / MutexPoisoned +
+            // any future variant.
+            _ => Self::StorageFailure,
+        }
+    }
+}
+
+impl From<TrustGraphError> for CairnFfiError {
+    fn from(e: TrustGraphError) -> Self {
+        match e {
+            TrustGraphError::SignatureVerifyFailed | TrustGraphError::DeviceTokenMismatch => {
+                Self::SignatureVerifyFailed
+            }
+            TrustGraphError::CapabilityNotAuthorized { .. } => Self::CapabilityNotAuthorized,
+            TrustGraphError::ChainGenesisNotEmpty { .. }
+            | TrustGraphError::ChainPriorHashMismatch { .. }
+            | TrustGraphError::ChainPairMismatch { .. }
+            | TrustGraphError::ChainTimestampRegression { .. }
+            | TrustGraphError::ChainEmpty => Self::ChainInvalid,
+            TrustGraphError::MalformedPayload
+            | TrustGraphError::InvalidPubkeyLength { .. }
+            | TrustGraphError::InvalidPubkey
+            | TrustGraphError::UnknownOpType { .. }
+            | TrustGraphError::MissingRequiredField { .. }
+            | TrustGraphError::IntegerOutOfRange => Self::MalformedData,
+            _ => Self::UnmappedInternal,
+        }
+    }
+}
+
+impl From<SimplexAdapterError> for CairnFfiError {
+    fn from(e: SimplexAdapterError) -> Self {
+        match e {
+            SimplexAdapterError::NetworkUnreached => Self::NetworkUnreached,
+            SimplexAdapterError::Network { retry_budget_used } => {
+                Self::Network { retry_budget_used }
+            }
+            SimplexAdapterError::SidecarUnavailable
+            | SimplexAdapterError::SidecarProtocol
+            | SimplexAdapterError::ConnectionNotFound => Self::SidecarFailure,
+            SimplexAdapterError::EnvelopeSignatureVerifyFailed
+            | SimplexAdapterError::EnvelopeDecodeFailed
+            | SimplexAdapterError::EnvelopeDomainTagMismatch => Self::EnvelopeVerifyFailed,
+            SimplexAdapterError::EnvelopeChainGap {
+                last_observed_message_number,
+                observed_message_number,
+            } => Self::EnvelopeChainGap {
+                last_observed_message_number,
+                observed_message_number,
+            },
+            SimplexAdapterError::PaddingMalformed | SimplexAdapterError::Envelope(_) => {
+                Self::MalformedData
+            }
+            SimplexAdapterError::Storage(_) => Self::StorageFailure,
+            _ => Self::UnmappedInternal,
+        }
+    }
+}
+
+impl From<TorTransportError> for CairnFfiError {
+    fn from(e: TorTransportError) -> Self {
+        match e {
+            TorTransportError::NetworkUnreached => Self::NetworkUnreached,
+            TorTransportError::Network { retry_budget_used } => Self::Network { retry_budget_used },
+            TorTransportError::BootstrapIncomplete
+            | TorTransportError::AllBridgesFailed { .. }
+            | TorTransportError::BridgeBootstrapFailed { .. } => Self::TorBootstrapIncomplete,
+            TorTransportError::HostResolutionFailed
+            | TorTransportError::ConnectionRefused
+            | TorTransportError::ControlPortProtocol
+            | TorTransportError::StreamClosed { .. } => Self::TorConnectionFailed,
+            TorTransportError::BridgeManifestParse => Self::MalformedData,
+            // OnionServiceHostingDeferred (v1.5; should not reach
+            // Kotlin in v1) + any future variant.
+            _ => Self::UnmappedInternal,
+        }
+    }
+}
+
+impl From<SigstoreVerifyError> for CairnFfiError {
+    fn from(e: SigstoreVerifyError) -> Self {
+        match e {
+            SigstoreVerifyError::NetworkUnreached => Self::NetworkUnreached,
+            SigstoreVerifyError::Network { retry_budget_used } => {
+                Self::Network { retry_budget_used }
+            }
+            SigstoreVerifyError::OidcIssuerMismatch | SigstoreVerifyError::OidcEmailMismatch => {
+                Self::SigstoreIdentityMismatch
+            }
+            SigstoreVerifyError::FulcioChainInvalid
+            | SigstoreVerifyError::FulcioCertExpiredAtSigningTime => Self::SigstoreChainInvalid,
+            SigstoreVerifyError::RekorInclusionProofVerifyFailed
+            | SigstoreVerifyError::RekorCheckpointVerifyFailed
+            | SigstoreVerifyError::ManifestPriorHashMismatch
+            | SigstoreVerifyError::ManifestSignatureVerifyFailed => Self::SigstoreVerifyFailed,
+            SigstoreVerifyError::ManifestDecodeFailed => Self::MalformedData,
+            SigstoreVerifyError::SigsumReleaseLog(_) => Self::SigsumVerifyFailed,
+            SigstoreVerifyError::Storage(_) => Self::StorageFailure,
+            _ => Self::UnmappedInternal,
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::indexing_slicing, clippy::panic, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    // === SigsumError mapping ===
+
+    #[test]
+    fn sigsum_network_unreached_maps_distinctly() {
+        assert_eq!(
+            CairnFfiError::from(SigsumError::NetworkUnreached),
+            CairnFfiError::NetworkUnreached
+        );
+    }
+
+    #[test]
+    fn sigsum_insufficient_cosignatures_carries_scalars() {
+        let mapped = CairnFfiError::from(SigsumError::InsufficientWitnessCosignatures {
+            valid: 1,
+            required: 2,
+            pool_size: 3,
+        });
+        assert_eq!(
+            mapped,
+            CairnFfiError::SigsumWitnessThreshold {
+                valid: 1,
+                required: 2
+            }
+        );
+    }
+
+    #[test]
+    fn sigsum_split_view_variants_collapse() {
+        assert_eq!(
+            CairnFfiError::from(SigsumError::LogSplitView { tree_size: 99 }),
+            CairnFfiError::SigsumSplitView
+        );
+        assert_eq!(
+            CairnFfiError::from(SigsumError::LogTreeSizeRegression {
+                cached_tree_size: 10,
+                fetched_tree_size: 5
+            }),
+            CairnFfiError::SigsumSplitView
+        );
+    }
+
+    #[test]
+    fn sigsum_storage_does_not_recurse_into_nested_error() {
+        // The whole point of the flat mapping: Storage(_) collapses to
+        // StorageFailure WITHOUT lowering the nested StorageError's
+        // Display. We can only assert the mapping target here; the
+        // no-recursion property is structural (the arm binds `_`).
+        let mapped = CairnFfiError::from(SigsumError::Storage(StorageError::DecryptFailed));
+        assert_eq!(mapped, CairnFfiError::StorageFailure);
+    }
+
+    // === StorageError mapping ===
+
+    #[test]
+    fn storage_record_not_found_maps_distinctly() {
+        assert_eq!(
+            CairnFfiError::from(StorageError::RecordNotFound {
+                category: "messages"
+            }),
+            CairnFfiError::StorageRecordNotFound
+        );
+    }
+
+    #[test]
+    fn storage_decrypt_failed_maps_distinctly() {
+        assert_eq!(
+            CairnFfiError::from(StorageError::DecryptFailed),
+            CairnFfiError::StorageDecryptFailed
+        );
+    }
+
+    #[test]
+    fn storage_other_variants_collapse_to_failure() {
+        assert_eq!(
+            CairnFfiError::from(StorageError::MutexPoisoned),
+            CairnFfiError::StorageFailure
+        );
+        assert_eq!(
+            CairnFfiError::from(StorageError::UnsupportedRecordVersion { got: 9 }),
+            CairnFfiError::StorageFailure
+        );
+    }
+
+    // === TrustGraphError mapping ===
+
+    #[test]
+    fn trust_graph_signature_failures_collapse() {
+        assert_eq!(
+            CairnFfiError::from(TrustGraphError::SignatureVerifyFailed),
+            CairnFfiError::SignatureVerifyFailed
+        );
+        assert_eq!(
+            CairnFfiError::from(TrustGraphError::DeviceTokenMismatch),
+            CairnFfiError::SignatureVerifyFailed
+        );
+    }
+
+    #[test]
+    fn trust_graph_chain_failures_collapse_to_chain_invalid() {
+        assert_eq!(
+            CairnFfiError::from(TrustGraphError::ChainEmpty),
+            CairnFfiError::ChainInvalid
+        );
+        assert_eq!(
+            CairnFfiError::from(TrustGraphError::ChainPriorHashMismatch { index: 2 }),
+            CairnFfiError::ChainInvalid
+        );
+    }
+
+    // === SimplexAdapterError mapping ===
+
+    #[test]
+    fn simplex_sidecar_variants_collapse() {
+        assert_eq!(
+            CairnFfiError::from(SimplexAdapterError::SidecarUnavailable),
+            CairnFfiError::SidecarFailure
+        );
+        assert_eq!(
+            CairnFfiError::from(SimplexAdapterError::ConnectionNotFound),
+            CairnFfiError::SidecarFailure
+        );
+    }
+
+    #[test]
+    fn simplex_envelope_chain_gap_carries_scalars() {
+        let mapped = CairnFfiError::from(SimplexAdapterError::EnvelopeChainGap {
+            last_observed_message_number: 4,
+            observed_message_number: 6,
+        });
+        assert_eq!(
+            mapped,
+            CairnFfiError::EnvelopeChainGap {
+                last_observed_message_number: 4,
+                observed_message_number: 6
+            }
+        );
+    }
+
+    #[test]
+    fn simplex_envelope_verify_variants_collapse() {
+        assert_eq!(
+            CairnFfiError::from(SimplexAdapterError::EnvelopeSignatureVerifyFailed),
+            CairnFfiError::EnvelopeVerifyFailed
+        );
+        assert_eq!(
+            CairnFfiError::from(SimplexAdapterError::EnvelopeDomainTagMismatch),
+            CairnFfiError::EnvelopeVerifyFailed
+        );
+    }
+
+    // === TorTransportError mapping ===
+
+    #[test]
+    fn tor_bootstrap_variants_collapse() {
+        assert_eq!(
+            CairnFfiError::from(TorTransportError::BootstrapIncomplete),
+            CairnFfiError::TorBootstrapIncomplete
+        );
+        assert_eq!(
+            CairnFfiError::from(TorTransportError::AllBridgesFailed {
+                bridges_attempted: 3
+            }),
+            CairnFfiError::TorBootstrapIncomplete
+        );
+    }
+
+    #[test]
+    fn tor_connection_variants_collapse() {
+        assert_eq!(
+            CairnFfiError::from(TorTransportError::ConnectionRefused),
+            CairnFfiError::TorConnectionFailed
+        );
+        assert_eq!(
+            CairnFfiError::from(TorTransportError::HostResolutionFailed),
+            CairnFfiError::TorConnectionFailed
+        );
+    }
+
+    #[test]
+    fn tor_onion_deferred_maps_to_unmapped_internal() {
+        // The v1.5 deferral sentinel should not surface as a real
+        // Kotlin-facing error in v1.
+        assert_eq!(
+            CairnFfiError::from(TorTransportError::OnionServiceHostingDeferred),
+            CairnFfiError::UnmappedInternal
+        );
+    }
+
+    // === SigstoreVerifyError mapping ===
+
+    #[test]
+    fn sigstore_oidc_variants_collapse_to_identity_mismatch() {
+        assert_eq!(
+            CairnFfiError::from(SigstoreVerifyError::OidcIssuerMismatch),
+            CairnFfiError::SigstoreIdentityMismatch
+        );
+        assert_eq!(
+            CairnFfiError::from(SigstoreVerifyError::OidcEmailMismatch),
+            CairnFfiError::SigstoreIdentityMismatch
+        );
+    }
+
+    #[test]
+    fn sigstore_rekor_variants_collapse_to_verify_failed() {
+        assert_eq!(
+            CairnFfiError::from(SigstoreVerifyError::RekorCheckpointVerifyFailed),
+            CairnFfiError::SigstoreVerifyFailed
+        );
+    }
+
+    // === No-error-oracle discipline: Display carries no source payload ===
+
+    #[test]
+    fn display_strings_carry_only_type_tags_and_scalars() {
+        // Spot-check that the facade's Display does not embed any
+        // peer-controlled or byte content — only Cairn-authored text +
+        // bounded scalars.
+        let chain_gap = CairnFfiError::EnvelopeChainGap {
+            last_observed_message_number: 4,
+            observed_message_number: 6,
+        };
+        let s = chain_gap.to_string();
+        assert!(s.contains("envelope chain gap"));
+        assert!(s.contains('4'));
+        assert!(s.contains('6'));
+
+        let threshold = CairnFfiError::SigsumWitnessThreshold {
+            valid: 1,
+            required: 2,
+        };
+        assert!(threshold.to_string().contains("witness threshold"));
+    }
+}
