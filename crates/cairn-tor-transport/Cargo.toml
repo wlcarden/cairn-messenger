@@ -30,14 +30,19 @@ cairn-sigsum-client = { path = "../cairn-sigsum-client" }
 # === Async runtime (D0025 §5) ===
 tokio = { workspace = true }
 
-# === Serde + TOML for pluggable_transports.toml (D0025 §3.1) ===
+# === Serde + TOML for the bridge manifest (D0025 §3 / D0020 §2.4) ===
 serde = { workspace = true }
 toml = { workspace = true }
 
 # === Error handling (D0018 §4.2) ===
 thiserror = { workspace = true }
 
-# arti-client will be added when the Arti integration body lands
-# per D0025 §1.4 + §10 step 4. The v1 skeleton's transport methods
-# return TorTransportError::NetworkUnreached without invoking Arti,
+# The SOCKS5 client + control-port protocol client will be added when
+# the C-Tor integration body lands per D0025 §10 (re-anchored under
+# D0020 §2: this crate is the Rust-side SOCKS5 + control-port client
+# of the C-Tor ForegroundService, NOT an embedded Tor implementation).
+# The v1 skeleton's transport methods return
+# TorTransportError::NetworkUnreached without opening any connection,
 # so the pin is deferred to keep the skeleton's dep surface minimal.
+# Note: this crate does NOT pin arti-client (the original D0025 error);
+# arti is deferred per D0020 §2.7's gating events.

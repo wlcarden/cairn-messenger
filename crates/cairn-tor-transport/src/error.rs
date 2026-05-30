@@ -5,15 +5,15 @@
 //!
 //! Discipline: every variant carries indices, lengths, type tags, or
 //! small numeric values only. No `Vec<u8>` payloads. No peer-supplied
-//! strings. No bridge lines, no peer hostnames, no certificate bytes
-//! in error bodies.
+//! strings. No bridge lines, no peer hostnames, no control-port
+//! cookie bytes in error bodies.
 //!
-//! Upstream Arti errors are NOT directly wrapped. Per D0025 §6.2,
-//! the conversion is intentional: Arti's `Display` output may
-//! include peer-controlled metadata that the no-error-oracle
-//! discipline forbids. Each Arti error variant maps to a typed
-//! [`TorTransportError`] variant via an internal `From` impl that
-//! discards the original payload.
+//! Per D0025 (re-anchored under D0020 §2), this crate is the Rust-side
+//! SOCKS5 + control-port client of the C-Tor `ForegroundService`. The
+//! error surface reflects that boundary: loopback connection failures,
+//! C-Tor bootstrap state, bridge-manifest bootstrap failures, and
+//! control-port protocol errors — NOT an embedded-Tor-implementation
+//! surface.
 
 use thiserror::Error;
 
@@ -24,10 +24,10 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum TorTransportError {
-    /// Underlying network failure (timeout, no-route-to-host) after
-    /// the retry budget was exhausted. `retry_budget_used` names how
-    /// many retries were consumed before giving up.
-    #[error("tor-transport: network failure after {retry_budget_used} retries")]
+    /// Loopback connection to the C-Tor SOCKS proxy (`127.0.0.1:9050`)
+    /// or control-port (`127.0.0.1:9051`) failed after the retry
+    /// budget was exhausted.
+    #[error("tor-transport: loopback connection failure after {retry_budget_used} retries")]
     Network {
         /// Number of retries consumed before the error surfaced.
         retry_budget_used: u8,
@@ -35,46 +35,51 @@ pub enum TorTransportError {
 
     /// Placeholder for the network-bound surfaces that aren't
     /// implemented yet. v1 skeleton ships with the testable load-
-    /// bearing primitives + this stub; the actual Arti exercise
-    /// lands when CI grows the integration harness per D0025 §10.
+    /// bearing primitives + this stub; the SOCKS5 + control-port
+    /// client body lands per D0025 §10.
     #[error("tor-transport: network surface not yet implemented (v1 skeleton)")]
     NetworkUnreached,
 
-    /// The Arti client bootstrap did not complete within the
-    /// budget. `retry_budget_used` names how many bootstrap retries
-    /// were consumed before giving up.
-    #[error("tor-transport: bootstrap did not complete after {retry_budget_used} retries")]
-    BootstrapFailed {
-        /// Number of bootstrap retries consumed.
-        retry_budget_used: u8,
+    /// The C-Tor `ForegroundService` is reachable but Tor bootstrap
+    /// has not completed; outbound circuits are not yet available.
+    /// The caller should wait for bootstrap or surface a "connecting"
+    /// state to the user.
+    #[error("tor-transport: C-Tor bootstrap not complete; circuits unavailable")]
+    BootstrapIncomplete,
+
+    /// All configured bridges in the manifest failed to bootstrap.
+    /// `bridges_attempted` names how many entries in the
+    /// release's bridge manifest were tried per D0020 §2.4.
+    #[error("tor-transport: all {bridges_attempted} configured bridges failed to bootstrap")]
+    AllBridgesFailed {
+        /// Number of configured bridges tried.
+        bridges_attempted: u8,
     },
 
-    /// All configured pluggable transports failed to bootstrap.
-    /// `transports_attempted` names how many entries in the
-    /// release's `pluggable_transports.toml` were tried.
-    #[error(
-        "tor-transport: all {transports_attempted} configured pluggable transports failed to bootstrap"
-    )]
-    AllPluggableTransportsFailed {
-        /// Number of configured transports tried.
-        transports_attempted: u8,
+    /// A specific bridge in the manifest failed to bootstrap.
+    /// `bridge_index` is the 0-based index into the
+    /// [`crate::config::BridgeManifest`] so the caller can correlate
+    /// to the entry's name without the bridge line itself being in
+    /// the error payload.
+    #[error("tor-transport: bridge at index {bridge_index} failed to bootstrap")]
+    BridgeBootstrapFailed {
+        /// 0-based index into [`crate::config::BridgeManifest`].
+        bridge_index: u8,
     },
 
-    /// A specific named pluggable transport failed to bootstrap.
-    /// `transport_index` is the 0-based index into the configured
-    /// list so the caller can correlate to the entry's name without
-    /// the bridge line itself being in the error payload.
-    #[error("tor-transport: pluggable transport at index {transport_index} failed to bootstrap")]
-    PluggableTransportBootstrapFailed {
-        /// 0-based index into [`crate::config::PluggableTransportConfig`].
-        transport_index: u8,
-    },
+    /// The bridge manifest could not be parsed. Indicates malformed
+    /// TOML, a missing required field, or an invalid bridge-line
+    /// entry. (Signature + witness verification of the manifest
+    /// happens upstream via D0023 + D0024; this variant is the
+    /// structural parse failure of an already-verified manifest.)
+    #[error("tor-transport: bridge manifest parse failed")]
+    BridgeManifestParse,
 
-    /// The `pluggable_transports.toml` config could not be parsed.
-    /// Indicates malformed TOML, missing required fields, or invalid
-    /// bridge-line syntax.
-    #[error("tor-transport: pluggable_transports.toml parse failed")]
-    PluggableTransportConfigParse,
+    /// The control-port returned an error reply or an unexpected
+    /// reply shape (`SIGNAL NEWNYM`, bootstrap-status query, or — at
+    /// v1.5 — `ADD_ONION`).
+    #[error("tor-transport: control-port protocol error")]
+    ControlPortProtocol,
 
     /// The supplied `target_host` did not resolve over Tor.
     #[error("tor-transport: target host did not resolve over Tor")]
@@ -92,11 +97,12 @@ pub enum TorTransportError {
         reason: StreamCloseReason,
     },
 
-    /// Onion-service hosting is deferred to v1.5 per D0025 §7.
-    /// The `host_onion_service()` method returns this variant in v1
-    /// so consuming code compiles against the eventual API surface
+    /// Onion-service hosting is deferred to v1.5 per D0025 §7 / D0020
+    /// §2.8 (C-Tor `ADD_ONION` via control-port). The
+    /// `host_onion_service()` method returns this variant in v1 so
+    /// consuming code compiles against the eventual API surface
     /// without behavioral surprises.
-    #[error("tor-transport: onion-service hosting deferred to v1.5 (D0025 §7)")]
+    #[error("tor-transport: onion-service hosting deferred to v1.5 (D0025 §7 / D0020 §2.8)")]
     OnionServiceHostingDeferred,
 }
 
