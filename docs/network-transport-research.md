@@ -1,6 +1,17 @@
 # Network transport + messaging-protocol research
 
-This document surveys the realistic options for the two coupled network-layer crates per D0018 §8.6's enumerated layout: `cairn-tor-transport` (the transport) and `cairn-simplex-adapter` (the messaging protocol on top of it). It is not the decision — D0025 and D0026 (or their merged equivalent) will capture that. This document is the substrate the decisions rest on.
+> **⚠️ Superseded for the integration-model decision (2026-05-30).** This document was written without first reviewing [D0020](decisions/D0020-integration-architecture.md), which had **already decided** the SimpleX + Tor integration model on the strength of the Sprint 3 consolidated triage research (`reviews/external-reads-consolidated.md`):
+>
+> - **SimpleX:** SimplOxide client against a SimpleX Chat CLI sidecar (D0020 §1) — NOT a project-owned Rust SMP client.
+> - **Tor:** C-Tor via `guardianproject/tor-android` (D0020 §2) — NOT Arti embedded; Arti deferred per D0020 §2.7's gating events.
+>
+> This document's "Recommendation framework" reached **T-A (Arti embedded) + S-A (project-owned Rust SMP)**, which contradicts D0020. The contradiction was resolved in favor of D0020 after a security analysis found the pure-Rust bundle did not deliver a net security benefit — neutral-to-worse for Tor (C-Tor's memory-unsafety is process-isolated per D0020 §2.2; its audit maturity is itself a security argument) and **clearly worse for SimpleX** (reimplementing the audited PQ double-ratchet solo is the canonical "don't roll your own crypto" failure the design brief §3.4 forbids; D0020 §1.8 had already rejected the clean-room SMP path).
+>
+> **D0020 §1-2 is authoritative for the integration model.** D0025 + D0026 are re-anchored as the downstream crate-surface decisions that implement D0020. This document is retained as a record of the (incomplete, since it missed D0020) option analysis; its option taxonomy (T-A/T-B/T-C/T-D, S-A/S-B/S-C/S-D) is still a useful map, but the recommendation is void. The lesson: **survey existing D-docs before surveying external options.**
+
+---
+
+This document surveys the realistic options for the two coupled network-layer crates per D0018 §8.6's enumerated layout: `cairn-tor-transport` (the transport) and `cairn-simplex-adapter` (the messaging protocol on top of it). It is not the decision — D0025 and D0026 capture that (re-anchored under D0020 per the note above). This document is the substrate the decisions were meant to rest on.
 
 The goal is the same as `storage-research.md`: make the option space legible so the trade-offs are explicit. What each path costs. What each path closes off. Where existing D-docs have already narrowed the search.
 

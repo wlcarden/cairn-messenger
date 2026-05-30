@@ -1,152 +1,125 @@
-# D0025 — cairn-tor-transport: Arti-embedded Tor client + pluggable-transports architecture per design brief §5.4
+# D0025 — cairn-tor-transport: crate surface over the C-Tor ForegroundService per D0020 §2
 
 **Status:** Accepted
 **Date:** 2026-05-29
+**Revised:** 2026-05-30 — re-anchored under D0020 §2 (see Revision note)
+
+## Revision note (2026-05-30)
+
+The original 2026-05-29 version of this document specified `arti-client` embedded in-process as the Tor implementation. **That contradicted [D0020](D0020-integration-architecture.md) §2, which had already chosen C-Tor via `guardianproject/tor-android` on the strength of the Sprint 3 consolidated triage research** (`docs/reviews/external-reads-consolidated.md`). The original D0025 was written without engaging D0020's prior decision — a process error.
+
+The contradiction was resolved in favor of D0020 after a security analysis (recorded in the project log) found that the pure-Rust embedding did not deliver a net security benefit over D0020's choice:
+
+- **Arti's one categorical advantage — memory-safe network-byte parsing vs. C-Tor's memory-unsafe C — is neutralized by D0020 §2.2's process isolation:** C-Tor runs in a separate `ForegroundService`, so a memory-corruption bug in C-Tor does not sit in Cairn's key-holding address space.
+- **C-Tor's audit maturity and deployment scale are themselves a security argument** (Briar's production path; the substrate audit firms recognize), against Arti's `tor-hsservice` 0.42.0 self-documented warning: "not (yet) recommended for production use, or for any purpose that requires privacy."
+- **Arti is not rejected, only deferred** per D0020 §2.7's three gating events. The pure-Rust Tor path returns when its security-maturity case actually closes, rather than on a bet that it will.
+
+This document is therefore **downstream of D0020**: D0020 §2 owns the integration-model decision (C-Tor via tor-android); this document specifies the `cairn-tor-transport` crate surface that consumes it. The surviving crate-design content from the original (pluggable-transport config structure, `NetworkState` observation, `RetryBudget` reuse, the typed-error surface) is preserved; the embedding model is corrected from Arti to the C-Tor SOCKS5 + control-port client.
 
 ## Context
 
-D0018 §8.6 enumerates `cairn-tor-transport` in the workspace layout but does not specify which Tor implementation to embed, how circuits are built, how pluggable transports are configured, or how the Android shell signals network-state transitions across the FFI surface.
+D0018 §8.6 enumerates `cairn-tor-transport` in the workspace layout. D0020 §2 decides the Tor integration model: **C-Tor via `guardianproject/tor-android` (`libtor.so` 0.4.9.8+), run as an Android `ForegroundService`, with the Rust core speaking SOCKS5 to `127.0.0.1:9050` for messaging traffic and the control-port at `127.0.0.1:9051` (cookie auth) for circuit management.** Pluggable transports ship via the Lyrebird per-ABI bundle.
 
-Design brief §5.4 commits Tor as the transport layer for SimpleX (v1) and Briar (v1.5). The same section names pluggable transports (obfs4, meek, webtunnel, snowflake, "whichever the Tor Project's current guidance indicates") as an ongoing engineering commitment, not a one-time decision. Tor is named explicitly as a trust root in §3.4 with its known limitations against global passive adversaries.
+This document specifies the `cairn-tor-transport` crate surface that realizes D0020 §2:
 
-The research that backs this decision is in [docs/network-transport-research.md](../network-transport-research.md). That document surveys four Tor-transport candidates: Arti embedded (Option T-A); system Tor subprocess + SOCKS5/ControlPort (Option T-B); Android Orbot via SOCKS5 (Option T-C); user-provided Tor via raw SOCKS5 (Option T-D). The decision is **T-A: Arti embedded as a pure-Rust in-process library**, paired with **S-A: project-owned Rust SMP client** in D0026. The pure-Rust pairing extends the workspace's established discipline (D0023 §3's project-owned witness-cosignature verification, D0024 §3's project-owned Rekor verifier).
+1. The Rust-side client surface (SOCKS5 stream construction + control-port client).
+2. The pluggable-transport / bridge-manifest configuration model.
+3. The network-state-transition contract with the Android shell.
+4. The async surface (tokio integration; `RetryBudget` reuse from D0023 §5.3).
+5. The failure-mode + typed-error surface per D0018 §4.2.
 
-This decision specifies:
+This document does NOT re-decide:
 
-1. The Arti embedding model and the Rust-side library surface this crate exposes.
-2. The outbound circuit / connection construction model for v1's SMP-queue-server use case.
-3. The pluggable transports configuration model and the architectural commitment to replaceability.
-4. The network-state-transition contract with the Android shell (foreground service, wifi ↔ cellular ↔ offline).
-5. The async surface (tokio integration; RetryBudget reuse from D0023 §5.3).
-6. The failure-mode + typed-error surface per D0018 §4.2.
-
-This decision does NOT specify:
-
-- Onion-service HOSTING at v1. Briar v1.5 needs it; the architectural slot is preserved in this decision (§7) but the v1 implementation surface ships client mode only.
-- Specific pluggable-transport selection at v1 ship (obfs4 vs webtunnel vs snowflake). Per design brief §5.4, "specific transport selection is operational rather than architectural and is deferred to the system design spec."
-- The Android-shell foreground service lifecycle. That lives in `cairn-uniffi` + Android-shell code, not in this crate.
-- The user-facing "I cannot reach my queue" UI affordance. UI policy lives at the Android shell.
+- **The Tor implementation choice.** D0020 §2 owns it (C-Tor; Arti deferred per §2.7).
+- **The `ForegroundService` lifecycle, Lyrebird bundling, or the `libtor.so` JNI wrapper.** Those are Android-shell + D0020 §2.5 concerns. This crate is the Rust-side SOCKS5/control-port client that assumes a C-Tor endpoint is reachable.
+- **Onion-service hosting at v1.** Deferred to v1.5 per D0020 §2.8 (C-Tor `ADD_ONION` via control-port). The architectural slot is preserved here (§7); v1 ships client mode only.
+- **The bridge-manifest signing + distribution.** D0020 §2.4 owns the remote-updateable signed-manifest mechanism (Sigstore-signed, Sigsum-witnessed). This crate consumes a parsed manifest; it does not fetch or verify it (that composes `cairn-sigstore-verify` + `cairn-sigsum-client`).
 
 ## Decision summary
 
-| Concern                       | Decision                                                                                                                                                                                | Rationale link |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
-| **Tor implementation**        | `arti-client` embedded in-process. Pure-Rust per the workspace discipline; same audit boundary as the rest of the I/O surface                                                           | §1             |
-| **Client surface**            | `TorTransport` handle wrapping an `arti_client::TorClient`. Async, tokio-runtime-bound. Exposes outbound `connect(target)` + the lifecycle the Android shell drives                     | §1             |
-| **Outbound model at v1**      | Client-side circuit construction to SMP queue servers (the SimpleX network). NOT onion-service hosting at v1                                                                            | §2             |
-| **Onion service hosting**     | Architectural slot preserved for v1.5 Briar integration. Same `TorTransport` handle gains `host_onion_service(...)` then; v1 stubs surface returns NotYetImplemented                    | §2             |
-| **Pluggable transports**      | Configured at `TorTransport::new` via a `PluggableTransportConfig` arg pulled from a baked-in `pluggable_transports.toml` resource per release (same posture as D0023 `witnesses.toml`) | §3             |
-| **Network state transitions** | Android shell signals via `TorTransport::observe_network_state(NetworkState)`. Internal circuit recreation policy: drop on `Offline`; reconnect on `Online`                             | §4             |
-| **Async surface**             | All I/O methods `async fn`; same `RetryBudget` type as D0023 §5.3 re-exported from `cairn-sigsum-client`. Cancel-safety: dropping a future cancels the in-flight stream cleanly         | §5             |
-| **Retry policy**              | Exponential backoff capped at 60s for circuit construction; max 5 retries by default. Stream-level failures surface to the caller (SimpleX adapter) for protocol-aware retry decisions  | §5             |
-| **Failure surface**           | `TorTransportError` per D0018 §4.2 — typed by failure mode (bootstrap failed, no circuit, connect refused, etc.); no `Vec<u8>` payloads; no peer-supplied strings                       | §6             |
-| **Stream semantics**          | `TorStream: AsyncRead + AsyncWrite`. The crate does NOT layer TLS; that's the caller's responsibility (SMP carries TLS to the queue server itself)                                      | §5             |
-| **Arti workspace pin**        | `arti-client = "=1.X.X"` exact pin per D0018 §1; specific patch version selected at implementation-cycle commit; pin-audit per D0021 included                                           | §1             |
+| Concern                            | Decision                                                                                                                                                                               | Rationale link |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
+| **Tor implementation**             | C-Tor via `guardianproject/tor-android` per D0020 §2. This crate is the Rust-side SOCKS5 + control-port client, NOT an embedded Tor implementation                                     | §1             |
+| **Client surface**                 | `TorTransport` handle wrapping a SOCKS5 connector (`127.0.0.1:9050`) + a control-port client (`127.0.0.1:9051`, cookie auth). Async, tokio-runtime-bound                               | §1             |
+| **Outbound model at v1**           | `connect(conversation_id, target, port)` opens a SOCKS5 stream with `IsolateSOCKSAuth` username = `hash(conversation_id)` per D0020 §2.6 (per-conversation circuit isolation)          | §2             |
+| **Onion service hosting**          | v1.5 slot per D0020 §2.8: C-Tor `ADD_ONION` via control-port. v1 stub returns `OnionServiceHostingDeferred`                                                                            | §7             |
+| **Pluggable transports / bridges** | `BridgeManifest` parsed from the D0020 §2.4 remote-updateable signed manifest (obfs4 default + WebTunnel + Snowflake + meek via Lyrebird). Manifest fetch/verify is out of crate scope | §3             |
+| **Network state transitions**      | Android shell signals `observe_network_state(NetworkState)`. `Offline → Online` triggers `SIGNAL NEWNYM` via control-port + reconnect per D0020 §2.9                                   | §4             |
+| **Async surface**                  | All I/O `async fn`; same `RetryBudget` type as D0023 §5.3 re-exported from `cairn-sigsum-client`                                                                                       | §5             |
+| **Retry policy**                   | Exponential backoff capped at 60s for connect; max 5 retries by default. Control-port command failures surface to the caller                                                           | §5             |
+| **Failure surface**                | `TorTransportError` per D0018 §4.2 — typed by failure mode; no `Vec<u8>` payloads; no bridge lines / peer hostnames / cookie bytes in error bodies                                     | §6             |
+| **Stream semantics**               | `TorStream: AsyncRead + AsyncWrite` over the SOCKS5 connection. No TLS layered here (SimpleX carries its own E2EE; the SMP queue server's TLS is SimplOxide's concern)                 | §5             |
 
 ---
 
-## 1. Embedding model
+## 1. Client surface
 
 ### 1.1 Decision
 
-Cairn embeds `arti-client` as a Rust library dependency, running entirely in-process. No subprocess; no FFI to a C Tor binary; no separate runtime to manage.
+`cairn-tor-transport` is the **Rust-side SOCKS5 + control-port client** for the C-Tor `ForegroundService` D0020 §2 specifies. It does NOT embed a Tor implementation.
 
-The crate exposes a single primary type `TorTransport` that wraps an `arti_client::TorClient` and adds Cairn-specific lifecycle controls (network-state observation per §4) + the workspace's typed error discipline.
+The crate exposes a `TorTransport` handle that:
+
+- Opens outbound SOCKS5 streams to `127.0.0.1:9050` (the C-Tor SOCKS proxy).
+- Speaks the control-port protocol to `127.0.0.1:9051` (cookie auth) for circuit management (`SIGNAL NEWNYM`), bootstrap-status subscription, and — at v1.5 — onion-service hosting (`ADD_ONION`).
+- Adds Cairn-specific lifecycle controls (network-state observation per §4) + the workspace's typed-error discipline.
 
 ### 1.2 Rationale
 
-Three properties matter:
+Per D0020 §2.3, the integration-model rationale (C-Tor's production maturity, Briar's precedent, the `tor-hsservice` production-readiness gap, Lyrebird PT bundling) is settled. At the crate-surface level:
 
-1. **Pure-Rust discipline holds end-to-end at the transport layer.** Same logic as D0023 §3.1's project-owned witness verification: keeping the network-critical surface in safe Rust means the audit boundary is the same boundary as the rest of the workspace. No C Tor source to track; no subprocess lifecycle to reason about; no `unsafe_code` exception expansion (`cairn-tor-transport` stays `unsafe_code = "forbid"` per D0018 §8.1).
-2. **Single async runtime.** Arti's tokio integration matches the workspace's tokio 1.40.x pin. No runtime bridging; cancel-safety semantics are uniform with `cairn-sigsum-client` + `cairn-sigstore-verify`.
-3. **Onion-service hosting in-process is the natural fit for v1.5 Briar.** Briar's peer-to-peer-over-Tor model requires each user to host an onion service. Arti's onion-service hosting (stable since 1.2.x) is the embedded path; system-Tor's ControlPort-based onion-service management is the alternative, with higher operational complexity. The v1 commitment locks Arti so v1.5 Briar can build on the same substrate.
+1. **The SOCKS5 + control-port split mirrors what Briar, Cwtch, and OnionShare do.** It is the audit-firm-recognized shape for messaging-tool Tor integration. The Rust client is small (a SOCKS5 connector + a line-oriented control-port protocol client); the security-critical Tor logic lives in the well-audited C-Tor the `ForegroundService` runs.
+2. **No `unsafe_code` in this crate.** The `libtor.so` JNI wrapper is Android-shell code per D0020 §2.2; this crate only speaks loopback SOCKS5 + control-port, both pure-safe-Rust. `cairn-tor-transport` stays `unsafe_code = "forbid"` per D0018 §8.1.
+3. **Single async runtime.** The SOCKS5 + control-port client is tokio-native, matching the workspace pin; cancel-safety semantics are uniform with `cairn-sigsum-client`, `cairn-sigstore-verify`, and `cairn-simplex-adapter`.
 
-### 1.3 Trade-off the project accepts
+### 1.3 The C-Tor endpoint is assumed reachable
 
-Binary-size cost: Arti embedded carries its own dependency graph (substantial). The APK size grows by the Arti dep tree's compiled footprint. This is the trade for pure-Rust discipline.
-
-Update cadence: Arti security patches ride Cairn releases. The same posture applies to every other Rust dep, but Arti is a higher-stakes one. Pin-audit per D0021 includes Arti's release-channel monitoring.
-
-### 1.4 Arti version pin posture
-
-Per D0018 §1, library versions are pinned with `=X.Y.Z` (exact), not `^X.Y.Z` (semver). The specific Arti version pin lands at implementation-cycle commit time; the pin selection criteria are:
-
-- Latest stable in Arti's release channel
-- Onion-service hosting stable in that version (1.2.x+)
-- Pluggable-transport API stable in that version
-- The version's transitive dep tree has been pin-audited per D0021
-
-A future Arti rotation (e.g., Cairn picks up Arti 2.x) is a coordinated release event per the same pattern that governs every other workspace pin.
+This crate assumes the `ForegroundService` has C-Tor running and reachable at the loopback addresses. If C-Tor is not up (service not started, bootstrap not complete), the SOCKS5 / control-port connection fails and surfaces as a typed error (`Network` / `BootstrapIncomplete`). The crate does NOT start, supervise, or restart the C-Tor process — that is the `ForegroundService`'s job per D0020 §2.5.
 
 ---
 
-## 2. Outbound circuit construction
+## 2. Outbound stream construction + per-conversation circuit isolation
 
-### 2.1 v1 decision: client-side outbound only
-
-At v1, `TorTransport` supports outbound stream construction:
+### 2.1 Decision
 
 ```rust
 let stream: TorStream = transport
-    .connect(target_host, target_port, retry_budget)
+    .connect(conversation_id, target_host, target_port, retry_budget)
     .await?;
 ```
 
-`target_host` is either a hostname (resolved over Tor via Arti's DNS-over-Tor) or an `.onion` v3 address. For v1's SimpleX use case, the target is an SMP queue server's hostname / onion address per the SimpleX network configuration.
+The SOCKS5 username is set to `hash(conversation_id)` with `IsolateSOCKSAuth` enabled in the C-Tor configuration per D0020 §2.6. Different conversations therefore do not share Tor circuits at the network layer: an exit-node compromise sees individual streams but cannot cluster them by source conversation.
 
-The returned `TorStream` implements `AsyncRead + AsyncWrite` and represents one circuit-isolated stream. Closing the stream closes the circuit (Arti's default isolation policy is per-stream).
+`target_host` is the SMP queue server's hostname / `.onion` address (resolved through Tor). The returned `TorStream` implements `AsyncRead + AsyncWrite`.
 
-### 2.2 Onion-service hosting (v1.5 architectural slot)
+### 2.2 Composition with the SimpleX adapter
 
-The architectural commitment in this decision: `TorTransport` will gain `host_onion_service(...)` at v1.5 when Briar lands. The v1 skeleton method returns `TorTransportError::OnionServiceHostingDeferred` so consuming code compiles against the eventual API without behavioral surprises.
+In practice the caller of `connect` is the C-Tor `ForegroundService`'s SOCKS proxy, which the SimpleX Chat CLI sidecar uses for its outbound traffic per D0020 §1.2 + §2.2 (the CLI is configured to route through `127.0.0.1:9050`). At the Cairn-Rust level, `cairn-simplex-adapter` (D0026) talks to the CLI sidecar over loopback WebSocket; the CLI's own Tor routing goes through the same C-Tor proxy this crate manages. The `TorStream` surface remains available for any Cairn-Rust component that needs a directly-Tor-routed stream (e.g., the D0020 §2.4 bridge-manifest fetch "over Tor itself when possible").
 
-### 2.3 No raw circuit control surface
+### 2.3 Documented limitation
 
-`TorTransport` does NOT expose Arti's lower-level circuit construction (one-hop, vanguards-lite control, etc.). The crate's surface is "give me a stream to this target"; circuit policy is Arti's decision.
-
-If a v1.5+ use case requires per-circuit control (e.g., bandwidth-limited reuse for batch operations), that's a follow-up D-doc.
+Per D0020 §2.6: per-conversation circuit isolation increases circuit-establishment latency; each new conversation pays a fresh-circuit cost. Acceptable for Cairn's threat tier; documented in the brief's §5.4.
 
 ---
 
-## 3. Pluggable transports
+## 3. Pluggable transports / bridge manifest
 
 ### 3.1 Decision
 
-Pluggable transports are configured at `TorTransport::new` via a `PluggableTransportConfig` arg. The config is parsed from a baked-in `pluggable_transports.toml` resource shipped per release — same posture as the witness pool `witnesses.toml` per D0023 §3.3.
+The crate accepts a `BridgeManifest` at construction time, parsed from the **remote-updateable signed bridge manifest** D0020 §2.4 specifies:
 
-```toml
-[[transport]]
-name = "obfs4"
-bridge_line = "obfs4 1.2.3.4:443 FINGERPRINT cert=... iat-mode=0"
+- Default bundle: obfs4 + WebTunnel via Lyrebird (single binary). Default selection: obfs4.
+- User-selectable: Snowflake; meek-azure as last-resort fallback.
+- The manifest is **remote-updateable** — D0020 §2.4 makes this an architectural commitment because PT viability shifts on a months-scale cat-and-mouse cadence (WebTunnel "key tool in Russia" → "most bridges blocked" in six months; Snowflake DTLS fingerprinting in Russia March 2026).
 
-[[transport]]
-name = "webtunnel"
-bridge_line = "webtunnel ..."
+### 3.2 What this crate does vs. does not own
 
-[[transport]]
-name = "snowflake"
-bridge_line = "snowflake ..."
-```
+- **Owns:** parsing a verified `BridgeManifest` into the configuration C-Tor's control-port needs to launch Lyrebird with the right bridge lines; correlating a per-bridge bootstrap failure back to its manifest index for the typed error surface.
+- **Does NOT own:** fetching the manifest, verifying its Sigstore signature, or checking its Sigsum witness cosignatures. That composes `cairn-sigstore-verify` (D0024) + `cairn-sigsum-client` (D0023) + the monotonic-version rollback-resistance check D0020 §2.4 specifies. The crate consumes an already-verified manifest.
 
-The transport list is RELEASE-SCOPED: changes ride Cairn releases. The user does not edit the file at runtime. This is the same posture D0023 §3.3 establishes for the witness pool — release-coordinated trust-root rotation.
+### 3.3 Fallback behavior
 
-### 3.2 Rationale
-
-Three properties matter:
-
-1. **Replaceability is architectural; selection is operational.** Per design brief §5.4: "The commitment at this level is that the transport layer is replaceable without disturbing the protocols above it. Specific transport selection is operational rather than architectural and is deferred to the system design spec."
-2. **Release-coordinated transport rotation matches the Tor Project's guidance cadence.** Per §5.4: "transport choices appropriate at v1 release may be blocked by v2 because DPI evasion is a continuously-being-solved problem rather than a solved one." A Cairn release with an updated transport list is the unit of response.
-3. **Baked-in resource avoids user-config attack surface.** Per the same logic as the Sigsum witness pool: user-editable bridge lines would expose the config to coercion, social-engineering, and supply-chain attacks against the user's local config. Shipping the bridge list as a release-signed resource keeps the trust root project-side.
-
-### 3.3 Bridge-line acquisition (out-of-scope for this crate)
-
-How bridge lines get acquired (Tor Project's BridgeDB, partner-organization out-of-band channels, user-pasted lines) is an operational concern. The v1 release ships with a baked-in set per the system design spec; v1.5+ MAY add an Android-shell UI for the user to paste a bridge line that the shell injects into a runtime-mutated `PluggableTransportConfig`. That's a follow-up decision; the crate surface supports it.
-
-### 3.4 Fallback behavior
-
-If a configured transport fails to bootstrap (bridge unreachable, transport binary missing), `TorTransport::new` surfaces `TorTransportError::PluggableTransportBootstrapFailed { transport_name }` and the caller decides whether to retry, fall back to a different transport, or error to the user.
-
-The crate does NOT implement automatic transport-switching policy. That's a UI-layer decision: which transport is tried first, which is the fallback, when to escalate to the user — all live above the crate boundary.
+If a configured bridge fails to bootstrap, `TorTransportError::BridgeBootstrapFailed { bridge_index }` surfaces and the caller decides whether to try the next bridge, fall back to a different PT, or escalate to the user. The crate does NOT implement automatic transport-switching policy — that is a UI-layer decision.
 
 ---
 
@@ -159,26 +132,18 @@ The Android shell signals network-state changes via:
 ```rust
 transport.observe_network_state(NetworkState::Online);
 transport.observe_network_state(NetworkState::Offline);
-transport.observe_network_state(NetworkState::Constrained); // e.g., metered cellular
+transport.observe_network_state(NetworkState::Constrained);
 ```
 
-`NetworkState::Online` triggers re-bootstrap of the Tor client if previously offline; existing circuits are validated and reused where possible.
-
-`NetworkState::Offline` drops in-flight circuits + pauses bootstrap retries.
-
-`NetworkState::Constrained` is advisory; the v1 implementation treats it as `Online` but a v1.5 enhancement may reduce keepalive frequency under constraint.
+`Offline → Online` issues `SIGNAL NEWNYM` over the control-port + notifies the caller that in-flight messages may need retransmission per D0020 §2.9. `Online → Offline` pauses connect retries. `Constrained` is advisory at v1 (treated as `Online`).
 
 ### 4.2 Rationale
 
-Three properties matter:
+The Android `ConnectivityManager` callback is the OS-level signal; per D0020 §2.9, `cairn-tor-transport` subscribes to it (via the shell) and tears down circuits via control-port on handoff/disconnect. Routing the signal through an explicit method call keeps the Rust core off the platform-API surface, consistent with D0020 §3's Kotlin-mediated boundary.
 
-1. **Shell-driven network observation.** The Android shell has the operating-system-level signal for network availability; the Rust core does not. Routing the signal through an explicit method call avoids the Rust core polling the OS layer (which would require a callback surface or platform-specific code that doesn't belong in `cairn-tor-transport`).
-2. **Idempotent transitions.** Calling `observe_network_state(Online)` when already online is a no-op. The crate tracks its current state; transitions execute on edge changes.
-3. **Foreground service interaction is shell-layer.** Per the research doc's Android-specific concerns: the messaging foreground service is a shell-layer concern; `cairn-tor-transport` is invariant to whether the shell-side service runs in foreground or background.
+### 4.3 Idempotence
 
-### 4.3 Reconnection policy
-
-After `Online → Offline → Online`, Arti's bootstrap re-runs. Existing `TorStream`s held by callers fail with `TorTransportError::StreamClosed { reason: NetworkTransition }`; the caller (the SimpleX adapter) reconnects the affected streams per its own protocol-level retry logic.
+Transitions execute on edge changes; calling with the current state is a no-op.
 
 ---
 
@@ -188,29 +153,17 @@ After `Online → Offline → Online`, Arti's bootstrap re-runs. Existing `TorSt
 
 All I/O methods are `async fn`. The crate depends on `tokio = "=1.40.0"` per the workspace pin.
 
-`RetryBudget` is re-exported from `cairn-sigsum-client` per D0023 §5.3 — the same type, same defaults (max 5 retries, 250ms initial, 60s cap), same caller-scoping discipline.
-
-```rust
-pub use cairn_sigsum_client::RetryBudget;
-```
-
-The bootstrap path and the `connect()` path both accept an optional `RetryBudget` argument; callers can shrink the budget for snappier failure surfacing on user-blocking operations.
+`RetryBudget` is re-exported from `cairn-sigsum-client` per D0023 §5.3 — same type, same defaults (max 5 retries, 250ms initial, 60s cap), same caller-scoping discipline.
 
 ### 5.2 Cancel safety
 
-Dropping a future returned by `connect()` cancels the in-flight stream construction cleanly. Arti's `tokio` futures handle cancellation at every await point.
-
-Mid-stream cancellation (dropping a `TorStream` mid-read or mid-write) closes the underlying circuit; the partial read/write state is the caller's responsibility per the standard `AsyncRead`/`AsyncWrite` contracts.
-
-Bootstrap cancellation is delicate: cancelling a partial-bootstrap leaves the underlying Arti client in an unknown state. The crate's `TorTransport::new` is NOT cancel-safe — callers must let it run to completion or call `shutdown()` to clean up. This is documented on the constructor.
+- Dropping a `connect()` future cancels the in-flight SOCKS5 handshake cleanly.
+- Mid-stream cancellation (dropping a `TorStream`) closes the SOCKS5 connection; partial read/write state is the caller's responsibility per the `AsyncRead`/`AsyncWrite` contracts.
+- Control-port commands (`SIGNAL NEWNYM`, bootstrap-status queries) are individually cancel-safe — each is a single request/response over the control connection.
 
 ### 5.3 No `spawn_blocking` on the I/O path
 
-Arti is a pure-async library; no CPU-bound crypto operations cross the boundary. The D0018 §4.1 `spawn_blocking` pattern doesn't apply here.
-
-### 5.4 No exposure of `tokio::time` to consumers
-
-The crate uses `tokio::time` internally (for backoff timing); consumers receive `Result<...>` or `Future<...>` types and do not see `tokio::time::sleep` or `tokio::time::timeout` in the public API. This keeps the crate's surface tokio-version-tolerant for future upgrades.
+The SOCKS5 + control-port client is pure-async loopback I/O; no CPU-bound crypto crosses the boundary. The D0018 §4.1 `spawn_blocking` pattern does not apply.
 
 ---
 
@@ -221,81 +174,65 @@ The crate uses `tokio::time` internally (for backoff timing); consumers receive 
 ```rust
 #[non_exhaustive]
 pub enum TorTransportError {
-    /// Underlying network failure (timeout, no-route-to-host) after
-    /// the retry budget was exhausted.
+    /// Loopback connection to the C-Tor SOCKS proxy or control-port
+    /// failed after the retry budget was exhausted.
     Network { retry_budget_used: u8 },
 
-    /// Placeholder for the network-bound surfaces that aren't
-    /// implemented yet. v1 skeleton ships with the testable load-
-    /// bearing primitives + this stub; the actual Arti exercise
-    /// lands when CI grows the integration harness per §9.
+    /// Placeholder for the network-bound surfaces not yet implemented.
+    /// v1 skeleton stub; the C-Tor SOCKS5 + control-port client body
+    /// lands per §9.
     NetworkUnreached,
 
-    /// Arti client bootstrap did not complete within the budget.
-    /// The retry-budget value names how many bootstrap retries
-    /// were consumed.
-    BootstrapFailed { retry_budget_used: u8 },
+    /// The C-Tor ForegroundService is reachable but Tor bootstrap has
+    /// not completed; outbound circuits are not yet available.
+    BootstrapIncomplete,
 
-    /// All configured pluggable transports failed to bootstrap.
-    /// `transports_attempted` names how many entries in the
-    /// release's pluggable_transports.toml were tried.
-    AllPluggableTransportsFailed { transports_attempted: u8 },
+    /// All configured bridges in the manifest failed to bootstrap.
+    AllBridgesFailed { bridges_attempted: u8 },
 
-    /// A specific named pluggable transport failed to bootstrap.
-    /// `transport_index` is the 0-based index into the configured
-    /// list so the caller can correlate to the entry's name
-    /// without the bridge line itself being in the error payload.
-    PluggableTransportBootstrapFailed { transport_index: u8 },
+    /// A specific bridge in the manifest failed to bootstrap. The
+    /// `bridge_index` is the 0-based index into the BridgeManifest so
+    /// the caller can correlate without the bridge line in the payload.
+    BridgeBootstrapFailed { bridge_index: u8 },
 
-    /// The pluggable_transports.toml could not be parsed.
-    PluggableTransportConfigParse,
+    /// The bridge manifest could not be parsed.
+    BridgeManifestParse,
+
+    /// The control-port returned an error or unexpected reply shape.
+    ControlPortProtocol,
 
     /// `target_host` did not resolve over Tor.
     HostResolutionFailed,
 
-    /// Tor connection refused or reset by the target.
+    /// SOCKS5 connection refused or reset by the target.
     ConnectionRefused,
 
-    /// Stream was closed mid-operation; the variant carries why
-    /// the stream closed so the caller can decide retry policy.
+    /// Stream closed mid-operation; `reason` names why.
     StreamClosed { reason: StreamCloseReason },
 
-    /// Onion-service hosting is deferred to v1.5; the host_onion_-
-    /// service() method returns this variant in v1 so callers
-    /// compile against the eventual API.
+    /// Onion-service hosting is deferred to v1.5 per D0020 §2.8;
+    /// host_onion_service() returns this in v1.
     OnionServiceHostingDeferred,
 }
 
 #[non_exhaustive]
 pub enum StreamCloseReason {
-    /// Caller explicitly closed.
     CallerClose,
-    /// Underlying circuit failed.
     CircuitFailure,
-    /// Network state transitioned offline.
     NetworkTransition,
-    /// Remote peer reset the connection.
     PeerReset,
 }
 ```
 
 ### 6.1 No-error-oracle discipline
 
-All variants carry small scalars or type tags. `transport_index` is the index into the project-owned `pluggable_transports.toml`, not a peer-controlled value. No bridge lines, no peer hostnames, no certificate bytes appear in error bodies.
-
-### 6.2 Composability with upstream errors
-
-`TorTransportError` does NOT directly wrap `arti_client::Error` (the upstream Arti error type). The wrapping is intentional: the upstream error variants reveal more about Arti's internal state than the no-error-oracle discipline allows, and we don't want Arti's `Display` output (which may include peer-controlled metadata) to leak through Cairn's error surface.
-
-Each Arti error converts to a `TorTransportError` variant via an internal `From` impl that selects the appropriate type tag and discards the original payload.
+All variants carry small scalars or type tags. `bridge_index` indexes the project-owned manifest, not a peer-controlled value. No bridge lines, control-port cookie bytes, or peer hostnames appear in error bodies.
 
 ---
 
 ## 7. Onion-service hosting (architectural slot for v1.5)
 
-### 7.1 v1.5 commitment
-
-This decision preserves the architectural slot for onion-service hosting per design brief §5.4's Briar v1.5 commitment. The v1 implementation stubs the API surface; the v1.5 D-doc fills in the body.
+Per D0020 §2.8, v1.5 release-distribution onion-service hosting uses **C-Tor `ADD_ONION` via the control-port** (not Arti `tor-hsservice`, which carries the production-privacy warning). This document preserves the API slot:
 
 ```rust
 pub async fn host_onion_service(
@@ -306,64 +243,50 @@ pub async fn host_onion_service(
 }
 ```
 
-### 7.2 Why now, not v1.5
-
-Specifying the slot now means consuming-code (a future `cairn-briar-adapter` or equivalent) can compile against the same `TorTransport` handle without restructuring. The implementation cycle for v1.5 Briar adds the body; no client-side API churn.
+Shipping the slot at v1 means consuming code (a future `cairn-briar-adapter` or the release-distribution surface) compiles against the same `TorTransport` handle without restructuring; the v1.5 body issues `ADD_ONION` over the control-port client this crate already owns.
 
 ---
 
 ## 8. Out of scope
 
-This decision does NOT address:
+This document does NOT address:
 
-1. **Specific Arti version pin.** Selected at implementation-cycle commit per §1.4's pin-audit criteria.
-2. **Specific pluggable-transport bridge selection.** Per design brief §5.4, deferred to the system design spec. The v1 release's bridge list is set at release-pipeline time.
-3. **User-pasted bridge lines.** v1.5+ Android-shell concern; the crate's `PluggableTransportConfig` supports runtime mutation but v1 doesn't expose it.
-4. **Onion-service hosting body.** v1.5 D-doc concern; v1 stubs the API surface.
-5. **Foreground service lifecycle.** Android-shell concern; the crate is invariant.
-6. **Push-notification wake-up integration.** UnifiedPush + the foreground service together drive the wake-up; the crate's `observe_network_state` is what those callers invoke.
-7. **Circuit isolation policy beyond the default.** Per-stream isolation is Arti's default; per-conversation isolation (one Tor identity per peer) is a v1.5+ enhancement requiring a separate decision.
-8. **Tor-relay-operator coordination.** v1 uses the public Tor network; running project-operated Tor relays is design-brief §3.4 / §4.2 deferred.
-9. **DPI-evasion strategies beyond pluggable transports.** Specific techniques (domain fronting beyond meek, traffic shaping) are operational + may evolve per Tor Project guidance; the crate is replaceable per §3.
+1. **The Tor implementation choice** — D0020 §2 (C-Tor; Arti deferred per §2.7).
+2. **The `libtor.so` JNI wrapper + `ForegroundService` lifecycle** — Android-shell + D0020 §2.5.
+3. **Lyrebird bundling as per-ABI native asset** — D0020 §2.4 + the build pipeline.
+4. **Bridge-manifest fetch + signature/witness verification** — composes D0023 + D0024; this crate consumes a verified manifest.
+5. **Onion-service hosting body** — v1.5 per D0020 §2.8.
+6. **The mailbox-pattern relay** — v1.5 architectural commitment per D0020 §2.5.
+7. **arti migration** — gated on D0020 §2.7's three events.
 
 ## 9. Reversibility
 
-The decisions in this document are mostly reversible:
-
-- **Arti version rotation (e.g., 1.x → 2.x):** tractable; same coordinated release event as any other workspace pin. Arti's tokio API is stable across patch releases; major-version rotation may require API call-site updates.
-- **Arti → system-Tor-via-SOCKS5:** tractable but expensive. Would require restructuring the crate's surface (Arti's onion-service hosting API has no direct SOCKS5 equivalent — system Tor uses ControlPort). The `TorTransport` handle's outbound `connect(...)` would survive; the onion-service slot would change shape. No existing data structure pins the choice.
-- **Arti → Orbot (Option T-C from the research):** tractable for the outbound side (SOCKS5 to Orbot). Loses in-process onion-service hosting for v1.5 Briar; either Briar v1.5 specifies an Orbot-mediated onion-service path or the project rotates back to Arti at v1.5 ship.
-- **Pluggable-transport configuration format change:** tractable; same coordinated release event as the witness pool TOML.
-- **TorStream wire surface (AsyncRead+AsyncWrite) change:** the HARDEST. Once the SimpleX adapter (D0026) consumes it, the surface contract is locked. Same hardness as D0023's leaf-hash schema.
+- **C-Tor → arti migration:** the deliberately-deferred path per D0020 §2.7. This crate's `TorTransport::connect` surface is designed to survive the swap — the SOCKS5 stream contract is implementation-agnostic; an arti backend would replace the SOCKS5 connector with `arti-client` calls behind the same `connect()` signature. The control-port surface would change (arti has no control-port; circuit management would move to arti's API). The migration is tractable but touches the control-port-dependent methods.
+- **Bridge-manifest format change:** tractable; coordinated release event per D0020 §2.4's versioned-manifest design.
+- **`TorStream` wire surface (AsyncRead+AsyncWrite):** the HARDEST to reverse once `cairn-simplex-adapter` (D0026) and the bridge-manifest fetch consume it.
 
 ## 10. Implementation status
 
-This D-doc is accepted. The matching `cairn-tor-transport` crate skeleton + Arti integration land as separate commits consuming D0025. Implementation order:
+This document is accepted (revised). The matching `cairn-tor-transport` crate skeleton lands as a separate commit. Implementation order:
 
-1. `cairn-tor-transport/src/{lib,error}.rs` — pure data + error surface, no Arti integration yet.
-2. `cairn-tor-transport/src/config.rs` — `PluggableTransportConfig` + TOML parser per §3. Real + tested.
-3. `cairn-tor-transport/src/transport.rs` — `TorTransport` handle stub returning `NetworkUnreached` for `connect()` + `OnionServiceHostingDeferred` for `host_onion_service()`. Configuration + accessor methods real + tested.
-4. Workspace pin addition per §1.4: `arti-client = "=1.X.X"` at implementation-cycle time.
-5. Arti integration: `connect()` body lands when CI grows an Arti-testing harness OR an opt-in integration-test flag against the public Tor network per D0023 §10's pattern.
-6. `observe_network_state` body lands with the integration step.
-7. CLI integration in `cairn-cli`: `tor-bootstrap` + `tor-connect` subcommands for end-to-end demo.
-8. The onion-service hosting body lands at v1.5 per the Briar D-doc that follows.
+1. `cairn-tor-transport/src/{lib,error}.rs` — pure data + error surface.
+2. `cairn-tor-transport/src/config.rs` — `BridgeManifest` parser per §3. Real + tested.
+3. `cairn-tor-transport/src/transport.rs` — `TorTransport` handle stub: `connect()` returns `NetworkUnreached`, `host_onion_service()` returns `OnionServiceHostingDeferred`. Config + `observe_network_state` + accessors real + tested.
+4. The SOCKS5 + control-port client body lands when CI grows a C-Tor test harness OR an opt-in integration-test flag against a local C-Tor instance per D0023 §10's pattern.
+5. CLI integration in `cairn-cli`: `tor-connect` subcommand for end-to-end demo (requires a running C-Tor).
 
-The Android-shell `cairn-uniffi` surface that exposes `observe_network_state` to Kotlin is the `cairn-uniffi` D-doc's concern; this crate exposes the Rust-side method.
+The workspace pin posture: this crate does NOT pin `arti-client` (the original D0025 error). It pins a SOCKS5 client + a minimal control-port protocol client; specific crate selection lands at implementation-cycle commit per D0021's pin-audit.
 
 ---
 
 ## 11. Cross-references
 
-- [D0003 — implementation language](D0003-implementation-language.md) — Rust core; pure-Rust discipline this decision extends
-- [D0006 — cryptographic envelope](D0006-cryptographic-envelope.md) — §3.5 forward secrecy on-wire (SimpleX provides this; Tor is anonymity-of-route)
-- [D0015 — v1 release-security posture](D0015-v1-release-security-posture.md) — multi-channel distribution; the crate's audit posture rides D0015's release model
-- [D0018 — engineering foundation](D0018-engineering-foundation.md) — §4.1 async discipline; §8.1 unsafe_code = forbid (no exception for this crate); §8.6 workspace layout
-- [D0021 — library-pin audit](D0021-library-pin-audit.md) — pin discipline for Arti additions per §1.4
-- [D0022 — cairn-storage layer](D0022-storage-layer.md) — no direct dependency, but pluggable-transports.toml release-bundling rides the same posture
-- [D0023 — cairn-sigsum-client](D0023-sigsum-integration.md) — `RetryBudget` reuse per §5.1; baked-in TOML resource pattern per §3.1
-- [D0024 — cairn-sigstore-verify](D0024-sigstore-release-verification.md) — release-bundle posture for the pluggable_transports.toml resource
-- [D0026 — cairn-simplex-adapter](D0026-cairn-simplex-adapter.md) — the protocol-layer consumer of `TorStream`s this crate produces (forthcoming)
-- [design brief §5.4 Communications Protocols](../design-brief.md) — Tor-as-transport commitment, pluggable-transport replaceability
-- [docs/network-transport-research.md](../network-transport-research.md) — the substrate this decision rests on; Option T-A (Arti embedded) per §"Candidate Tor transport approaches"
-- [Arti documentation](https://gitlab.torproject.org/tpo/core/arti) — upstream Arti project
+- [D0020 — integration architecture](D0020-integration-architecture.md) — §2 owns the Tor integration model (C-Tor via tor-android) this document implements; §2.4 bridge manifest; §2.6 circuit isolation; §2.7 arti gating events; §2.8 onion-service hosting; §2.9 network-change handling
+- [D0003 — implementation language](D0003-implementation-language.md) — Rust core
+- [D0006 — cryptographic envelope](D0006-cryptographic-envelope.md) — §3.5 on-wire FS is SimpleX's (D0026); Tor is anonymity-of-route
+- [D0018 — engineering foundation](D0018-engineering-foundation.md) — §4.1 async discipline; §8.1 unsafe_code = forbid; §8.6 workspace layout
+- [D0023 — cairn-sigsum-client](D0023-sigsum-integration.md) — `RetryBudget` reuse per §5.1; bridge-manifest witness cosignatures
+- [D0024 — cairn-sigstore-verify](D0024-sigstore-release-verification.md) — bridge-manifest signature verification
+- [D0026 — cairn-simplex-adapter](D0026-cairn-simplex-adapter.md) — the SimpleX sidecar whose outbound traffic routes through the C-Tor proxy this crate manages
+- [design brief §5.4 Communications Protocols](../design-brief.md) — Tor-as-transport commitment
+- [docs/network-transport-research.md](../network-transport-research.md) — superseded by D0020 §2 for the integration model (see that doc's corrective header)
