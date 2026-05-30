@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright (c) 2026 Cairn maintainers and contributors -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Cairn needs network for the Tor transport (D0025) + the
+         SimpleX sidecar (D0026); both route through loopback to the
+         C-Tor / CLI sidecar ForegroundServices the Android shell
+         hosts. The pipeline-proof shell declares INTERNET only. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:label="Cairn"
+        android:allowBackup="false"
+        android:supportsRtl="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>
