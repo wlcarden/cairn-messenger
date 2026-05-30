@@ -437,6 +437,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cairn-tor-transport"
+version = "0.1.0-dev"
+dependencies = [
+ "cairn-sigsum-client",
+ "serde",
+ "thiserror 1.0.63",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "cairn-trust-graph"
 version = "0.1.0-dev"
 dependencies = [

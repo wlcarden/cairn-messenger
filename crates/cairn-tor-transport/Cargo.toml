@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Cairn maintainers and contributors
+
+[package]
+name = "cairn-tor-transport"
+version = "0.1.0-dev"
+description = "Cairn Tor transport: Arti-embedded client + pluggable-transports architecture per D0025"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Gated network integration tests against the public Tor network.
+# Disabled by default so CI doesn't depend on external network
+# availability per D0025 §10.
+integration-tests = []
+
+[dev-dependencies]
+
+[dependencies]
+# === RetryBudget + RetryBudget-paired discipline reuse per D0025 §5.1 ===
+cairn-sigsum-client = { path = "../cairn-sigsum-client" }
+
+# === Async runtime (D0025 §5) ===
+tokio = { workspace = true }
+
+# === Serde + TOML for pluggable_transports.toml (D0025 §3.1) ===
+serde = { workspace = true }
+toml = { workspace = true }
+
+# === Error handling (D0018 §4.2) ===
+thiserror = { workspace = true }
+
+# arti-client will be added when the Arti integration body lands
+# per D0025 §1.4 + §10 step 4. The v1 skeleton's transport methods
+# return TorTransportError::NetworkUnreached without invoking Arti,
+# so the pin is deferred to keep the skeleton's dep surface minimal.

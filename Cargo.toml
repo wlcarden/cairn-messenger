@@ -37,6 +37,9 @@ members = [
     # Sigstore release verification: identity-based signing + Rekor
     # + Sigsum-anchored release log composition per D0024
     "crates/cairn-sigstore-verify",
+    # Tor transport: Arti-embedded client + pluggable-transports
+    # architecture per D0025
+    "crates/cairn-tor-transport",
 ]
 # Future members per D0018 §8.6 (added incrementally as Tier 1/2/3 lands):
 #   "crates/cairn-identity",
