@@ -63,15 +63,22 @@
 //!   verifier — RFC 6962 inclusion proof + C2SP signed-checkpoint
 //!   ECDSA P-256 verify against the pinned Rekor key per D0024 §3
 //!   (revised 2026-05-30: ECDSA, not Ed25519). Pure crypto, no
-//!   network; exhaustively unit-tested.
+//!   network; exhaustively unit-tested. The online fetch
+//!   ([`client::SigstoreVerifier::fetch_rekor_bundle`]) + its wiremock
+//!   harness landed alongside.
+//! - [`fulcio::validate_cert_chain`]: Fulcio cert-chain validation per
+//!   D0024 §2 — verifies the signing cert chains to the pinned root
+//!   (ECDSA P-384 chain sig via the `ring`-backed x509-parser `verify`
+//!   feature; see D0024 §6.5 revision), checks the validity window vs
+//!   the Rekor-attested signing time, pins the OIDC `iss` + `email`,
+//!   and returns the developer's Ed25519 key for the manifest check.
 //!
-//! The remaining network/orchestration surfaces
-//! ([`fulcio::validate_cert_chain`],
-//! [`client::SigstoreVerifier::verify_release`]) still return
-//! [`SigstoreVerifyError::NetworkUnreached`] pending the Fulcio
-//! cert-chain body + the end-to-end orchestration per D0024 §10. The
-//! `integration-tests` cargo feature flag gates the eventual
-//! real-Rekor / real-Fulcio network-exercising tests.
+//! The remaining surface ([`client::SigstoreVerifier::verify_release`])
+//! still returns [`SigstoreVerifyError::NetworkUnreached`] pending the
+//! end-to-end orchestration that composes Fulcio + manifest + Rekor +
+//! Sigsum per D0024 §6. The `integration-tests` cargo feature flag
+//! gates the eventual real-Rekor / real-Fulcio network-exercising
+//! tests.
 
 pub mod client;
 pub mod compose;

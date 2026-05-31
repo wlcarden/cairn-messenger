@@ -154,6 +154,19 @@ p256 = { version = "=0.13.2", default-features = false, features = [
     "ecdsa",
     "pem",
 ] }
+# X.509 parsing + Fulcio cert-chain signature verification per D0024 §2.
+# NOTE (2026-05-31): the `verify` feature enables the optional `ring`
+# dependency (C + assembly, BoringSSL-derived) — this is NOT pure-Rust,
+# a DELIBERATE departure from the workspace pure-Rust discipline for the
+# verify-only Fulcio trust path. Rationale: `ring`/`webpki`-style
+# verification is battle-tested and audit-friendly, whereas hand-rolling
+# X.509 chain-signature verification in pure Rust is error-prone and, by
+# the project's own "pure-Rust only if not security-worse" principle,
+# the riskier choice. The original D0024 §6.5 wrongly called this pin
+# "pure-Rust"; corrected in the §6.5 revision note.
+x509-parser = { version = "=0.16.0", default-features = false, features = [
+    "verify",
+] }
 
 # === FFI boundary (D0020 §3 + D0027) ===
 # UniFFI for the Kotlin<->Rust boundary per D0020 §3.1, pinned exact
@@ -196,6 +209,11 @@ hex-literal = "=0.4.1"  # RFC 5869 / RFC 8439 test-vector decoding
 # ^1.5.0) rather than 0.6.5 (tokio ^1.47.1): a test mock must not force
 # a bump of the exact-pinned `tokio =1.40.0` core runtime (D0018 §9.1).
 wiremock = "=0.6.4"
+# Test-only X.509 cert generation for the Fulcio cert-chain-validation
+# tests (D0024 §2). Default features select the `ring` backend (already
+# pulled by x509-parser's `verify` feature), so no second C crypto lib
+# (aws-lc-rs) enters the test build. Dev-dependency only.
+rcgen = "=0.13.2"
 
 # === Constant-time benchmarking (D0018 §5.3) ===
 # Bumped 0.6.0 → 0.7.0 per D0021's pin-audit hygiene action: 0.7.0

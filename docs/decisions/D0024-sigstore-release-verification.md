@@ -301,13 +301,35 @@ the `p256` pin below was added; the original draft listed only
 # (RustCrypto). LANDED 2026-05-30 with the offline Rekor verifier.
 p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa", "pem"] }
 
-# === X.509 cert parsing for Fulcio (D0024 §2) ===
-# Project-owned cert-chain validation; pinned to a
-# `default-features = false` build with explicit feature selection
-# (verify, parsing) and no networking. Pure-Rust per the workspace
-# pure-Rust discipline. DEFERRED until the Fulcio cert-chain body lands.
+# === X.509 parse + Fulcio cert-chain verification (D0024 §2) ===
+# Cert-chain validation; default-features = false, features = ["verify"].
+# LANDED 2026-05-31. ⚠ NOT pure-Rust: the `verify` feature enables the
+# optional `ring` dependency (C + assembly, BoringSSL-derived). This is a
+# DELIBERATE departure from the workspace pure-Rust discipline for the
+# verify-only Fulcio trust path (see the revision note below).
 x509-parser = { version = "=0.16.0", default-features = false, features = ["verify"] }
 ```
+
+> **Revision 2026-05-31 — x509-parser `verify` is NOT pure-Rust; the
+> Fulcio chain-signature verification uses `ring`.** The text above
+> originally called the `x509-parser` pin "pure-Rust per the workspace
+> pure-Rust discipline." That is wrong: x509-parser's `verify` feature
+> enables the optional `ring` dependency (BoringSSL-derived C +
+> assembly), and `verify_signature` is "limited to what `ring`
+> supports." Fulcio chain validation requires verifying an **ECDSA
+> P-384** signature (Sigstore's root is P-384), which neither
+> `cairn-crypto` (Ed25519/X25519) nor the Rekor `p256` pin covers.
+>
+> The decision (made deliberately, weighing the project's "pure-Rust
+> only if the alternatives are not security-worse" principle): use
+> `ring`-backed verification rather than hand-rolling X.509
+> chain-signature verification in pure Rust. Hand-rolled X.509
+> verification (DER canonicalization, algorithm-confusion guards, chain
+> constraints) is error-prone and security-sensitive; `ring`/`webpki`-
+> style verification is battle-tested and audit-friendly. `ring` enters
+> the **verify-only** trust path (no signing, no key material). A
+> test-only `rcgen` dev-dependency (also `ring`-backed) generates the
+> Fulcio-validation test certificates.
 
 The `p256` pin also pulls a `base64` dependency (already a workspace
 pin from D0023) for the checkpoint note's base64 root-hash line. The

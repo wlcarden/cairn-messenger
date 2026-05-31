@@ -29,6 +29,9 @@ zeroize = { workspace = true }
 # Hermetic mock Rekor for the online-fetch harness
 # (tests/rekor_wiremock.rs) per D0024 §6.4 / §10.
 wiremock = { workspace = true }
+# Test-only X.509 cert generation for the Fulcio validation tests
+# (ring backend, reuses x509-parser's ring; no aws-lc-rs).
+rcgen = { workspace = true }
 # p256 signing (+ base64/sha2 already deps) is needed in the harness to
 # produce canned ECDSA-P256-signed checkpoints; the `ecdsa` feature on
 # the normal dep already provides SigningKey, so no extra feature here.
@@ -48,6 +51,12 @@ sha2 = { workspace = true }
 # (revised 2026-05-30: public Rekor signs with ECDSA P-256, not the
 # Ed25519 the original §3.2 assumed). Verify-only; no signing. ===
 p256 = { workspace = true }
+
+# === X.509 parse + Fulcio cert-chain signature verification per
+# D0024 §2. The `verify` feature pulls `ring` (NOT pure-Rust) into the
+# verify-only trust path — a deliberate departure documented in the
+# workspace Cargo.toml + D0024 §6.5 revision. ===
+x509-parser = { workspace = true }
 
 # === base64 (std) for the C2SP checkpoint note's root-hash line per
 # D0024 §3 / c2sp.org/tlog-checkpoint ===
