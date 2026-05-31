@@ -21,6 +21,7 @@
 //! the leaf hash; the trust-graph op itself stays in the participants'
 //! local storage and propagates via the messaging layer.
 
+use cairn_crypto::ed25519::SigningKey;
 use cairn_envelope::cose_sign1::CoseSign1;
 use cairn_trust_graph::SignedTrustGraphOp;
 use sha2::{Digest, Sha256};
@@ -29,6 +30,101 @@ use crate::error::SigsumError;
 
 /// Length of the leaf hash in bytes. SHA-256 = 32.
 pub const LEAF_HASH_LEN: usize = 32;
+
+/// Sigsum tree-leaf signature namespace per the Sigsum v1 log spec
+/// §2.2.4. The submitter signs `NAMESPACE ‖ 0x00 ‖ checksum`.
+pub const TREE_LEAF_NAMESPACE: &[u8] = b"sigsum.org/v1/tree-leaf";
+
+/// A Sigsum Merkle tree leaf per the Sigsum v1 log spec §2.2.4.
+///
+/// The 128-byte `checksum ‖ signature ‖ key_hash` whose RFC 6962 leaf
+/// hash (`H(0x00 ‖ tree_leaf)`) is what the log's Merkle tree commits to
+/// and what `get-inclusion-proof` addresses.
+///
+/// ## Cairn mapping (D0023 §1, revised 2026-05-31)
+///
+/// Cairn submits its [`LeafHash`] (`SHA-256(op signature bytes)`) as the
+/// Sigsum `message` (exactly 32 bytes). The log-side `checksum` is then
+/// `SHA-256(message)`; the submitter (Cairn's operational identity per
+/// D0023 §3) signs the tree-leaf; `key_hash` is `SHA-256(submitter
+/// pubkey)`. The original D0023 §1 framing called `leaf_hash` "the leaf
+/// hash addressed to the log", which was imprecise: `leaf_hash` is the
+/// *message*, and the log addresses by the Merkle leaf hash of the full
+/// `tree_leaf`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeLeaf {
+    /// `SHA-256(message)` where `message` is Cairn's [`LeafHash`].
+    pub checksum: [u8; 32],
+    /// The submitter's Ed25519 signature over
+    /// `TREE_LEAF_NAMESPACE ‖ 0x00 ‖ checksum`.
+    pub signature: [u8; 64],
+    /// `SHA-256(submitter Ed25519 public key)`.
+    pub key_hash: [u8; 32],
+}
+
+impl TreeLeaf {
+    /// The RFC 6962 Merkle leaf hash `H(0x00 ‖ checksum ‖ signature ‖
+    /// key_hash)` — the value `get-inclusion-proof` addresses and the
+    /// inclusion proof reconstructs to the tree root.
+    #[must_use]
+    pub fn merkle_leaf_hash(&self) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update([0x00u8]);
+        hasher.update(self.checksum);
+        hasher.update(self.signature);
+        hasher.update(self.key_hash);
+        let out = hasher.finalize();
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&out);
+        arr
+    }
+}
+
+/// SHA-256 of a byte slice into a fixed `[u8; 32]`.
+fn sha256(bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let out = hasher.finalize();
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&out);
+    arr
+}
+
+/// Build the Sigsum [`TreeLeaf`] for a submitted `message` (Cairn's
+/// [`LeafHash`] bytes), signed by `submitter_sk` (the operational
+/// identity per D0023 §3).
+///
+/// # Errors
+///
+/// [`SigsumError::LeafSignFailed`] if the Ed25519 signing fails
+/// (effectively unreachable for a valid key).
+pub fn build_tree_leaf(
+    message: &[u8; LEAF_HASH_LEN],
+    submitter_sk: &SigningKey,
+) -> Result<TreeLeaf, SigsumError> {
+    let checksum = sha256(message);
+
+    let mut signing_input = Vec::with_capacity(
+        TREE_LEAF_NAMESPACE
+            .len()
+            .saturating_add(1)
+            .saturating_add(32),
+    );
+    signing_input.extend_from_slice(TREE_LEAF_NAMESPACE);
+    signing_input.push(0x00);
+    signing_input.extend_from_slice(&checksum);
+
+    let signature = submitter_sk
+        .sign(&signing_input)
+        .map_err(|_| SigsumError::LeafSignFailed)?;
+    let key_hash = sha256(&submitter_sk.verifying_key().to_bytes());
+
+    Ok(TreeLeaf {
+        checksum,
+        signature: signature.to_bytes(),
+        key_hash,
+    })
+}
 
 /// A leaf hash per D0023 §1: 32 raw bytes addressed to the Sigsum
 /// log. Wraps `[u8; LEAF_HASH_LEN]` for type-safety (e.g.
@@ -166,5 +262,40 @@ mod tests {
             hex.chars()
                 .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase())
         );
+    }
+
+    #[test]
+    fn build_tree_leaf_is_deterministic_and_well_formed() {
+        let sk = SigningKey::generate(&mut OsRng);
+        let message = [0xABu8; LEAF_HASH_LEN];
+        let tl1 = build_tree_leaf(&message, &sk).unwrap();
+        let tl2 = build_tree_leaf(&message, &sk).unwrap();
+        // Ed25519 (RFC 8032) is deterministic.
+        assert_eq!(tl1, tl2);
+        // checksum = SHA-256(message).
+        assert_eq!(tl1.checksum, sha256(&message));
+        // key_hash = SHA-256(submitter pubkey).
+        assert_eq!(tl1.key_hash, sha256(&sk.verifying_key().to_bytes()));
+        // Merkle leaf hash is deterministic + 32 bytes.
+        assert_eq!(tl1.merkle_leaf_hash(), tl2.merkle_leaf_hash());
+    }
+
+    #[test]
+    fn tree_leaf_signature_verifies_over_namespaced_checksum() {
+        use cairn_crypto::ed25519::Signature;
+        // Pin the exact Sigsum §2.2.4 signing input:
+        // NAMESPACE ‖ 0x00 ‖ checksum (56 bytes).
+        let sk = SigningKey::generate(&mut OsRng);
+        let message = [0x11u8; LEAF_HASH_LEN];
+        let tl = build_tree_leaf(&message, &sk).unwrap();
+
+        let mut input = Vec::new();
+        input.extend_from_slice(TREE_LEAF_NAMESPACE);
+        input.push(0x00);
+        input.extend_from_slice(&tl.checksum);
+        assert_eq!(input.len(), 56);
+
+        let sig = Signature::from_bytes(tl.signature);
+        assert!(sk.verifying_key().verify(&input, &sig).is_ok());
     }
 }

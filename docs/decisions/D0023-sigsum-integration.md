@@ -1,6 +1,6 @@
 # D0023 — cairn-sigsum-client: commitment-only logging + witness-cosignature verification
 
-**Status:** Accepted (wire format revised 2026-05-30)
+**Status:** Accepted (wire format revised 2026-05-30; leaf/emit model revised 2026-05-31)
 **Date:** 2026-05-29
 
 > **Revision 2026-05-30 — cosignature wire format corrected.**
@@ -95,6 +95,33 @@ Three properties matter:
 ### 1.3 Discipline note
 
 The leaf hash is NOT the entire signed envelope — just the signature bytes. This is intentional: the verifier must already possess the envelope (via the messaging layer per design brief §3.3) to extract the signature bytes and recompute the leaf. The leaf hash plus the inclusion proof prove only "this signature is in the log"; "this op signed this content under this key" requires the verifier to hold the envelope and run the existing `verify_chain` path.
+
+### 1.4 `leaf_hash` is the submitted _message_, not the Merkle leaf hash _[Revised 2026-05-31]_
+
+The `leaf_hash` above is precisely the **`message`** Cairn submits to the
+Sigsum log (`add-leaf`), which must be exactly 32 bytes. It is NOT the
+value the log's Merkle tree addresses by. Per the Sigsum v1 log spec
+§2.2.4, the log builds a 128-byte `tree_leaf` and the inclusion proof is
+over its RFC 6962 leaf hash:
+
+```text
+checksum         = SHA-256(message)          # message = Cairn leaf_hash
+tree_leaf        = checksum ‖ signature ‖ key_hash   # 32 + 64 + 32 = 128
+signature        = Ed25519_submitter("sigsum.org/v1/tree-leaf" ‖ 0x00 ‖ checksum)
+key_hash         = SHA-256(submitter pubkey)
+merkle_leaf_hash = SHA-256(0x00 ‖ tree_leaf)   # what get-inclusion-proof addresses
+```
+
+The **submitter** is Cairn's operational identity (D0023 §3); its
+tree-leaf `signature` is an **emit-time** artifact a verifying recipient
+cannot recompute (no access to the submitter's private key). Therefore
+`emit_leaf` takes the submitter signing key and caches the `tree_leaf`
+components (see the revised §4.2 + §5.1) so `verify_inclusion` can
+reconstruct `merkle_leaf_hash` without re-signing. The original §1.1
+framing ("the Sigsum leaf hash") conflated the submitted message with the
+Merkle leaf hash; this subsection corrects it. (`leaf_hash`'s role as
+D0006 §5's `prior_hash` byte input is unchanged — it is still
+`SHA-256(signature_bytes)`.)
 
 ---
 
@@ -231,10 +258,17 @@ On next call to `latest_tree_head`:
 
 Per emitted trust-graph op, cache:
 
-- The leaf hash (32 bytes per §1).
-- The inclusion proof at the `tree_size` when first observed.
+- The leaf hash (32 bytes per §1 — the submitted `message`).
+- _[Revised 2026-05-31]_ The Sigsum `tree_leaf` components produced at
+  emit time — the submitter tree-leaf `signature` (64 bytes) + the
+  `key_hash` (32 bytes) — as an `EmittedLeaf` record. These are required
+  to reconstruct `merkle_leaf_hash = SHA-256(0x00 ‖ tree_leaf)` (§1.4)
+  for `verify_inclusion`, and cannot be recomputed by a verifying
+  recipient (the submitter signature needs the submitter's private key).
+- The inclusion proof at the `tree_size` when first observed (cached by
+  `verify_inclusion` once it lands).
 - The log URL.
-- The Unix-seconds when the proof was last verified.
+- The Unix-seconds when the leaf was emitted / the proof last verified.
 
 Record id: SHA-256(log_url ‖ leaf_hash).
 
@@ -257,9 +291,13 @@ pub struct SigsumClient {
 }
 
 impl SigsumClient {
+    // [Revised 2026-05-31] emit_leaf takes the submitter (operational
+    // identity) signing key — it must produce the Sigsum tree-leaf
+    // signature (§1.4). It POSTs add-leaf and caches an EmittedLeaf.
     pub async fn emit_leaf(
         &self,
         signed_op: &SignedTrustGraphOp,
+        submitter_sk: &SigningKey,
     ) -> Result<LeafHash, SigsumError>;
 
     pub async fn verify_inclusion(

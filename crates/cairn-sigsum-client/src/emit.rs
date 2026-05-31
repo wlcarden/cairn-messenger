@@ -24,16 +24,18 @@
 //! Deferred, .. })` so the caller knows to retry the emission on a
 //! subsequent sweep (typically at app start).
 //!
-//! ## v1 skeleton status
+//! ## Emission status
 //!
-//! The wrapper composes against the v1 skeleton's stubbed
-//! [`crate::client::SigsumClient::emit_leaf`] which returns
-//! [`SigsumError::NetworkUnreached`] unconditionally. Every wrapper
-//! invocation in v1 therefore returns [`EmissionStatus::Deferred`].
-//! Once the network surface lands (a follow-up commit gated on
-//! integration testing per D0023 §10), successful emissions return
-//! [`EmissionStatus::Logged`].
+//! [`crate::client::SigsumClient::emit_leaf`] is implemented: it builds
+//! the Sigsum `tree_leaf`, POSTs `add-leaf`, and caches the emitted
+//! leaf. A reachable log that commits the leaf yields
+//! [`EmissionStatus::Logged`]; any transport failure after the retry
+//! budget yields [`EmissionStatus::Deferred`] so a later app-start
+//! sweep retries the emission half (persistence stays the source of
+//! truth per §6.1). `submitter_sk` is the operational-identity Ed25519
+//! key acting as the Sigsum submitter (D0023 §3).
 
+use cairn_crypto::ed25519::SigningKey;
 use cairn_storage::Storage;
 use cairn_trust_graph::{
     STORE_RECORD_ID_LEN, SignedTrustGraphOp, StoreError as TrustGraphStoreError, store_signed_op,
@@ -64,12 +66,11 @@ pub struct EmitOutcome {
 
 /// Outcome of the Sigsum-emission half of [`sigsum_emit`].
 ///
-/// In the v1 skeleton, [`EmissionStatus::Logged`] is unreachable
-/// because [`crate::client::SigsumClient::emit_leaf`] is stubbed to
-/// return [`SigsumError::NetworkUnreached`]. Once the network
-/// surface lands, [`EmissionStatus::Logged`] becomes the success
-/// path and [`EmissionStatus::Deferred`] is reserved for transient
-/// post-retry-budget failures the caller should sweep later.
+/// [`EmissionStatus::Logged`] is the success path: the log committed the
+/// leaf (`200 OK`) and the [`crate::cache::EmittedLeaf`] record was
+/// cached. [`EmissionStatus::Deferred`] covers any transport failure
+/// after the retry budget (or a log that only ever returns `202`); the
+/// caller sweeps it later (persistence stays the source of truth).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EmissionStatus {
     /// Successfully emitted to the configured log and cached in
@@ -110,6 +111,7 @@ pub async fn sigsum_emit(
     storage: &Storage,
     client: &SigsumClient,
     op: &SignedTrustGraphOp,
+    submitter_sk: &SigningKey,
 ) -> Result<EmitOutcome, SigsumError> {
     // Step 1: persist. Fatal-error fall-through; the persistence half
     // is the source of truth per §6.1.
@@ -118,11 +120,12 @@ pub async fn sigsum_emit(
     // Step 2: compute the leaf hash. Pure SHA-256; no I/O.
     let leaf_hash = leaf_hash_for(op)?;
 
-    // Step 3: best-effort Sigsum emission per §6.1. v1 skeleton
-    // returns Deferred unconditionally because emit_leaf is stubbed
-    // to NetworkUnreached. Once the network surface lands, the Ok
-    // arm is the cache-write + Logged path.
-    let emission_status = match client.emit_leaf(op).await {
+    // Step 3: best-effort Sigsum emission per §6.1. emit_leaf builds
+    // the Sigsum tree_leaf, POSTs add-leaf, and caches the EmittedLeaf
+    // record. A reachable + committing log yields Logged; any transport
+    // failure (after the retry budget) yields Deferred so a later sweep
+    // retries.
+    let emission_status = match client.emit_leaf(op, submitter_sk).await {
         Ok(_) => EmissionStatus::Logged,
         Err(_) => EmissionStatus::Deferred,
     };
@@ -206,15 +209,25 @@ mod tests {
         let pool = parse_witness_pool(&toml).unwrap();
         let log_pubkey = SigningKey::generate(&mut OsRng).verifying_key();
         let config = SigsumClientConfig {
-            log_url: Url::parse("https://log.example.org").unwrap(),
+            // 127.0.0.1:1 refuses connections immediately, so emit_leaf's
+            // add-leaf POST fails fast (no real DNS / network) and the
+            // best-effort emission defers — exercising §6.1's
+            // "persistence is the source of truth" property offline.
+            log_url: Url::parse("http://127.0.0.1:1").unwrap(),
             log_pubkey,
             witness_pool: pool,
-            default_retry_budget: crate::RetryBudget::default(),
+            default_retry_budget: crate::RetryBudget {
+                max_retries: 0,
+                initial_delay: std::time::Duration::from_millis(1),
+                max_delay: std::time::Duration::from_millis(1),
+            },
         };
         SigsumClient::new(config, storage).unwrap()
     }
 
-    fn make_signed_op(rng: &mut OsRng, timestamp: u64) -> SignedTrustGraphOp {
+    /// Build a signed op + return the operational-identity key that acts
+    /// as the Sigsum submitter for `emit_leaf` / `sigsum_emit`.
+    fn make_signed_op(rng: &mut OsRng, timestamp: u64) -> (SignedTrustGraphOp, SigningKey) {
         let op_identity_sk = SigningKey::generate(rng);
         let device_sk = SigningKey::generate(rng);
         let peer = SigningKey::generate(rng).verifying_key();
@@ -225,7 +238,8 @@ mod tests {
             vec![],
             vec![],
         );
-        SignedTrustGraphOp::sign(op, &device_sk).unwrap()
+        let signed = SignedTrustGraphOp::sign(op, &device_sk).unwrap();
+        (signed, op_identity_sk)
     }
 
     #[tokio::test]
@@ -238,9 +252,11 @@ mod tests {
         let storage = open_storage();
         let client = make_client(Arc::clone(&storage));
         let mut rng = OsRng;
-        let signed_op = make_signed_op(&mut rng, 1_700_000_000);
+        let (signed_op, submitter_sk) = make_signed_op(&mut rng, 1_700_000_000);
 
-        let outcome = sigsum_emit(&storage, &client, &signed_op).await.unwrap();
+        let outcome = sigsum_emit(&storage, &client, &signed_op, &submitter_sk)
+            .await
+            .unwrap();
 
         // Persistence half succeeded.
         let loaded = load_signed_op(&storage, &outcome.record_id).unwrap();
@@ -258,9 +274,11 @@ mod tests {
         let storage = open_storage();
         let client = make_client(Arc::clone(&storage));
         let mut rng = OsRng;
-        let signed_op = make_signed_op(&mut rng, 1_700_000_000);
+        let (signed_op, submitter_sk) = make_signed_op(&mut rng, 1_700_000_000);
 
-        let outcome = sigsum_emit(&storage, &client, &signed_op).await.unwrap();
+        let outcome = sigsum_emit(&storage, &client, &signed_op, &submitter_sk)
+            .await
+            .unwrap();
         let direct_id = record_id_for(&signed_op).unwrap();
         assert_eq!(outcome.record_id, direct_id);
     }
@@ -273,9 +291,11 @@ mod tests {
         let storage = open_storage();
         let client = make_client(Arc::clone(&storage));
         let mut rng = OsRng;
-        let signed_op = make_signed_op(&mut rng, 1_700_000_000);
+        let (signed_op, submitter_sk) = make_signed_op(&mut rng, 1_700_000_000);
 
-        let outcome = sigsum_emit(&storage, &client, &signed_op).await.unwrap();
+        let outcome = sigsum_emit(&storage, &client, &signed_op, &submitter_sk)
+            .await
+            .unwrap();
         assert_eq!(outcome.leaf_hash.as_bytes(), &signed_op.prior_hash_bytes());
     }
 
@@ -289,10 +309,14 @@ mod tests {
         let storage = open_storage();
         let client = make_client(Arc::clone(&storage));
         let mut rng = OsRng;
-        let signed_op = make_signed_op(&mut rng, 1_700_000_000);
+        let (signed_op, submitter_sk) = make_signed_op(&mut rng, 1_700_000_000);
 
-        let first = sigsum_emit(&storage, &client, &signed_op).await.unwrap();
-        let second = sigsum_emit(&storage, &client, &signed_op).await.unwrap();
+        let first = sigsum_emit(&storage, &client, &signed_op, &submitter_sk)
+            .await
+            .unwrap();
+        let second = sigsum_emit(&storage, &client, &signed_op, &submitter_sk)
+            .await
+            .unwrap();
 
         assert_eq!(first.record_id, second.record_id);
         assert_eq!(first.leaf_hash, second.leaf_hash);
@@ -308,11 +332,11 @@ mod tests {
         let storage = open_storage();
         let client = make_client(Arc::clone(&storage));
         let mut rng = OsRng;
-        let op_a = make_signed_op(&mut rng, 1_700_000_000);
-        let op_b = make_signed_op(&mut rng, 1_700_000_001);
+        let (op_a, sk_a) = make_signed_op(&mut rng, 1_700_000_000);
+        let (op_b, sk_b) = make_signed_op(&mut rng, 1_700_000_001);
 
-        let outcome_a = sigsum_emit(&storage, &client, &op_a).await.unwrap();
-        let outcome_b = sigsum_emit(&storage, &client, &op_b).await.unwrap();
+        let outcome_a = sigsum_emit(&storage, &client, &op_a, &sk_a).await.unwrap();
+        let outcome_b = sigsum_emit(&storage, &client, &op_b, &sk_b).await.unwrap();
 
         assert_ne!(outcome_a.record_id, outcome_b.record_id);
         assert_ne!(outcome_a.leaf_hash, outcome_b.leaf_hash);
@@ -331,9 +355,11 @@ mod tests {
         let storage = open_storage();
         let client = make_client(Arc::clone(&storage));
         let mut rng = OsRng;
-        let signed_op = make_signed_op(&mut rng, 1_700_000_000);
+        let (signed_op, submitter_sk) = make_signed_op(&mut rng, 1_700_000_000);
 
-        let outcome = sigsum_emit(&storage, &client, &signed_op).await.unwrap();
+        let outcome = sigsum_emit(&storage, &client, &signed_op, &submitter_sk)
+            .await
+            .unwrap();
         assert_eq!(outcome.emission_status, EmissionStatus::Deferred);
 
         // The trust-graph row must exist after the call even though

@@ -126,6 +126,13 @@ pub enum SigsumError {
     #[error("sigsum: unmapped cairn-trust-graph store error variant")]
     TrustGraphStoreUnknown,
 
+    /// The submitter's Sigsum tree-leaf Ed25519 signature could not be
+    /// produced during `emit_leaf`. Effectively unreachable (Ed25519
+    /// signing does not fail for a valid key), but the variant keeps
+    /// the emit path from `unwrap`-ing on the signing `Result`.
+    #[error("sigsum: tree-leaf signing failed")]
+    LeafSignFailed,
+
     /// Witness pool config parse failure (malformed TOML, missing
     /// required fields, invalid pubkey hex, invalid URL).
     #[error("sigsum: witness pool config parse failed")]

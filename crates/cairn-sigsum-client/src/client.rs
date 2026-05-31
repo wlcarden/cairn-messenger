@@ -14,24 +14,31 @@
 //! caches the accepted head. It is validated end-to-end by the
 //! hermetic wiremock harness in `tests/refresh_tree_head_wiremock.rs`.
 //!
-//! [`SigsumClient::emit_leaf`] + [`SigsumClient::verify_inclusion`]
-//! still return [`SigsumError::NetworkUnreached`] pending their
-//! `add-leaf` POST + inclusion-proof bodies per D0023 §10. When those
-//! land they follow the D0023 §5 spec: `add-leaf` POST to the log,
-//! then read the cosignatures back from the (single) `get-tree-head`
-//! response — NOT a separate per-witness fetch — and the inclusion
-//! proof from `get-inclusion-proof`, with the cache updated on success.
+//! [`SigsumClient::emit_leaf`] is **implemented**: it builds the Sigsum
+//! `tree_leaf` (D0023 §1 revised + Sigsum spec §2.2.4), POSTs it to
+//! `add-leaf` (retrying `202` until `200`), and caches an
+//! [`crate::cache::EmittedLeaf`] record so `verify_inclusion` can later
+//! reconstruct the Merkle leaf hash. Validated by the hermetic wiremock
+//! harness in `tests/emit_leaf_wiremock.rs`.
+//!
+//! [`SigsumClient::verify_inclusion`] still returns
+//! [`SigsumError::NetworkUnreached`] pending its `get-inclusion-proof`
+//! fetch + RFC 6962 verification against the accepted head (the next
+//! surface to land; it consumes the `EmittedLeaf` record emit caches).
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use cairn_crypto::ed25519::{Signature, VerifyingKey};
+use cairn_crypto::ed25519::{Signature, SigningKey, VerifyingKey};
 use cairn_storage::{Storage, categories};
 use cairn_trust_graph::SignedTrustGraphOp;
 use sha2::{Digest, Sha256};
 use url::Url;
 
-use crate::cache::{Cosignature, InclusionProof, TreeHead, cache_record_id_for_log};
+use crate::cache::{
+    Cosignature, EmittedLeaf, InclusionProof, TreeHead, cache_record_id_for_leaf,
+    cache_record_id_for_log,
+};
 use crate::error::SigsumError;
 use crate::leaf::LeafHash;
 use crate::witness::{
@@ -91,14 +98,11 @@ pub struct SigsumClientConfig {
 /// cache state, the configured witness pool, and the log URL. Each
 /// async method routes through the cache + retry logic per D0023 §5.
 pub struct SigsumClient {
-    /// HTTPS client per D0023 §2.
-    #[allow(
-        dead_code,
-        reason = "wired in v1 skeleton; populated for the network surface"
-    )]
+    /// HTTPS client per D0023 §2. Used by the network surfaces
+    /// (`get-tree-head`, `add-leaf`).
     http: reqwest::Client,
-    /// Storage handle for cache state per D0023 §4.
-    #[allow(dead_code, reason = "v1 skeleton; populated for the cache writes")]
+    /// Storage handle for cache state per D0023 §4 (tree-head + emitted
+    /// leaf records).
     storage: Arc<Storage>,
     /// Configured witness pool per D0023 §3.
     witness_pool: WitnessPool,
@@ -165,32 +169,110 @@ impl SigsumClient {
     /// Emit a leaf for `signed_op` to the configured Sigsum log per
     /// D0023 §5.
     ///
-    /// v1 skeleton: returns [`SigsumError::NetworkUnreached`] pending
-    /// integration testing. When the network body lands, the flow is:
+    /// Implemented per D0023 §5 + the Sigsum v1 `add-leaf` spec (§3.5).
+    /// Flow:
     ///
-    /// 1. Compute the leaf hash via [`crate::leaf::leaf_hash_for`].
-    /// 2. POST to `{log_url}/add-leaf` with the rfc6962-formatted
-    ///    leaf body.
-    /// 3. On success, the log returns the new tree head + inclusion
-    ///    proof — store both in the cache.
-    /// 4. Retry on transient HTTP failures per
-    ///    [`SigsumClient::default_retry_budget`].
+    /// 1. Compute Cairn's leaf hash via [`crate::leaf::leaf_hash_for`]
+    ///    (the 32-byte `message` submitted to the log).
+    /// 2. Build the Sigsum [`crate::leaf::TreeLeaf`]
+    ///    ([`crate::leaf::build_tree_leaf`]): `checksum = SHA-256(message)`,
+    ///    the submitter's tree-leaf signature (signed by `submitter_sk`,
+    ///    the operational identity per D0023 §3), and
+    ///    `key_hash = SHA-256(submitter pubkey)`.
+    /// 3. `POST {log_url}/add-leaf` with `message` / `signature` /
+    ///    `public_key` hex fields, retrying `202 Accepted` (not yet
+    ///    committed) until `200 OK` per the spec, within the retry
+    ///    budget.
+    /// 4. Cache an [`EmittedLeaf`] record so
+    ///    [`SigsumClient::verify_inclusion`] can later reconstruct the
+    ///    `tree_leaf` + its Merkle leaf hash without re-signing.
+    ///
+    /// `submitter_sk` is the operational-identity Ed25519 key that acts
+    /// as the Sigsum submitter (D0023 §3). Returns Cairn's [`LeafHash`]
+    /// (the submitted message).
     ///
     /// # Errors
     ///
-    /// - [`SigsumError::NetworkUnreached`] (skeleton only; replaced
-    ///   by [`SigsumError::Network`] once the body lands)
-    /// - [`SigsumError::Encode`] for envelope encode failures
-    ///   (unreachable for envelopes constructed via the public API)
-    #[allow(
-        clippy::unused_async,
-        reason = "v1 skeleton; network body lands with the integration-tests gate per D0023 §10"
-    )]
-    pub async fn emit_leaf(&self, signed_op: &SignedTrustGraphOp) -> Result<LeafHash, SigsumError> {
-        // Compute the leaf hash now so the structural error surfaces
-        // even before the network body lands.
-        let _hash = crate::leaf::leaf_hash_for(signed_op)?;
-        Err(SigsumError::NetworkUnreached)
+    /// - [`SigsumError::Network`] — transport failed (or the log never
+    ///   returned `200`) after the retry budget was exhausted.
+    /// - [`SigsumError::Encode`] — trust-graph envelope encode failure
+    ///   (unreachable for envelopes constructed via the public API).
+    /// - [`SigsumError::LeafSignFailed`] — tree-leaf signing failed
+    ///   (effectively unreachable for a valid key).
+    /// - [`SigsumError::Storage`] — cache write failure.
+    pub async fn emit_leaf(
+        &self,
+        signed_op: &SignedTrustGraphOp,
+        submitter_sk: &SigningKey,
+    ) -> Result<LeafHash, SigsumError> {
+        let leaf_hash = crate::leaf::leaf_hash_for(signed_op)?;
+        let tree_leaf = crate::leaf::build_tree_leaf(leaf_hash.as_bytes(), submitter_sk)?;
+        let submitter_pubkey = submitter_sk.verifying_key().to_bytes();
+
+        self.http_post_add_leaf(
+            leaf_hash.as_bytes(),
+            &tree_leaf.signature,
+            &submitter_pubkey,
+        )
+        .await?;
+
+        let record = EmittedLeaf {
+            message: *leaf_hash.as_bytes(),
+            signature: tree_leaf.signature,
+            key_hash: tree_leaf.key_hash,
+            observed_at: now_unix(),
+        };
+        let record_id = cache_record_id_for_leaf(&self.log_url, &leaf_hash);
+        self.storage.put(
+            categories::SIGSUM_CACHE,
+            &record_id,
+            &record.to_canonical_cbor()?,
+        )?;
+
+        Ok(leaf_hash)
+    }
+
+    /// `POST {log_url}/add-leaf` with the Sigsum v1 ASCII body, retrying
+    /// `202 Accepted` (received but not yet committed) until `200 OK`,
+    /// and transient transport / 5xx failures, up to the retry budget.
+    async fn http_post_add_leaf(
+        &self,
+        message: &[u8; 32],
+        signature: &[u8; 64],
+        public_key: &[u8; 32],
+    ) -> Result<(), SigsumError> {
+        let url = self
+            .log_url
+            .join("add-leaf")
+            .map_err(|_| SigsumError::MalformedResponse)?;
+        let body = format!(
+            "message={}\nsignature={}\npublic_key={}\n",
+            lower_hex(message),
+            lower_hex(signature),
+            lower_hex(public_key),
+        );
+        let budget = self.default_retry_budget;
+        let mut delay = budget.initial_delay;
+        let mut attempt: u8 = 0;
+        loop {
+            match self.http.post(url.clone()).body(body.clone()).send().await {
+                // 200 OK = the log is committed to publishing the leaf.
+                Ok(resp) if resp.status().as_u16() == 200 => return Ok(()),
+                // Any other status (202 Accepted = received but not yet
+                // committed, per the spec resend until 200; or 4xx/5xx)
+                // and transport errors retry within the budget, then
+                // surface Network so the caller defers.
+                Ok(_) | Err(_) if attempt < budget.max_retries => {}
+                Ok(_) | Err(_) => {
+                    return Err(SigsumError::Network {
+                        retry_budget_used: attempt,
+                    });
+                }
+            }
+            tokio::time::sleep(delay).await;
+            delay = delay.saturating_mul(2).min(budget.max_delay);
+            attempt = attempt.saturating_add(1);
+        }
     }
 
     /// Verify that `signed_op` is included in the latest accepted
@@ -518,6 +600,17 @@ fn now_unix() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// Lowercase-hex-encode a byte slice (no `0x` prefix) for the Sigsum
+/// `add-leaf` ASCII body fields.
+fn lower_hex(bytes: &[u8]) -> String {
+    use core::fmt::Write as _;
+    let mut s = String::with_capacity(bytes.len().saturating_mul(2));
+    for b in bytes {
+        let _ = write!(&mut s, "{b:02x}");
+    }
+    s
+}
+
 #[cfg(test)]
 #[allow(clippy::indexing_slicing, clippy::panic, clippy::unwrap_used)]
 mod tests {
@@ -600,14 +693,10 @@ mod tests {
         assert_eq!(client.witness_pool().len(), 3);
     }
 
-    #[tokio::test]
-    async fn emit_leaf_returns_network_unreached_in_skeleton() {
-        let client = make_test_client();
-        let mut rng = OsRng;
-        let signed_op = make_signed_op(&mut rng);
-        let result = client.emit_leaf(&signed_op).await;
-        assert!(matches!(result, Err(SigsumError::NetworkUnreached)));
-    }
+    // `emit_leaf` is no longer a stub — it builds the Sigsum tree_leaf,
+    // POSTs add-leaf, and caches an EmittedLeaf. Its behavior is
+    // validated end-to-end against a hermetic mock Sigsum log in
+    // `tests/emit_leaf_wiremock.rs`.
 
     #[tokio::test]
     async fn verify_inclusion_returns_network_unreached_in_skeleton() {

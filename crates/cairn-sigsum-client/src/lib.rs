@@ -80,11 +80,15 @@ pub mod leaf;
 pub mod verify;
 pub mod witness;
 
-pub use cache::{InclusionProof, TreeHead, cache_record_id_for_leaf, cache_record_id_for_log};
+pub use cache::{
+    EmittedLeaf, InclusionProof, TreeHead, cache_record_id_for_leaf, cache_record_id_for_log,
+};
 pub use client::{RetryBudget, SigsumClient, SigsumClientConfig};
 pub use emit::{EmissionStatus, EmitOutcome, sigsum_emit};
 pub use error::SigsumError;
-pub use leaf::{LEAF_HASH_LEN, LeafHash, leaf_hash_for};
+pub use leaf::{
+    LEAF_HASH_LEN, LeafHash, TREE_LEAF_NAMESPACE, TreeLeaf, build_tree_leaf, leaf_hash_for,
+};
 pub use verify::{VerifyChainWithSigsumError, verify_chain_links_with_sigsum};
 pub use witness::{
     MIN_WITNESS_COUNT, REQUIRED_COSIGNATURE_COUNT, Witness, WitnessPool, parse_witness_pool,

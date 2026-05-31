@@ -57,6 +57,12 @@ const KEY_INCLUSION_PROOF_NODES: i64 = 3;
 const KEY_INCLUSION_LEAF_INDEX: i64 = 4;
 const KEY_INCLUSION_OBSERVED_AT: i64 = 5;
 
+// === Canonical-CBOR map keys for the EmittedLeaf payload schema ===
+const KEY_EMITTED_MESSAGE: i64 = 1;
+const KEY_EMITTED_SIGNATURE: i64 = 2;
+const KEY_EMITTED_KEY_HASH: i64 = 3;
+const KEY_EMITTED_OBSERVED_AT: i64 = 4;
+
 /// Signed Sigsum tree head, cached after successful witness-cosignature
 /// verification per D0023 §4.1.
 ///
@@ -120,6 +126,116 @@ pub struct InclusionProof {
     pub leaf_index: u64,
     /// Unix-seconds when the cache observed this proof.
     pub observed_at: u64,
+}
+
+/// A leaf emitted to the Sigsum log, cached for later inclusion proof.
+///
+/// Written by [`crate::SigsumClient::emit_leaf`] so
+/// [`crate::SigsumClient::verify_inclusion`] can reconstruct the Sigsum
+/// [`crate::leaf::TreeLeaf`] + its Merkle leaf hash without re-signing
+/// (the submitter signature is an emit-time artifact a verifying
+/// recipient cannot recompute).
+///
+/// Keyed in [`cairn_storage::categories::SIGSUM_CACHE`] by
+/// [`cache_record_id_for_leaf`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmittedLeaf {
+    /// The 32-byte `message` submitted to the log — Cairn's
+    /// [`crate::LeafHash`] bytes. The Sigsum `checksum` is
+    /// `SHA-256(message)`.
+    pub message: [u8; 32],
+    /// The submitter's 64-byte Ed25519 tree-leaf signature.
+    pub signature: [u8; 64],
+    /// `SHA-256(submitter pubkey)` — the Sigsum `tree_leaf.key_hash`.
+    pub key_hash: [u8; 32],
+    /// Unix-seconds when the leaf was emitted + cached.
+    pub observed_at: u64,
+}
+
+impl EmittedLeaf {
+    /// Reconstruct the Sigsum [`crate::leaf::TreeLeaf`] from the cached
+    /// components (`checksum = SHA-256(message)`).
+    #[must_use]
+    pub fn tree_leaf(&self) -> crate::leaf::TreeLeaf {
+        let mut hasher = Sha256::new();
+        hasher.update(self.message);
+        let out = hasher.finalize();
+        let mut checksum = [0u8; 32];
+        checksum.copy_from_slice(&out);
+        crate::leaf::TreeLeaf {
+            checksum,
+            signature: self.signature,
+            key_hash: self.key_hash,
+        }
+    }
+
+    /// Encode as canonical-CBOR for storage.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the canonical encoder failure (unreachable for typed
+    /// inputs).
+    pub fn to_canonical_cbor(&self) -> Result<Vec<u8>, SigsumError> {
+        let observed_at_i64 =
+            i64::try_from(self.observed_at).map_err(|_| SigsumError::MalformedCacheRecord)?;
+        let map = Value::Map(vec![
+            (
+                Value::Int(KEY_EMITTED_MESSAGE),
+                Value::Bytes(self.message.to_vec()),
+            ),
+            (
+                Value::Int(KEY_EMITTED_SIGNATURE),
+                Value::Bytes(self.signature.to_vec()),
+            ),
+            (
+                Value::Int(KEY_EMITTED_KEY_HASH),
+                Value::Bytes(self.key_hash.to_vec()),
+            ),
+            (
+                Value::Int(KEY_EMITTED_OBSERVED_AT),
+                Value::Int(observed_at_i64),
+            ),
+        ]);
+        map.encode().map_err(|_| SigsumError::MalformedCacheRecord)
+    }
+
+    /// Decode from canonical-CBOR bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`SigsumError::MalformedCacheRecord`] for any CBOR / schema
+    /// structural error.
+    pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, SigsumError> {
+        let parsed: CiboriumValue =
+            ciborium::de::from_reader(bytes).map_err(|_| SigsumError::MalformedCacheRecord)?;
+        let CiboriumValue::Map(entries) = parsed else {
+            return Err(SigsumError::MalformedCacheRecord);
+        };
+        let mut message: Option<[u8; 32]> = None;
+        let mut signature: Option<[u8; 64]> = None;
+        let mut key_hash: Option<[u8; 32]> = None;
+        let mut observed_at: Option<u64> = None;
+        for (key, value) in entries {
+            let CiboriumValue::Integer(key_int_ciborium) = key else {
+                return Err(SigsumError::MalformedCacheRecord);
+            };
+            let key_int = i64::try_from(i128::from(key_int_ciborium))
+                .map_err(|_| SigsumError::MalformedCacheRecord)?;
+            match key_int {
+                KEY_EMITTED_MESSAGE => message = Some(bytes_to_array_32(value)?),
+                KEY_EMITTED_SIGNATURE => signature = Some(bytes_to_array_64(value)?),
+                KEY_EMITTED_KEY_HASH => key_hash = Some(bytes_to_array_32(value)?),
+                KEY_EMITTED_OBSERVED_AT => observed_at = Some(int_to_u64(&value)?),
+                _ => {} // forward-compat per D0006 §6.4
+            }
+        }
+        Ok(Self {
+            message: message.ok_or(SigsumError::MalformedCacheRecord)?,
+            signature: signature.ok_or(SigsumError::MalformedCacheRecord)?,
+            key_hash: key_hash.ok_or(SigsumError::MalformedCacheRecord)?,
+            observed_at: observed_at.ok_or(SigsumError::MalformedCacheRecord)?,
+        })
+    }
 }
 
 impl TreeHead {
@@ -378,6 +494,18 @@ fn bytes_to_array_32(value: CiboriumValue) -> Result<[u8; 32], SigsumError> {
     Ok(arr)
 }
 
+fn bytes_to_array_64(value: CiboriumValue) -> Result<[u8; 64], SigsumError> {
+    let CiboriumValue::Bytes(b) = value else {
+        return Err(SigsumError::MalformedCacheRecord);
+    };
+    if b.len() != 64 {
+        return Err(SigsumError::MalformedCacheRecord);
+    }
+    let mut arr = [0u8; 64];
+    arr.copy_from_slice(&b);
+    Ok(arr)
+}
+
 fn decode_cosignatures(value: CiboriumValue) -> Result<Vec<Cosignature>, SigsumError> {
     let CiboriumValue::Array(entries) = value else {
         return Err(SigsumError::MalformedCacheRecord);
@@ -538,5 +666,40 @@ mod tests {
             cache_record_id_for_leaf(&log_a, &leaf_a),
             cache_record_id_for_leaf(&log_b, &leaf_a)
         );
+    }
+
+    #[test]
+    fn emitted_leaf_round_trips_through_canonical_cbor() {
+        let original = EmittedLeaf {
+            message: [0x11u8; 32],
+            signature: [0x22u8; 64],
+            key_hash: [0x33u8; 32],
+            observed_at: 1_700_000_000,
+        };
+        let bytes = original.to_canonical_cbor().unwrap();
+        let decoded = EmittedLeaf::from_canonical_cbor(&bytes).unwrap();
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn emitted_leaf_tree_leaf_checksum_is_sha256_of_message() {
+        let emitted = EmittedLeaf {
+            message: [0x44u8; 32],
+            signature: [0x55u8; 64],
+            key_hash: [0x66u8; 32],
+            observed_at: 1,
+        };
+        let tree_leaf = emitted.tree_leaf();
+        let mut hasher = Sha256::new();
+        hasher.update([0x44u8; 32]);
+        let expected = hasher.finalize();
+        assert_eq!(tree_leaf.checksum, expected.as_slice());
+        assert_eq!(tree_leaf.signature, emitted.signature);
+        assert_eq!(tree_leaf.key_hash, emitted.key_hash);
+    }
+
+    #[test]
+    fn malformed_emitted_leaf_cbor_rejected() {
+        assert!(EmittedLeaf::from_canonical_cbor(b"\xFF\x00not-cbor").is_err());
     }
 }
