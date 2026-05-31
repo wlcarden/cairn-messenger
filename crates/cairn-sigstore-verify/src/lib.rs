@@ -72,13 +72,18 @@
 //!   feature; see D0024 §6.5 revision), checks the validity window vs
 //!   the Rekor-attested signing time, pins the OIDC `iss` + `email`,
 //!   and returns the developer's Ed25519 key for the manifest check.
+//! - [`client::SigstoreVerifier::verify_release`]: the end-to-end
+//!   offline orchestration (D0024 §6) — manifest decode → Fulcio +
+//!   OIDC → manifest `COSE_Sign1` verify → Rekor inclusion + checkpoint
+//!   → `prior_release_hash` rollback check. Validated end-to-end in
+//!   `tests/verify_release.rs`.
 //!
-//! The remaining surface ([`client::SigstoreVerifier::verify_release`])
-//! still returns [`SigstoreVerifyError::NetworkUnreached`] pending the
-//! end-to-end orchestration that composes Fulcio + manifest + Rekor +
-//! Sigsum per D0024 §6. The `integration-tests` cargo feature flag
-//! gates the eventual real-Rekor / real-Fulcio network-exercising
-//! tests.
+//! **One composition gap remains (D0024 §5):** `verify_release` does
+//! NOT yet perform the witness-cosigned Sigsum-anchored-release-log
+//! step — it depends on `cairn_sigsum_client::verify_inclusion`, still
+//! a `NetworkUnreached` stub. The composed `SigsumClient` is held for
+//! that step. The `integration-tests` cargo feature flag gates the
+//! eventual real-Rekor / real-Fulcio network-exercising tests.
 
 pub mod client;
 pub mod compose;

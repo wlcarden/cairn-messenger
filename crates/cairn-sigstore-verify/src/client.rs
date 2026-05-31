@@ -3,42 +3,40 @@
 
 //! Async `SigstoreVerifier` surface per D0024 §6.
 //!
-//! ## v1 skeleton status
+//! ## Status
 //!
-//! The struct + method signatures are defined per the D0024 §6 API.
-//! The orchestration body (`verify_release`) returns
-//! [`SigstoreVerifyError::NetworkUnreached`] pending the Fulcio +
-//! Rekor + composition bodies landing per D0024 §10. The
-//! constructor + configuration surface are real + tested.
+//! [`SigstoreVerifier::verify_release`] is **implemented** as the
+//! offline end-to-end orchestration (D0024 §6.4 bundle mode):
 //!
-//! What IS implemented + tested in the skeleton:
+//! 1. Decode the `ReleaseManifest` from the bundle's `COSE_Sign1`
+//!    envelope payload (D0024 §4).
+//! 2. Validate the Fulcio cert chain + OIDC `iss`/`email` pins
+//!    ([`crate::fulcio::validate_cert_chain`]) → developer Ed25519 key
+//!    (D0024 §1-§2).
+//! 3. Verify the manifest `COSE_Sign1` signature against that key
+//!    (D0024 §4).
+//! 4. Verify the Rekor inclusion proof + signed checkpoint
+//!    ([`crate::rekor::verify_rekor_inclusion`]) against the pinned
+//!    Rekor key (D0024 §3).
+//! 5. Enforce `prior_release_hash` rollback resistance (D0024 §4.2).
 //!
-//! - `SigstoreVerifier::new` constructor wiring the `reqwest::Client`,
-//!   the pinned Fulcio root + Rekor pubkey + OIDC identity config,
-//!   and the composed `cairn_sigsum_client::SigsumClient` per D0024
-//!   §5.
-//! - `SigstoreVerifierConfig` builder pattern.
-//! - `RetryBudget` re-export from `cairn_sigsum_client` per
-//!   D0024 §6.3 ("same RetryBudget type as D0023 §5.3").
+//! The online Rekor fetch ([`SigstoreVerifier::fetch_rekor_bundle`] /
+//! [`SigstoreVerifier::fetch_and_verify_rekor`]) is also implemented.
 //!
-//! When the verify body lands, the flow is:
-//!
-//! 1. Decode the `ReleaseManifest` from the bundle's manifest bytes.
-//! 2. Validate the Fulcio cert chain + OIDC claims per D0024 §1-§2.
-//! 3. Verify the Rekor inclusion proof + signed checkpoint per
-//!    D0024 §3.
-//! 4. Verify the `COSE_Sign1` manifest signature against the
-//!    Fulcio-issued public key per D0024 §4.
-//! 5. Compose with `cairn-sigsum-client` to verify the Sigsum
-//!    witness-cosigned release-log entry per D0024 §5.
-//! 6. Check `prior_release_hash` against the caller-supplied
-//!    expected predecessor per D0024 §4.2.
+//! **One gap remains (D0024 §5):** the witness-cosigned
+//! Sigsum-anchored-release-log composition step is NOT wired into
+//! `verify_release` — it depends on
+//! `cairn_sigsum_client::SigsumClient::verify_inclusion`, still a
+//! `NetworkUnreached` stub. The composed [`SigsumClient`] is held for
+//! that step; it lands when `verify_inclusion` does.
 
+use cairn_envelope::cose_sign1::CoseSign1;
 use cairn_sigsum_client::{RetryBudget, SigsumClient};
 use url::Url;
 
 use crate::error::SigstoreVerifyError;
-use crate::manifest::ReleaseManifest;
+use crate::fulcio::validate_cert_chain;
+use crate::manifest::{RELEASE_MANIFEST_AAD, ReleaseManifest};
 use crate::rekor::{RekorBundle, RekorCheckpoint, parse_rekor_log_entry, verify_rekor_inclusion};
 
 /// Configuration bundle for constructing a [`SigstoreVerifier`].
@@ -188,27 +186,89 @@ impl SigstoreVerifier {
 
     /// Verify a release bundle end-to-end per D0024 §6.
     ///
-    /// v1 skeleton: returns [`SigstoreVerifyError::NetworkUnreached`]
-    /// pending Fulcio + Rekor + composition bodies landing.
+    /// Composes the layered verification over a self-contained
+    /// [`ReleaseBundle`] (offline mode, D0024 §6.4):
+    ///
+    /// 1. Decode the [`ReleaseManifest`] from the bundle's `COSE_Sign1`
+    ///    envelope payload.
+    /// 2. Validate the Fulcio cert chain + OIDC pins
+    ///    ([`validate_cert_chain`]), yielding the developer's Ed25519
+    ///    signing key.
+    /// 3. Verify the manifest `COSE_Sign1` signature against that key
+    ///    (external AAD [`RELEASE_MANIFEST_AAD`]).
+    /// 4. Verify the Rekor inclusion proof + signed checkpoint
+    ///    ([`verify_rekor_inclusion`]) against the pinned Rekor key.
+    /// 5. Enforce rollback resistance: the manifest's
+    ///    `prior_release_hash` must equal `expected_predecessor_hash`
+    ///    when supplied (D0024 §4.2).
+    ///
+    /// # Sigsum composition gap (D0024 §5)
+    ///
+    /// The witness-cosigned Sigsum-anchored-release-log step (§5) is
+    /// NOT performed here: it depends on
+    /// `cairn_sigsum_client::SigsumClient::verify_inclusion`, which is
+    /// still a `NetworkUnreached` stub. It is intentionally left
+    /// unwired (not faked) until that surface lands; the composed
+    /// [`SigsumClient`] is held in the verifier for that step.
     ///
     /// # Errors
     ///
-    /// - [`SigstoreVerifyError::NetworkUnreached`] (skeleton only)
-    /// - When the body lands: any
-    ///   [`SigstoreVerifyError`] variant the layered verification
-    ///   can surface (Fulcio chain failure, OIDC claim mismatch,
-    ///   Rekor proof failure, manifest decode failure, Sigsum
-    ///   release-log failure, predecessor mismatch).
+    /// Any [`SigstoreVerifyError`] the layers surface:
+    /// [`SigstoreVerifyError::ManifestDecodeFailed`],
+    /// [`SigstoreVerifyError::FulcioChainInvalid`] /
+    /// [`SigstoreVerifyError::FulcioCertExpiredAtSigningTime`] /
+    /// [`SigstoreVerifyError::OidcIssuerMismatch`] /
+    /// [`SigstoreVerifyError::OidcEmailMismatch`],
+    /// [`SigstoreVerifyError::ManifestSignatureVerifyFailed`],
+    /// [`SigstoreVerifyError::RekorInclusionProofVerifyFailed`] /
+    /// [`SigstoreVerifyError::RekorCheckpointVerifyFailed`],
+    /// [`SigstoreVerifyError::ManifestPriorHashMismatch`].
     #[allow(
         clippy::unused_async,
-        reason = "v1 skeleton; orchestration body lands with the integration-tests gate per D0024 §10"
+        reason = "offline-bundle verification is synchronous; async is retained per the D0024 §6 surface for the online-fetch composition + the gated Sigsum step"
     )]
     pub async fn verify_release(
         &self,
-        _bundle: &ReleaseBundle,
-        _expected_predecessor_hash: Option<[u8; 32]>,
+        bundle: &ReleaseBundle,
+        expected_predecessor_hash: Option<[u8; 32]>,
     ) -> Result<VerifiedRelease, SigstoreVerifyError> {
-        Err(SigstoreVerifyError::NetworkUnreached)
+        // (1) Decode the manifest from the COSE_Sign1 envelope payload.
+        let envelope = CoseSign1::from_bytes(&bundle.manifest_envelope_bytes)
+            .map_err(|_| SigstoreVerifyError::ManifestDecodeFailed)?;
+        let payload = envelope
+            .payload()
+            .ok_or(SigstoreVerifyError::ManifestDecodeFailed)?;
+        let manifest = ReleaseManifest::from_canonical_cbor(payload)?;
+
+        // (2) Fulcio cert chain + OIDC pins -> developer Ed25519 key.
+        let dev_key = validate_cert_chain(
+            &bundle.fulcio_cert_der,
+            &self.fulcio_root_pem,
+            &self.expected_oidc_issuer,
+            &self.expected_oidc_email,
+            bundle.rekor_signing_time_unix,
+        )?;
+
+        // (3) Manifest signature against the Fulcio-bound developer key.
+        envelope
+            .verify(&dev_key, RELEASE_MANIFEST_AAD)
+            .map_err(|_| SigstoreVerifyError::ManifestSignatureVerifyFailed)?;
+
+        // (4) Rekor inclusion proof + signed checkpoint (offline, against
+        // the pinned Rekor key).
+        verify_rekor_inclusion(&bundle.rekor_bundle, &self.rekor_pubkey_pem)?;
+
+        // (5) Rollback resistance (D0024 §4.2).
+        if let Some(expected) = expected_predecessor_hash {
+            if manifest.prior_release_hash.as_slice() != expected.as_slice() {
+                return Err(SigstoreVerifyError::ManifestPriorHashMismatch);
+            }
+        }
+
+        // (§5) Sigsum-anchored-release-log composition is intentionally
+        // NOT performed — see the doc comment's "Sigsum composition gap".
+
+        Ok(VerifiedRelease { manifest })
     }
 
     /// Fetch a Rekor log entry (online mode per D0024 §6.4) and parse it
@@ -412,19 +472,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn verify_release_returns_network_unreached_in_skeleton() {
+    async fn verify_release_rejects_malformed_manifest_envelope() {
+        // The placeholder bundle's manifest bytes are not a valid
+        // COSE_Sign1, so verify_release fails at the first (decode) gate.
+        // The full happy-path + per-layer failure composition is covered
+        // end-to-end in tests/verify_release.rs (it needs rcgen certs +
+        // a cairn-crypto-signed manifest + a valid Rekor bundle).
         let verifier = make_verifier();
         let bundle = make_release_bundle();
         let result = verifier.verify_release(&bundle, None).await;
-        assert!(matches!(result, Err(SigstoreVerifyError::NetworkUnreached)));
-    }
-
-    #[tokio::test]
-    async fn verify_release_with_expected_predecessor_returns_network_unreached_in_skeleton() {
-        let verifier = make_verifier();
-        let bundle = make_release_bundle();
-        let predecessor = [0xFFu8; 32];
-        let result = verifier.verify_release(&bundle, Some(predecessor)).await;
-        assert!(matches!(result, Err(SigstoreVerifyError::NetworkUnreached)));
+        assert!(matches!(
+            result,
+            Err(SigstoreVerifyError::ManifestDecodeFailed)
+        ));
     }
 }

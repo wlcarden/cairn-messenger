@@ -49,6 +49,18 @@ const KEY_ARTIFACT_SHA256: i64 = 2;
 /// Length of every SHA-256 digest the manifest carries. 32 bytes.
 pub const SHA256_LEN: usize = 32;
 
+/// COSE_Sign1 external AAD domain for the release manifest envelope.
+///
+/// _[Added 2026-05-31]_ D0024 §4 specifies the manifest is signed via
+/// `COSE_Sign1` but does not name an external AAD. Per the D0006 §8
+/// AAD-domain-separation discipline (every Cairn envelope type binds a
+/// distinct AAD so a signature over one envelope type cannot be replayed
+/// as another), the release manifest uses this domain. The release
+/// signing pipeline (out of scope per D0024 §8) MUST sign with this AAD;
+/// [`crate::client::SigstoreVerifier::verify_release`] verifies against
+/// it.
+pub const RELEASE_MANIFEST_AAD: &[u8] = b"cairn-v1-release-manifest";
+
 /// One artifact's name + SHA-256 binding, as enumerated by
 /// [`ReleaseManifest::artifact_sha256`] per D0024 §4.1 key 2.
 ///
