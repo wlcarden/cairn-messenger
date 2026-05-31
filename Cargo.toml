@@ -141,6 +141,20 @@ serde = { version = "=1.0.215", features = ["derive"] }
 serde_json = "=1.0.133"
 toml = "=0.8.23"
 
+# === Sigstore release verification (D0024 §6.5) ===
+# ECDSA P-256 verify-only, for the Rekor signed-checkpoint verification
+# per D0024 §3 (REVISED 2026-05-30: the public rekor.sigstore.dev log
+# signs its C2SP checkpoint with ECDSA P-256, not Ed25519 as the
+# original D0024 §3.2 stated — cairn-crypto has no P-256, so this is a
+# deliberate new audited curve in the verify-only trust path).
+# default-features = false keeps it to the curve arithmetic + ECDSA
+# verify + PEM/SPKI public-key parsing; no signing, no ECDH, no JWK.
+# Pure-Rust (RustCrypto) per the workspace pure-Rust discipline.
+p256 = { version = "=0.13.2", default-features = false, features = [
+    "ecdsa",
+    "pem",
+] }
+
 # === FFI boundary (D0020 §3 + D0027) ===
 # UniFFI for the Kotlin<->Rust boundary per D0020 §3.1, pinned exact
 # per D0020 §3.11. The `tokio` feature enables async exports

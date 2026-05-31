@@ -38,6 +38,15 @@ cairn-sigsum-client = { path = "../cairn-sigsum-client" }
 # === SHA-256 for the release-leaf-hash + build-provenance digests per D0024 §4-§5 ===
 sha2 = { workspace = true }
 
+# === ECDSA P-256 verify for the Rekor signed-checkpoint per D0024 §3
+# (revised 2026-05-30: public Rekor signs with ECDSA P-256, not the
+# Ed25519 the original §3.2 assumed). Verify-only; no signing. ===
+p256 = { workspace = true }
+
+# === base64 (std) for the C2SP checkpoint note's root-hash line per
+# D0024 §3 / c2sp.org/tlog-checkpoint ===
+base64 = { workspace = true }
+
 # === Async runtime + HTTPS (D0024 §6) ===
 reqwest = { workspace = true }
 tokio = { workspace = true }

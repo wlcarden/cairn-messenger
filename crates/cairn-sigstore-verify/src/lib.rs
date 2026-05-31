@@ -48,7 +48,7 @@
 //! - [`client`] — the `SigstoreVerifier` async surface per D0024 §6.
 //! - [`error`] — typed error enum per D0018 §4.2 + D0024 §7.
 //!
-//! ## Implementation status (v1 skeleton)
+//! ## Implementation status
 //!
 //! The load-bearing primitives are implemented + tested:
 //!
@@ -59,15 +59,19 @@
 //! - `SigstoreVerifier` constructor + config + retry-budget
 //!   accessor
 //! - Typed `SigstoreVerifyError` surface per D0024 §7
+//! - [`rekor::verify_rekor_inclusion`]: the full offline Rekor
+//!   verifier — RFC 6962 inclusion proof + C2SP signed-checkpoint
+//!   ECDSA P-256 verify against the pinned Rekor key per D0024 §3
+//!   (revised 2026-05-30: ECDSA, not Ed25519). Pure crypto, no
+//!   network; exhaustively unit-tested.
 //!
-//! The network-bound surfaces ([`fulcio::validate_cert_chain`],
-//! [`rekor::verify_rekor_inclusion`],
-//! [`client::SigstoreVerifier::verify_release`]) are present as
-//! function / method signatures but their bodies return
-//! [`SigstoreVerifyError::NetworkUnreached`] pending integration
-//! testing per D0024 §10. The `integration-tests` cargo feature
-//! flag gates the eventual network-exercising tests; v1 skeleton
-//! ships without them.
+//! The remaining network/orchestration surfaces
+//! ([`fulcio::validate_cert_chain`],
+//! [`client::SigstoreVerifier::verify_release`]) still return
+//! [`SigstoreVerifyError::NetworkUnreached`] pending the Fulcio
+//! cert-chain body + the end-to-end orchestration per D0024 §10. The
+//! `integration-tests` cargo feature flag gates the eventual
+//! real-Rekor / real-Fulcio network-exercising tests.
 
 pub mod client;
 pub mod compose;
@@ -82,4 +86,4 @@ pub use compose::release_leaf_hash_for_envelope_bytes;
 pub use error::SigstoreVerifyError;
 pub use fulcio::validate_cert_chain;
 pub use manifest::{ArtifactHash, ReleaseManifest, SHA256_LEN};
-pub use rekor::{RekorBundle, verify_rekor_inclusion};
+pub use rekor::{RekorBundle, RekorCheckpoint, verify_rekor_inclusion};

@@ -1,7 +1,37 @@
 # D0024 — cairn-sigstore-verify: release-artifact identity verification + Rekor inclusion + Sigsum-anchored release log composition
 
-**Status:** Accepted
+**Status:** Accepted (Rekor checkpoint algorithm revised 2026-05-30)
 **Date:** 2026-05-29
+
+> **Revision 2026-05-30 — Rekor checkpoint is ECDSA P-256, not Ed25519.**
+> The original §3.2 stated the Rekor checkpoint verify was "Merkle path
+>
+> - Ed25519 verify," and the skeleton implied reuse of `cairn-crypto`
+>   (Ed25519-only). The public `rekor.sigstore.dev` log signs its
+>   [C2SP tlog-checkpoint](https://c2sp.org/tlog-checkpoint)
+>   [signed note](https://c2sp.org/signed-note) with an **ECDSA P-256**
+>   key (signature type `0x02`). An Ed25519 verifier would compile and
+>   pass its own tests but never verify a real Rekor checkpoint.
+>
+> **Correction (now implemented + tested):**
+>
+> - The Rekor checkpoint signature is verified with **ECDSA P-256**
+>   (new verify-only `p256` workspace pin per the revised §6.5), not
+>   Ed25519. `cairn-crypto` has no P-256, so this is a deliberate new
+>   audited curve in the verify-only trust path.
+> - The checkpoint is a C2SP signed note: the signed body is
+>   `origin\n` + `<tree_size>\n` + `<base64(root_hash)>\n`; the tree
+>   size + root hash used for the inclusion proof are parsed out of the
+>   **signature-verified** note bytes (not a separate unsigned field).
+> - `RekorBundle` is corrected to carry the exact signed `checkpoint_note`
+>   bytes + the DER ECDSA signature (the original skeleton carried a bare
+>   signature with no signed body, which cannot verify).
+> - The RFC 6962 inclusion proof (Merkle path, `0x00`/`0x01` domain
+>   prefixes) is unchanged and dependency-free.
+>
+> §1 (OIDC pins), §2 (Fulcio root), §4 (manifest schema), §5 (Sigsum
+> composition), §7 (error surface) are **unchanged**. Corrected claims
+> are marked inline with `[Revised 2026-05-30]`.
 
 ## Context
 
@@ -100,7 +130,7 @@ A Fulcio infrastructure compromise that issues a malicious certificate signed by
 The verifier performs two Rekor checks per release:
 
 1. **Inclusion proof.** The Rekor entry's Merkle inclusion proof must verify against the signed Rekor checkpoint that was current at the time the bundled proof was captured.
-2. **Signed checkpoint verify.** The Rekor checkpoint must verify against a pinned Rekor public key (bundled with the release, same posture as the Fulcio root).
+2. **Signed checkpoint verify.** The Rekor checkpoint must verify against a pinned Rekor public key (bundled with the release, same posture as the Fulcio root). _[Revised 2026-05-30]_ The checkpoint is a C2SP [tlog-checkpoint](https://c2sp.org/tlog-checkpoint) signed note whose body is `origin\n<tree_size>\n<base64(root_hash)>\n`; the public Rekor log signs it with **ECDSA P-256** (signed-note signature type `0x02`), so the verify uses the `p256` crate, NOT Ed25519. The tree size + root hash for the inclusion check (item 1) are parsed out of the signature-verified note body, never from a separate unsigned field.
 
 The inclusion proof and the signed checkpoint both ship as bundled release artifacts alongside the APK (per §6.4).
 
@@ -108,7 +138,7 @@ The inclusion proof and the signed checkpoint both ship as bundled release artif
 
 Three properties matter:
 
-1. **Project-owned verifier on the verify path.** Per the same logic as D0023 §3.1's project-owned witness verification: the verify path stays Rust-only, no `sigstore-rs` shim in the security-critical surface. The Rust verify code is small (Merkle path + Ed25519 verify) and audit-friendly. `sigstore-rs` may be consumed at the signing-side / build-pipeline tooling, but not on the verifier.
+1. **Project-owned verifier on the verify path.** Per the same logic as D0023 §3.1's project-owned witness verification: the verify path stays Rust-only, no `sigstore-rs` shim in the security-critical surface. The Rust verify code is small (RFC 6962 Merkle path + ECDSA P-256 signed-note verify — _[Revised 2026-05-30]_, originally mis-stated as Ed25519) and audit-friendly. `sigstore-rs` may be consumed at the signing-side / build-pipeline tooling, but not on the verifier.
 2. **Pinned Rekor public key excludes runtime trust-root resolution.** Same rationale as §2.2: a coordinated release picks up Rekor key rotation explicitly.
 3. **Inclusion + checkpoint together prove log placement.** Either alone is insufficient. The inclusion proof alone proves the entry is in the log at some position; the signed checkpoint proves the log itself is the one Rekor signed; the combination proves "this entry is at position N in the log Rekor attests has at least N+1 entries at this root hash."
 
@@ -259,18 +289,32 @@ The verify path is the same in both modes; the difference is whether the bundle 
 
 ### 6.5 Workspace pin additions
 
-This decision adds one workspace dependency pin:
+This decision adds two workspace dependency pins. _[Revised 2026-05-30:
+the `p256` pin below was added; the original draft listed only
+`x509-parser`.]_
 
 ```toml
-# === X.509 cert parsing for Fulcio (D0024) ===
-# Project-owned cert-chain validation per D0024 §2; pinned to a
+# === ECDSA P-256 verify for the Rekor signed-checkpoint (D0024 §3) ===
+# Verify-only ECDSA P-256 for the C2SP signed-note Rekor checkpoint.
+# default-features = false keeps it to curve arithmetic + ECDSA verify
+# + PEM/SPKI public-key parsing; no signing, no ECDH, no JWK. Pure-Rust
+# (RustCrypto). LANDED 2026-05-30 with the offline Rekor verifier.
+p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa", "pem"] }
+
+# === X.509 cert parsing for Fulcio (D0024 §2) ===
+# Project-owned cert-chain validation; pinned to a
 # `default-features = false` build with explicit feature selection
 # (verify, parsing) and no networking. Pure-Rust per the workspace
-# pure-Rust discipline.
+# pure-Rust discipline. DEFERRED until the Fulcio cert-chain body lands.
 x509-parser = { version = "=0.16.0", default-features = false, features = ["verify"] }
 ```
 
-The version pin is exact per D0018 §1; rationale and audit posture per D0021's pin-audit cycle.
+The `p256` pin also pulls a `base64` dependency (already a workspace
+pin from D0023) for the checkpoint note's base64 root-hash line. The
+version pins are exact per D0018 §1; rationale and audit posture per
+D0021's pin-audit cycle. Note `p256` introduces a NIST curve into the
+verify-only trust path — an audited addition, justified by the public
+Rekor log's ECDSA P-256 checkpoint key (the revision note at the top).
 
 ---
 
@@ -358,14 +402,14 @@ The decisions in this document are mostly reversible:
 
 This D-doc is accepted. The matching `cairn-sigstore-verify` crate skeleton + Rekor-verify implementation land as separate commits consuming D0024. Implementation order:
 
-1. `cairn-sigstore-verify/src/{lib,manifest,error}.rs` — pure data + schema with no I/O.
-2. `cairn-sigstore-verify/src/fulcio.rs` — cert-chain validation against the pinned root.
-3. `cairn-sigstore-verify/src/rekor.rs` — inclusion proof + signed checkpoint verify.
-4. `cairn-sigstore-verify/src/compose.rs` — composition with `cairn-sigsum-client` per §5.
-5. `cairn-sigstore-verify/src/client.rs` — async `SigstoreVerifier` handle wrapping the steps above.
-6. Workspace pin addition per §6.5: `x509-parser`.
-7. CLI integration in `cairn-cli`: `verify-release` subcommand for end-to-end demo.
-8. Integration testing: a wiremock-based mock Rekor for unit tests; opt-in real-Rekor test gated behind `--features integration-tests` so CI does not depend on external network availability (same pattern as D0023 §10).
+1. ✅ `cairn-sigstore-verify/src/{lib,manifest,error}.rs` — pure data + schema with no I/O. **Landed** (skeleton).
+2. `cairn-sigstore-verify/src/fulcio.rs` — cert-chain validation against the pinned root. _Stubbed (`NetworkUnreached`); pending the `x509-parser` body._
+3. ✅ `cairn-sigstore-verify/src/rekor.rs` — inclusion proof + signed checkpoint verify. **Landed 2026-05-30**: RFC 6962 inclusion + C2SP signed-note ECDSA P-256 checkpoint verify, offline + exhaustively unit-tested.
+4. ✅ `cairn-sigstore-verify/src/compose.rs` — composition with `cairn-sigsum-client` per §5. **Landed** (skeleton).
+5. `cairn-sigstore-verify/src/client.rs` — async `SigstoreVerifier` handle wrapping the steps above. _Constructor + config landed; `verify_release` orchestration stubbed pending the Fulcio body + online fetch._
+6. Workspace pin additions per §6.5: ✅ `p256` **landed 2026-05-30** (Rekor checkpoint); `x509-parser` deferred (Fulcio body).
+7. CLI integration in `cairn-cli`: `verify-release` subcommand for end-to-end demo. _Pending._
+8. Integration testing: a wiremock-based mock Rekor for the online-fetch path; opt-in real-Rekor test gated behind `--features integration-tests` so CI does not depend on external network availability (same pattern as D0023 §10). _The offline verifier (step 3) is tested directly without wiremock (it is pure crypto); the wiremock harness covers the online fetch + JSON/signed-note parsing, pending the fetch path._
 
 The release-pipeline side (CI signing, Rekor posting, Sigsum emission) is operational and lives outside this crate; it lands separately as a release-pipeline runbook.
 

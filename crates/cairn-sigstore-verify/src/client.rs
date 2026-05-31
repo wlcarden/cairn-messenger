@@ -285,9 +285,8 @@ mod tests {
             rekor_bundle: RekorBundle {
                 leaf_hash: [0xCC; 32],
                 leaf_index: 100,
-                tree_size: 1024,
-                checkpoint_root_hash: [0xDD; 32],
                 proof_nodes: vec![[0x11; 32]],
+                checkpoint_note: b"rekor.example/test\n1024\nAAAA\n".to_vec(),
                 checkpoint_signature: vec![0xEE; 64],
             },
             rekor_signing_time_unix: 1_700_000_000,
