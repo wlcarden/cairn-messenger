@@ -254,8 +254,10 @@ mod tests {
         let storage = Arc::new(Storage::open_in_memory(&provider, &passphrase).unwrap());
         let toml = make_witness_pool_toml(3);
         let pool = parse_witness_pool(&toml).unwrap();
+        let log_pubkey = SigningKey::generate(&mut OsRng).verifying_key();
         let config = SigsumClientConfig {
             log_url: Url::parse("https://log.example.org").unwrap(),
+            log_pubkey,
             witness_pool: pool,
             default_retry_budget: RetryBudget::default(),
         };

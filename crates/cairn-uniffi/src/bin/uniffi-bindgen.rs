@@ -21,7 +21,14 @@ fn main() {
     uniffi::uniffi_bindgen_main();
 }
 
+// The stub main is a CLI entrypoint that runs BEFORE any log/tracing
+// subscriber is initialized, so stderr is the only correct channel for
+// this feature-gate misuse hint — the D0018 §4.3 "use log/tracing"
+// policy (enforced via clippy.toml `disallowed-macros`) targets library
+// code, not a binary's pre-init error path. The `print_stderr` / `exit`
+// denials are likewise allowed here for the same reason.
 #[cfg(not(feature = "uniffi-bindings"))]
+#[allow(clippy::print_stderr, clippy::exit, clippy::disallowed_macros)]
 fn main() {
     eprintln!(
         "cairn-uniffi: uniffi-bindgen requires the `uniffi-bindings` feature.\n\

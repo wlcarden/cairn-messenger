@@ -46,24 +46,31 @@
 //!   D0023 §6.2 (same dependency-direction rationale as `emit`).
 //! - [`error`] — typed error enum per D0018 §4.2 + D0023 §7.
 //!
-//! ## Implementation status (v1 skeleton)
+//! ## Implementation status
 //!
 //! The load-bearing primitives are implemented + tested:
 //!
 //! - Leaf hash composition (pure SHA-256 of envelope signature bytes)
 //! - Witness pool parsing + Ed25519 cosignature verification against
-//!   the Sigsum-spec'd signing input
+//!   the C2SP `tlog-cosignature/v1` signed message (per the corrected
+//!   D0023 §3.1 wire format; revision 2026-05-30)
 //! - Cache state schema (canonical-CBOR per D0022 §2.4 storage
 //!   semantics)
 //! - Threshold check (2-of-3 acceptance) per D0023 §3.4
 //! - Typed error surface per D0023 §7
 //!
-//! The network-bound surfaces (`SigsumClient::emit_leaf`,
-//! `verify_inclusion`, `refresh_tree_head`) are present as method
-//! signatures but their bodies return [`SigsumError::NetworkUnreached`]
-//! pending integration testing against a real Sigsum log endpoint per
-//! D0023 §10. The `integration-tests` cargo feature flag gates the
-//! eventual network-exercising tests; v1 skeleton ships without them.
+//! [`SigsumClient::refresh_tree_head`] is implemented end-to-end: a
+//! real `get-tree-head` fetch, log-signature verification, the 2-of-3
+//! cosignature threshold, split-view detection, and a cache write. It
+//! is validated by the hermetic wiremock harness in
+//! `tests/refresh_tree_head_wiremock.rs`.
+//!
+//! [`SigsumClient::emit_leaf`] + [`SigsumClient::verify_inclusion`]
+//! still return [`SigsumError::NetworkUnreached`] pending their
+//! `add-leaf` + inclusion-proof bodies per D0023 §10. The
+//! `integration-tests` cargo feature flag gates the eventual
+//! real-Sigsum network-exercising tests (the wiremock harness above
+//! runs without it).
 
 pub mod cache;
 pub mod client;

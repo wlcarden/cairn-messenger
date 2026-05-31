@@ -1,7 +1,40 @@
 # D0023 — cairn-sigsum-client: commitment-only logging + witness-cosignature verification
 
-**Status:** Accepted
+**Status:** Accepted (wire format revised 2026-05-30)
 **Date:** 2026-05-29
+
+> **Revision 2026-05-30 — cosignature wire format corrected.**
+> The original §2.3 / §3.1 / §3.2 / §3.4 / §5.2 described the witness
+> cosignature as an Ed25519 signature over a fixed 48-byte binary
+> concatenation `tree_size ‖ root_hash ‖ timestamp`, fetched from a
+> separate `get-cosignatures` endpoint. **That is not the Sigsum v1 wire
+> format and would never have interoperated with a real witness.** The
+> error was internally self-consistent (it verified what it produced),
+> so it survived until the cosignature-verification code + the
+> `refresh_tree_head` wiremock harness were written against the actual
+> [Sigsum v1 log spec](https://git.glasklar.is/sigsum/project/documentation/-/blob/main/log.md)
+> and [C2SP `tlog-cosignature/v1`](https://c2sp.org/tlog-cosignature).
+>
+> **Corrected format (now implemented + harness-validated):**
+>
+> - The log's `get-tree-head` response is **ASCII**, not binary, and
+>   **embeds** the witness cosignatures inline as `cosignature=<keyhash>
+<timestamp> <sig>` lines — there is no separate per-witness fetch.
+> - The **log** signs the checkpoint note:
+>   `sigsum.org/v1/tree/<hex(SHA-256(log_pubkey))>\n` + `<tree_size>\n` +
+>   `<base64(root_hash)>\n`.
+> - Each **witness** signs the C2SP `tlog-cosignature/v1` message:
+>   `cosignature/v1\n` + `time <posix_seconds>\n` + the checkpoint note
+>   above. The per-cosignature timestamp is part of the signed bytes and
+>   is therefore cached (D0023 §4.1) so a cached cosignature can be
+>   re-verified.
+> - A witness is identified by its 4-byte C2SP key id
+>   `SHA-256(name ‖ "\n" ‖ 0x04 ‖ pubkey)[:4]`.
+>
+> Everything else in this decision (§1 leaf hash, §2.1–2.2 transport
+> pin, §4 cache schema, §6 trust-graph integration, §7 split-view) is
+> **unchanged**. The corrected claims are marked inline below with
+> `[Revised 2026-05-30]`.
 
 ## Context
 
@@ -21,21 +54,21 @@ This decision does NOT specify witness pool recruitment, witness count, or witne
 
 ## Decision summary
 
-| Concern                              | Decision                                                                                                                                                                                                  | Rationale link |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
-| **Leaf hash**                        | `SHA-256( COSE_Sign1.signature_bytes( signed_op ) )` — same byte-input as D0006 §5's `prior_hash`                                                                                                         | §1             |
-| **HTTPS transport**                  | `reqwest = "=0.12.x"` with `default-features = false, features = ["rustls-tls", "json"]` — no `native-tls`, no `cookies`, no system DNS leaks                                                             | §2             |
-| **HTTP request body**                | Submit-leaf via Sigsum's documented `add-leaf` endpoint with the rfc6962-compatible request format                                                                                                        | §2             |
-| **Witness-cosignature verification** | Project-owned per-witness Ed25519 verify against the witness pool config; no `sigsum-go` shim                                                                                                             | §3             |
-| **Witness pool config**              | Static `witnesses.toml` shipped with the release; each entry: `name`, `pubkey_hex`, `url`. Pool changes require a release                                                                                 | §3             |
-| **Acceptance threshold**             | 2-of-3 cosignatures over the same `tree_size`+`root_hash`+`timestamp` triple, with all three witnesses configured. Smaller pools (1 or 2 active) fail verification per D0015                              | §3             |
-| **Log-head cache**                   | Latest signed `tree_head` per log endpoint, cached in `SIGSUM_CACHE` category; consistency proofs gated on monotonic `tree_size`                                                                          | §4             |
-| **Leaf cache**                       | Per-op `(leaf_hash, inclusion_proof, observed_at)` cached in `SIGSUM_CACHE`. Re-verification skips network if cached proof matches current log head                                                       | §4             |
-| **Async surface**                    | The `SigsumClient` exposes `async fn` methods. The crate is the first to depend on `tokio = "=1.51.x"` LTS per D0018 §6                                                                                   | §5             |
-| **Cancel safety**                    | All network operations are wrapped in `spawn_blocking` for the verification phase; the `add-leaf` POST is naturally restart-safe (Sigsum is idempotent on identical leaf hashes)                          | §5             |
-| **Retry policy**                     | Exponential backoff capped at 60s; max 5 retries for `add-leaf`; max 3 retries for proof fetches. Each call carries a `RetryBudget` the caller can scope                                                  | §5             |
-| **Trust-graph integration**          | A new `cairn-trust-graph::sigsum_emit` module wraps `store_signed_op` so storage + Sigsum emission are colocated. Verification happens at chain-walk time via `verify_chain_links` extension              | §6             |
-| **Split-view detection**             | The cache compares each new log head against the previous one; split-view (two log heads with the same `tree_size` but different `root_hash`) surfaces as a typed error and halts subsequent verification | §7             |
+| Concern                              | Decision                                                                                                                                                                                                                                                                    | Rationale link |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
+| **Leaf hash**                        | `SHA-256( COSE_Sign1.signature_bytes( signed_op ) )` — same byte-input as D0006 §5's `prior_hash`                                                                                                                                                                           | §1             |
+| **HTTPS transport**                  | `reqwest = "=0.12.x"` with `default-features = false, features = ["rustls-tls", "json"]` — no `native-tls`, no `cookies`, no system DNS leaks                                                                                                                               | §2             |
+| **HTTP request body**                | Submit-leaf via Sigsum's documented `add-leaf` endpoint with the rfc6962-compatible request format                                                                                                                                                                          | §2             |
+| **Witness-cosignature verification** | Project-owned per-witness Ed25519 verify against the witness pool config; no `sigsum-go` shim                                                                                                                                                                               | §3             |
+| **Witness pool config**              | Static `witnesses.toml` shipped with the release; each entry: `name`, `pubkey_hex`, `url`. Pool changes require a release                                                                                                                                                   | §3             |
+| **Acceptance threshold**             | 2-of-3 witness cosignatures over the C2SP `tlog-cosignature/v1` signed message (which binds `tree_size` + `root_hash` + per-cosignature `timestamp`), with all three witnesses configured. Smaller pools (1 or 2 active) fail verification per D0015 _[Revised 2026-05-30]_ | §3             |
+| **Log-head cache**                   | Latest signed `tree_head` per log endpoint, cached in `SIGSUM_CACHE` category; consistency proofs gated on monotonic `tree_size`                                                                                                                                            | §4             |
+| **Leaf cache**                       | Per-op `(leaf_hash, inclusion_proof, observed_at)` cached in `SIGSUM_CACHE`. Re-verification skips network if cached proof matches current log head                                                                                                                         | §4             |
+| **Async surface**                    | The `SigsumClient` exposes `async fn` methods. The crate is the first to depend on `tokio = "=1.51.x"` LTS per D0018 §6                                                                                                                                                     | §5             |
+| **Cancel safety**                    | All network operations are wrapped in `spawn_blocking` for the verification phase; the `add-leaf` POST is naturally restart-safe (Sigsum is idempotent on identical leaf hashes)                                                                                            | §5             |
+| **Retry policy**                     | Exponential backoff capped at 60s; max 5 retries for `add-leaf`; max 3 retries for proof fetches. Each call carries a `RetryBudget` the caller can scope                                                                                                                    | §5             |
+| **Trust-graph integration**          | A new `cairn-trust-graph::sigsum_emit` module wraps `store_signed_op` so storage + Sigsum emission are colocated. Verification happens at chain-walk time via `verify_chain_links` extension                                                                                | §6             |
+| **Split-view detection**             | The cache compares each new log head against the previous one; split-view (two log heads with the same `tree_size` but different `root_hash`) surfaces as a typed error and halts subsequent verification                                                                   | §7             |
 
 ---
 
@@ -99,11 +132,13 @@ Kept feature:
 Per Sigsum's documented HTTP API (https://www.sigsum.org/docs/api/):
 
 - **Submit leaf**: `POST <log_url>/add-leaf`, body = the rfc6962 leaf format (signed by the submitter's key — Cairn's operational identity).
-- **Get latest tree head**: `GET <log_url>/get-tree-head`
+- **Get latest tree head**: `GET <log_url>/get-tree-head`. _[Revised 2026-05-30]_ The response is an ASCII key/value body (`size=`, `root_hash=`hex, `signature=`hex) and **embeds** the witness cosignatures inline as zero or more `cosignature=<keyhash_hex> <timestamp> <sig_hex>` lines. There is no separate cosignature fetch.
 - **Get inclusion proof**: `GET <log_url>/get-inclusion-proof?leaf_hash=…&size=…`
-- **Get cosignatures**: `GET <log_url>/get-cosignatures?size=…`
 
-Each request carries the `Accept: application/octet-stream` header per the Sigsum spec.
+_[Revised 2026-05-30]_ The original draft listed a separate `GET
+<log_url>/get-cosignatures?size=…` endpoint; that endpoint does not
+exist in the Sigsum v1 log API. Cosignatures arrive embedded in the
+`get-tree-head` response per the corrected bullet above.
 
 ---
 
@@ -114,17 +149,28 @@ Each request carries the `Accept: application/octet-stream` header per the Sigsu
 Cairn does NOT use `sigsum-go` (Go-based Sigsum reference implementation) as a shim. Witness cosignature verification is implemented project-side in Rust:
 
 1. The witness pool is configured statically in a `witnesses.toml` resource shipped with the release. Each entry: `name` (display), `pubkey_hex` (32-byte Ed25519 pubkey), `url` (witness's cosignature endpoint).
-2. For each `tree_head` retrieved from the log, the client fetches cosignatures from each configured witness in parallel.
-3. Each cosignature is a witness Ed25519 signature over `tree_size || root_hash || timestamp` (the Sigsum-specified signing input).
+2. _[Revised 2026-05-30]_ The cosignatures arrive **embedded in the `get-tree-head` response** (the `cosignature=` lines per §2.3) — there is no separate per-witness fetch. Each line carries a 4-byte C2SP key id `SHA-256(name ‖ "\n" ‖ 0x04 ‖ pubkey)[:4]` that maps the cosignature back to its configured witness.
+3. _[Revised 2026-05-30]_ Each cosignature is a witness Ed25519 signature over the **C2SP `tlog-cosignature/v1` signed message**, NOT a bare binary triple:
+
+   ```text
+   cosignature/v1\n
+   time <posix_seconds>\n
+   sigsum.org/v1/tree/<hex(SHA-256(log_pubkey))>\n
+   <tree_size>\n
+   <base64(root_hash)>\n
+   ```
+
+   The last three lines are the Sigsum **checkpoint note** that the log itself signs (the `signature=` field); the witness wraps that note with the `cosignature/v1` header + its own `time` line. The per-cosignature `timestamp` is therefore part of the signed bytes.
+
 4. The client verifies each cosignature via the existing `cairn_crypto::ed25519::VerifyingKey::verify_strict` path — same code path as every other Ed25519 verification in Cairn.
-5. A tree head is "accepted" if at least 2 of 3 configured witnesses signed it.
+5. A tree head is "accepted" if at least 2 of 3 configured witnesses produced a verifying cosignature.
 
 ### 3.2 Rationale
 
 Three arguments:
 
 1. **No Go runtime in the trust path.** Adding `sigsum-go` as a shim would either require a Go runtime on Android (impractical) or a FFI to a Go-compiled binary (adds an additional language-runtime + memory model to the trust path). Both reject; project-owned Rust verification keeps the trust path within one runtime + audit surface.
-2. **The verification math is small.** Cosignature verification is Ed25519 over a 48-byte signing input. The total verification logic is < 100 LoC. Re-implementing it is dramatically cheaper than maintaining a cross-language interop layer.
+2. **The verification math is small.** Cosignature verification is one Ed25519 verify over the C2SP `tlog-cosignature/v1` signed message (a short, fixed-shape ASCII byte string — _[Revised 2026-05-30]_, originally mis-stated as a 48-byte binary input). The total verification logic is < 150 LoC. Re-implementing it is dramatically cheaper than maintaining a cross-language interop layer.
 3. **Audit budget per D0011.** Each cosignature verify path is in scope. Project-owned Rust means the auditor reviews ~100 LoC; `sigsum-go` shim would mean reviewing the FFI boundary + the upstream Go code + the build pipeline that produces the embedded Go binary.
 
 ### 3.3 Witness pool config format
@@ -154,7 +200,7 @@ Pool changes — adding witnesses, rotating pubkeys, removing witnesses — requ
 A tree head is accepted iff:
 
 - The pool has exactly 3 witnesses configured (the "minimum 3 witnesses" per D0015).
-- At least 2 of those 3 witnesses returned cosignatures for the same `tree_size || root_hash || timestamp` triple.
+- At least 2 of those 3 witnesses produced a cosignature over the C2SP `tlog-cosignature/v1` signed message for this tree head (binding `tree_size` + `root_hash` via the checkpoint note + the witness's own `timestamp`). _[Revised 2026-05-30: was "the same `tree_size || root_hash || timestamp` triple".]_
 - Each accepted cosignature verifies via `verify_strict` against the configured pubkey.
 
 If the witness pool config has fewer than 3 entries, every `accept_tree_head` call fails with `SigsumError::WitnessPoolTooSmall`. This is the "v1 ships without operational Sigsum witness coverage" failure mode per D0015 §"Sigsum witness threshold"; it surfaces as a typed error rather than silent degradation.
@@ -231,17 +277,19 @@ Per D0018 §6 the I/O surface is the only async-exposed layer; cryptographic ver
 
 Sigsum's `add-leaf` endpoint is idempotent on identical leaf hashes — re-submitting the same leaf returns the same proof. This means `emit_leaf` is safely retriable: if the client cancels mid-request and the server received the leaf, the next retry observes the leaf already present and returns the proof without duplicate work.
 
-For the verification path, every `verify_strict` call happens inside `spawn_blocking` to avoid cancel-safety hazards. The pattern:
+For the verification path, the `verify_strict` call operates on the C2SP signed message. _[Revised 2026-05-30]_ The signing input is the `build_cosignature_signed_message(timestamp, note)` composition — NOT a single `tree_head.signing_input()` blob — where `note` is the log's checkpoint note (`build_tree_head_note`). The pattern:
 
 ```rust
-let tree_head_bytes = tree_head.signing_input();
-let cosignature = cosig.bytes;
+// [Revised 2026-05-30] witness signs the C2SP tlog-cosignature/v1 message.
+let note = build_tree_head_note(&log_key_hash, tree_size, &root_hash);
+let signed_message = build_cosignature_signed_message(cosig.timestamp, &note);
+let cosignature = cosig.signature;
 let verifying_key = witness.pubkey;
 
-tokio::task::spawn_blocking(move || {
-    verifying_key.verify_strict(&tree_head_bytes, &cosignature)
-}).await??;
+verifying_key.verify_strict(&signed_message, &cosignature)?;
 ```
+
+(A single Ed25519 verify over a short ASCII message is sub-millisecond, so the v1 implementation runs it inline in the async fn rather than via `spawn_blocking`; the cancel-safety hazard the original draft guarded against does not arise for a non-blocking, allocation-free verify.)
 
 ### 5.3 Retry policy
 

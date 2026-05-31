@@ -82,10 +82,21 @@ pub struct TreeHead {
 /// [`crate::WitnessPool`] so the cache can correlate the cosignature
 /// back to its source witness without storing the witness's display
 /// name redundantly.
+///
+/// `timestamp` is the per-cosignature POSIX timestamp from the C2SP
+/// `tlog-cosignature/v1` signed message (`time <ts>` line). It is
+/// MANDATORY to cache: the timestamp is part of the bytes the witness
+/// signed, so re-verifying a cached cosignature requires rebuilding
+/// the exact signed message via
+/// [`crate::witness::build_cosignature_signed_message`] with this
+/// timestamp.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cosignature {
     /// 0-based index into the witness pool.
     pub witness_index: u8,
+    /// POSIX timestamp from the cosignature's `time <ts>` line per
+    /// C2SP `tlog-cosignature/v1`.
+    pub timestamp: u64,
     /// 64-byte Ed25519 signature.
     pub signature: [u8; 64],
 }
@@ -126,16 +137,16 @@ impl TreeHead {
         let observed_at_i64 =
             i64::try_from(self.observed_at).map_err(|_| SigsumError::MalformedCacheRecord)?;
 
-        let cosigs_array = self
-            .cosignatures
-            .iter()
-            .map(|c| {
-                Value::Array(vec![
-                    Value::Int(i64::from(c.witness_index)),
-                    Value::Bytes(c.signature.to_vec()),
-                ])
-            })
-            .collect::<Vec<_>>();
+        let mut cosigs_array = Vec::with_capacity(self.cosignatures.len());
+        for c in &self.cosignatures {
+            let timestamp_i64 =
+                i64::try_from(c.timestamp).map_err(|_| SigsumError::MalformedCacheRecord)?;
+            cosigs_array.push(Value::Array(vec![
+                Value::Int(i64::from(c.witness_index)),
+                Value::Int(timestamp_i64),
+                Value::Bytes(c.signature.to_vec()),
+            ]));
+        }
 
         let map = Value::Map(vec![
             (
@@ -373,20 +384,26 @@ fn decode_cosignatures(value: CiboriumValue) -> Result<Vec<Cosignature>, SigsumE
     };
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
-        let CiboriumValue::Array(pair) = entry else {
+        let CiboriumValue::Array(triple) = entry else {
             return Err(SigsumError::MalformedCacheRecord);
         };
-        if pair.len() != 2 {
+        if triple.len() != 3 {
             return Err(SigsumError::MalformedCacheRecord);
         }
-        let mut iter = pair.into_iter();
+        let mut iter = triple.into_iter();
         let witness_index_ciborium = iter.next().ok_or(SigsumError::MalformedCacheRecord)?;
+        let timestamp_ciborium = iter.next().ok_or(SigsumError::MalformedCacheRecord)?;
         let signature_value = iter.next().ok_or(SigsumError::MalformedCacheRecord)?;
         let CiboriumValue::Integer(wi) = witness_index_ciborium else {
             return Err(SigsumError::MalformedCacheRecord);
         };
         let witness_index =
             u8::try_from(i128::from(wi)).map_err(|_| SigsumError::MalformedCacheRecord)?;
+        let CiboriumValue::Integer(ts) = timestamp_ciborium else {
+            return Err(SigsumError::MalformedCacheRecord);
+        };
+        let timestamp =
+            u64::try_from(i128::from(ts)).map_err(|_| SigsumError::MalformedCacheRecord)?;
         let CiboriumValue::Bytes(sig_bytes) = signature_value else {
             return Err(SigsumError::MalformedCacheRecord);
         };
@@ -397,6 +414,7 @@ fn decode_cosignatures(value: CiboriumValue) -> Result<Vec<Cosignature>, SigsumE
         sig_arr.copy_from_slice(&sig_bytes);
         out.push(Cosignature {
             witness_index,
+            timestamp,
             signature: sig_arr,
         });
     }
@@ -427,10 +445,12 @@ mod tests {
             cosignatures: vec![
                 Cosignature {
                     witness_index: 0,
+                    timestamp: 1_700_000_500,
                     signature: [0xCCu8; 64],
                 },
                 Cosignature {
                     witness_index: 2,
+                    timestamp: 1_700_000_600,
                     signature: [0xDDu8; 64],
                 },
             ],

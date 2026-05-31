@@ -26,6 +26,9 @@ integration-tests = []
 # capability tokens against which verify_chain_links runs.
 cairn-identity = { path = "../cairn-identity" }
 rand_core = { workspace = true }
+# Hermetic Sigsum-log mock for the refresh_tree_head integration
+# harness (tests/refresh_tree_head_wiremock.rs) per D0023 §10.
+wiremock = { workspace = true }
 
 [dependencies]
 # === Foundational primitives ===
@@ -36,6 +39,10 @@ cairn-trust-graph = { path = "../cairn-trust-graph" }
 
 # === SHA-256 for the leaf-hash construction per D0023 §1 ===
 sha2 = { workspace = true }
+
+# === base64 for the C2SP tlog-cosignature/v1 signed-note root-hash
+# encoding per D0023 §3 (Sigsum get-tree-head + cosignature format) ===
+base64 = { workspace = true }
 
 # === Async runtime + HTTPS (D0023 §2 + §5) ===
 reqwest = { workspace = true }

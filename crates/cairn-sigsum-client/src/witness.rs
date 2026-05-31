@@ -25,29 +25,44 @@
 //! Pool changes require a release per D0023 §3.3 — runtime mutation
 //! is not supported.
 //!
-//! ## Cosignature signing input
+//! ## Cosignature signing input (C2SP `tlog-cosignature/v1`)
 //!
-//! Per the Sigsum protocol spec, each witness cosignature is an
-//! Ed25519 signature over:
+//! Per the Sigsum v1 log spec + <https://c2sp.org/tlog-cosignature>,
+//! each witness cosignature is an Ed25519 signature over a short ASCII
+//! message — NOT a fixed binary concatenation. The message is the
+//! `cosignature/v1` header + a `time` line + the log's checkpoint note:
 //!
 //! ```text
-//! signing_input = "sigsum.org/v1/tree-head\n"
-//!               ‖ tree_size  (8 bytes, network byte order)
-//!               ‖ root_hash  (32 bytes)
-//!               ‖ key_hash   (32 bytes, log pubkey hash)
+//! cosignature/v1\n
+//! time <posix_seconds>\n
+//! sigsum.org/v1/tree/<hex(SHA-256(log_pubkey))>\n
+//! <tree_size in decimal>\n
+//! <base64(root_hash)>\n
 //! ```
 //!
-//! The leading domain-separation prefix `"sigsum.org/v1/tree-head\n"`
-//! is the Sigsum-spec'd context binding; it prevents cross-protocol
-//! signature substitution against e.g. message envelopes signed under
-//! the same Ed25519 key. (Cairn's own envelopes use AAD-binding per
-//! D0006 §8 — different domain, same defense.)
+//! The last three lines are the **checkpoint note** the LOG itself
+//! signs (the `signature=` field of `get-tree-head`); the witness
+//! wraps that note with the `cosignature/v1` header + its own `time`
+//! line. [`build_tree_head_note`] produces the note;
+//! [`build_cosignature_signed_message`] wraps it into the witness
+//! signing input.
 //!
-//! v1 verifies the signing input field set above. The actual Sigsum
-//! protocol may include additional fields (timestamp, log identifier)
-//! — see the upstream spec; v1 skeleton matches the documented
-//! fields and the cosignature-format extension is a v1.5+ surface
-//! per the Sigsum upstream cadence.
+//! The `cosignature/v1` / `sigsum.org/v1/tree/...` prefixes are the
+//! C2SP context binding; they prevent cross-protocol signature
+//! substitution against e.g. message envelopes signed under the same
+//! Ed25519 key. (Cairn's own envelopes use AAD-binding per D0006 §8 —
+//! different domain, same defense.) The per-cosignature `timestamp` is
+//! part of the signed bytes, so it MUST be carried alongside the
+//! signature to re-verify a cached cosignature (see
+//! [`crate::cache::Cosignature`]).
+//!
+//! A witness is identified on the wire by its 4-byte C2SP key id,
+//! [`witness_key_hash`] = `SHA-256(name ‖ "\n" ‖ 0x04 ‖ pubkey)[:4]`.
+//!
+//! > Historical note: an earlier draft of D0023 §3.1 specified a
+//! > 48-byte binary input `tree_size ‖ root_hash ‖ timestamp`. That
+//! > was never the Sigsum wire format; it was corrected to the C2SP
+//! > format above (D0023 revision 2026-05-30).
 //!
 //! ## Acceptance threshold
 //!
@@ -67,12 +82,20 @@ pub const MIN_WITNESS_COUNT: u8 = 3;
 /// Required cosignature count for acceptance per D0023 §3.4.
 pub const REQUIRED_COSIGNATURE_COUNT: u8 = 2;
 
-/// Sigsum signing-input domain-separation prefix.
-///
-/// Per the Sigsum upstream protocol spec. Used in
-/// [`verify_cosignature`] to bind cosignatures to the tree-head
-/// domain and defend against cross-protocol signature substitution.
-pub const SIGSUM_TREE_HEAD_DOMAIN: &[u8] = b"sigsum.org/v1/tree-head\n";
+/// C2SP `tlog-cosignature/v1` header line — the domain-separation
+/// prefix of the message a witness signs (per
+/// <https://c2sp.org/tlog-cosignature>). Defends against cross-
+/// protocol signature substitution.
+pub const COSIGNATURE_V1_HEADER: &[u8] = b"cosignature/v1\n";
+
+/// Sigsum checkpoint origin prefix per the Sigsum v1 log spec. The
+/// full origin line is this prefix followed by the lowercase-hex log
+/// key hash, e.g. `sigsum.org/v1/tree/<hex>`.
+pub const SIGSUM_ORIGIN_PREFIX: &str = "sigsum.org/v1/tree/";
+
+/// Length of a C2SP Ed25519 key id (the first 4 bytes of the
+/// key-hash) per <https://c2sp.org/tlog-cosignature>.
+pub const WITNESS_KEY_HASH_LEN: usize = 4;
 
 /// One witness in the configured pool.
 ///
@@ -191,12 +214,14 @@ pub fn parse_witness_pool(toml_text: &str) -> Result<WitnessPool, SigsumError> {
     Ok(WitnessPool { witnesses })
 }
 
-/// Verify a single witness cosignature against the constructed
-/// signing input per D0023 §3.1 + the Sigsum upstream spec.
+/// Verify a single witness cosignature against the C2SP
+/// `tlog-cosignature/v1` signed message per D0023 §3.1.
 ///
-/// Routes through `cairn_crypto::ed25519::VerifyingKey::verify_strict`
-/// per D0018 §1.1 + D0023 §3.1 — same code path as every other
-/// Ed25519 verification in Cairn.
+/// `signed_message` is the value [`build_cosignature_signed_message`]
+/// produces — `cosignature/v1\n` + `time <ts>\n` + the checkpoint
+/// note body. Routes through
+/// `cairn_crypto::ed25519::VerifyingKey::verify_strict` per D0018 §1.1
+/// — same code path as every other Ed25519 verification in Cairn.
 ///
 /// # Errors
 ///
@@ -205,7 +230,7 @@ pub fn parse_witness_pool(toml_text: &str) -> Result<WitnessPool, SigsumError> {
 pub fn verify_cosignature(
     pubkey: &VerifyingKey,
     witness_index: u8,
-    signing_input: &[u8],
+    signed_message: &[u8],
     signature_bytes: &[u8],
 ) -> Result<(), SigsumError> {
     use cairn_crypto::ed25519::Signature;
@@ -218,37 +243,110 @@ pub fn verify_cosignature(
     let signature = Signature::from_bytes(sig_arr);
 
     pubkey
-        .verify(signing_input, &signature)
+        .verify(signed_message, &signature)
         .map_err(|_| SigsumError::CosignatureVerifyFailed { witness_index })
 }
 
-/// Build the Sigsum cosignature signing input per D0023 §3.1 + the
-/// upstream protocol spec:
+/// Build the Sigsum checkpoint note body that the LOG signs — and
+/// that the witness cosignature wraps — per the Sigsum v1 log spec
+/// (`get-tree-head`):
 ///
 /// ```text
-/// SIGSUM_TREE_HEAD_DOMAIN ‖ tree_size_be ‖ root_hash ‖ key_hash
+/// sigsum.org/v1/tree/<hex(log_key_hash)>\n
+/// <tree_size in decimal, no leading zeros>\n
+/// <base64(root_hash)>\n
 /// ```
 ///
-/// All multi-byte integers are network byte order (big-endian) per
-/// Sigsum's protocol convention.
+/// Each of the three lines is newline-terminated. The log's
+/// `signature=` field in `get-tree-head` is an Ed25519 signature over
+/// exactly these bytes.
 #[must_use]
-pub fn build_tree_head_signing_input(
+pub fn build_tree_head_note(
+    log_key_hash: &[u8; 32],
     tree_size: u64,
     root_hash: &[u8; 32],
-    log_key_hash: &[u8; 32],
 ) -> Vec<u8> {
-    let mut input = Vec::with_capacity(
-        SIGSUM_TREE_HEAD_DOMAIN
+    use base64::Engine as _;
+    use core::fmt::Write as _;
+
+    let mut s = String::new();
+    s.push_str(SIGSUM_ORIGIN_PREFIX);
+    s.push_str(&encode_hex(log_key_hash));
+    s.push('\n');
+    // Decimal, no leading zeros (Rust's Display for u64 already does
+    // this; 0 renders as "0" which the spec permits).
+    let _ = writeln!(&mut s, "{tree_size}");
+    s.push_str(&base64::engine::general_purpose::STANDARD.encode(root_hash));
+    s.push('\n');
+    s.into_bytes()
+}
+
+/// Build the C2SP `tlog-cosignature/v1` signed message a witness
+/// signs per <https://c2sp.org/tlog-cosignature> + D0023 §3.1:
+///
+/// ```text
+/// cosignature/v1\n
+/// time <posix timestamp in decimal>\n
+/// <tree_head_note>
+/// ```
+///
+/// `tree_head_note` is the value [`build_tree_head_note`] produces.
+/// The entire byte string (including all newlines) is the Ed25519
+/// signing input.
+#[must_use]
+pub fn build_cosignature_signed_message(timestamp: u64, tree_head_note: &[u8]) -> Vec<u8> {
+    use core::fmt::Write as _;
+
+    let mut out = Vec::with_capacity(
+        COSIGNATURE_V1_HEADER
             .len()
-            .saturating_add(8)
-            .saturating_add(32)
-            .saturating_add(32),
+            .saturating_add(24)
+            .saturating_add(tree_head_note.len()),
     );
-    input.extend_from_slice(SIGSUM_TREE_HEAD_DOMAIN);
-    input.extend_from_slice(&tree_size.to_be_bytes());
-    input.extend_from_slice(root_hash);
-    input.extend_from_slice(log_key_hash);
-    input
+    out.extend_from_slice(COSIGNATURE_V1_HEADER);
+    let mut time_line = String::new();
+    let _ = writeln!(&mut time_line, "time {timestamp}");
+    out.extend_from_slice(time_line.as_bytes());
+    out.extend_from_slice(tree_head_note);
+    out
+}
+
+/// Compute the C2SP Ed25519 key id for a witness per
+/// <https://c2sp.org/tlog-cosignature>:
+/// `SHA-256(name ‖ "\n" ‖ 0x04 ‖ pubkey)[:4]`.
+///
+/// The `get-tree-head` `cosignature=` lines identify their witness by
+/// this 4-byte id; the client computes it per configured witness to
+/// map a cosignature back to its pool entry.
+#[must_use]
+pub fn witness_key_hash(name: &str, pubkey: &VerifyingKey) -> [u8; WITNESS_KEY_HASH_LEN] {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(name.as_bytes());
+    hasher.update(b"\n");
+    hasher.update([0x04u8]);
+    hasher.update(pubkey.to_bytes());
+    let out = hasher.finalize();
+    let mut arr = [0u8; WITNESS_KEY_HASH_LEN];
+    // Take the first WITNESS_KEY_HASH_LEN bytes without slicing: SHA-256
+    // always yields 32 bytes, so the zip copies exactly the 4-byte
+    // prefix and never indexes out of bounds.
+    for (slot, byte) in arr.iter_mut().zip(out.iter()) {
+        *slot = *byte;
+    }
+    arr
+}
+
+/// Lowercase-hex-encode a byte slice (no `0x` prefix). Inverse of
+/// [`decode_hex`]; used for the origin line's log key hash.
+fn encode_hex(bytes: &[u8]) -> String {
+    use core::fmt::Write as _;
+    let mut s = String::with_capacity(bytes.len().saturating_mul(2));
+    for b in bytes {
+        let _ = write!(&mut s, "{b:02x}");
+    }
+    s
 }
 
 /// Decode a hex string (lowercase or uppercase, no whitespace, no
@@ -370,49 +468,87 @@ mod tests {
     }
 
     #[test]
-    fn build_signing_input_has_documented_shape() {
-        let tree_size: u64 = 0x1122_3344_5566_7788;
-        let root_hash = [0xAAu8; 32];
-        let log_key_hash = [0xBBu8; 32];
-        let input = build_tree_head_signing_input(tree_size, &root_hash, &log_key_hash);
+    fn tree_head_note_has_c2sp_checkpoint_shape() {
+        use base64::Engine as _;
 
-        // Domain prefix at the start.
-        assert!(input.starts_with(SIGSUM_TREE_HEAD_DOMAIN));
-        // tree_size in network byte order.
-        let after_domain = &input[SIGSUM_TREE_HEAD_DOMAIN.len()..];
-        assert_eq!(&after_domain[..8], &tree_size.to_be_bytes());
-        // root_hash next.
-        assert_eq!(&after_domain[8..40], &root_hash);
-        // log_key_hash last.
-        assert_eq!(&after_domain[40..72], &log_key_hash);
+        // Per the Sigsum v1 log spec: three newline-terminated lines —
+        // origin (sigsum.org/v1/tree/<hex keyhash>), decimal size,
+        // base64 root hash.
+        let log_key_hash = [0xBBu8; 32];
+        let root_hash = [0xAAu8; 32];
+        let note = build_tree_head_note(&log_key_hash, 1234, &root_hash);
+        let text = core::str::from_utf8(&note).unwrap();
+        let lines: Vec<&str> = text.split_inclusive('\n').collect();
+        assert_eq!(lines.len(), 3, "note is three newline-terminated lines");
+        assert_eq!(
+            lines[0],
+            "sigsum.org/v1/tree/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+        );
+        assert_eq!(lines[1], "1234\n");
+        // base64(32 * 0xAA) — fixed, computed by the audited base64 crate.
+        let expected_root = base64::engine::general_purpose::STANDARD.encode([0xAAu8; 32]);
+        assert_eq!(lines[2], format!("{expected_root}\n"));
     }
 
     #[test]
-    fn verify_cosignature_succeeds_for_valid_signature() {
+    fn cosignature_signed_message_wraps_note_with_header_and_timestamp() {
+        // Per C2SP tlog-cosignature/v1: "cosignature/v1\n" + "time <ts>\n"
+        // + the note body.
+        let note = build_tree_head_note(&[0x01; 32], 7, &[0x02; 32]);
+        let msg = build_cosignature_signed_message(1_700_000_000, &note);
+        let text = core::str::from_utf8(&msg).unwrap();
+        assert!(text.starts_with("cosignature/v1\n"));
+        assert!(text.contains("\ntime 1700000000\n"));
+        assert!(text.ends_with(core::str::from_utf8(&note).unwrap()));
+    }
+
+    #[test]
+    fn witness_key_hash_matches_c2sp_construction() {
+        use sha2::{Digest, Sha256};
+
+        // SHA-256(name ‖ "\n" ‖ 0x04 ‖ pubkey)[:4].
+        let mut rng = OsRng;
+        let sk = SigningKey::generate(&mut rng);
+        let pk = sk.verifying_key();
+        let kh = witness_key_hash("Witness Alpha", &pk);
+
+        let mut h = Sha256::new();
+        h.update(b"Witness Alpha");
+        h.update(b"\n");
+        h.update([0x04u8]);
+        h.update(pk.to_bytes());
+        let expected = h.finalize();
+        assert_eq!(kh, expected[..4]);
+    }
+
+    #[test]
+    fn verify_cosignature_succeeds_for_valid_c2sp_signature() {
+        // A witness signs the real C2SP cosignature/v1 message; verify
+        // it round-trips.
         let mut rng = OsRng;
         let witness_sk = SigningKey::generate(&mut rng);
-        let signing_input = build_tree_head_signing_input(1234, &[0x01; 32], &[0x02; 32]);
-        let signature = witness_sk.sign(&signing_input).unwrap();
-        let result = verify_cosignature(
-            &witness_sk.verifying_key(),
-            0,
-            &signing_input,
-            &signature.to_bytes(),
-        );
+        let note = build_tree_head_note(&[0x01; 32], 1234, &[0x02; 32]);
+        let msg = build_cosignature_signed_message(1_700_000_000, &note);
+        let signature = witness_sk.sign(&msg).unwrap();
+        let result =
+            verify_cosignature(&witness_sk.verifying_key(), 0, &msg, &signature.to_bytes());
         assert!(result.is_ok());
     }
 
     #[test]
-    fn verify_cosignature_rejects_wrong_signing_input() {
+    fn verify_cosignature_rejects_wrong_timestamp() {
+        // A cosignature is bound to its timestamp: signing the message
+        // at ts=A then verifying the message rebuilt at ts=B fails.
         let mut rng = OsRng;
         let witness_sk = SigningKey::generate(&mut rng);
-        let signing_input_a = build_tree_head_signing_input(1234, &[0x01; 32], &[0x02; 32]);
-        let signing_input_b = build_tree_head_signing_input(9999, &[0x01; 32], &[0x02; 32]);
-        let signature_a = witness_sk.sign(&signing_input_a).unwrap();
+        let note = build_tree_head_note(&[0x01; 32], 1234, &[0x02; 32]);
+        let msg_a = build_cosignature_signed_message(1_700_000_000, &note);
+        let msg_b = build_cosignature_signed_message(1_700_000_001, &note);
+        let signature_a = witness_sk.sign(&msg_a).unwrap();
         let result = verify_cosignature(
             &witness_sk.verifying_key(),
             0,
-            &signing_input_b,
+            &msg_b,
             &signature_a.to_bytes(),
         );
         assert!(matches!(
@@ -426,14 +562,11 @@ mod tests {
         let mut rng = OsRng;
         let witness_sk = SigningKey::generate(&mut rng);
         let imposter_sk = SigningKey::generate(&mut rng);
-        let signing_input = build_tree_head_signing_input(1234, &[0x01; 32], &[0x02; 32]);
-        let signature = imposter_sk.sign(&signing_input).unwrap();
-        let result = verify_cosignature(
-            &witness_sk.verifying_key(),
-            2,
-            &signing_input,
-            &signature.to_bytes(),
-        );
+        let note = build_tree_head_note(&[0x01; 32], 1234, &[0x02; 32]);
+        let msg = build_cosignature_signed_message(1_700_000_000, &note);
+        let signature = imposter_sk.sign(&msg).unwrap();
+        let result =
+            verify_cosignature(&witness_sk.verifying_key(), 2, &msg, &signature.to_bytes());
         assert!(matches!(
             result,
             Err(SigsumError::CosignatureVerifyFailed { witness_index: 2 })
@@ -444,17 +577,24 @@ mod tests {
     fn verify_cosignature_rejects_truncated_signature() {
         let mut rng = OsRng;
         let witness_sk = SigningKey::generate(&mut rng);
-        let signing_input = build_tree_head_signing_input(1234, &[0x01; 32], &[0x02; 32]);
+        let note = build_tree_head_note(&[0x01; 32], 1234, &[0x02; 32]);
+        let msg = build_cosignature_signed_message(1_700_000_000, &note);
         let result = verify_cosignature(
             &witness_sk.verifying_key(),
             1,
-            &signing_input,
+            &msg,
             &[0u8; 32], // truncated; valid signatures are 64 bytes
         );
         assert!(matches!(
             result,
             Err(SigsumError::CosignatureVerifyFailed { witness_index: 1 })
         ));
+    }
+
+    #[test]
+    fn encode_hex_round_trips_through_decode_hex() {
+        let bytes = [0x00u8, 0x0f, 0xa5, 0xff, 0xbb];
+        assert_eq!(decode_hex(&encode_hex(&bytes)), Some(bytes.to_vec()));
     }
 
     #[test]
