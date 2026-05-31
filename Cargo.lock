@@ -488,6 +488,7 @@ dependencies = [
  "thiserror 1.0.63",
  "tokio",
  "url",
+ "wiremock",
  "zeroize",
 ]
 

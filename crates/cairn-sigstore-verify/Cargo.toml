@@ -26,6 +26,12 @@ rand_core = { workspace = true }
 # zeroize is consumed in the client-module tests to construct
 # in-memory Storage handles via Zeroizing<Vec<u8>> passphrases.
 zeroize = { workspace = true }
+# Hermetic mock Rekor for the online-fetch harness
+# (tests/rekor_wiremock.rs) per D0024 §6.4 / §10.
+wiremock = { workspace = true }
+# p256 signing (+ base64/sha2 already deps) is needed in the harness to
+# produce canned ECDSA-P256-signed checkpoints; the `ecdsa` feature on
+# the normal dep already provides SigningKey, so no extra feature here.
 
 [dependencies]
 # === Foundational primitives ===

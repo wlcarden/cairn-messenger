@@ -51,6 +51,7 @@ use base64::Engine as _;
 use p256::ecdsa::signature::Verifier as _;
 use p256::ecdsa::{Signature, VerifyingKey};
 use p256::pkcs8::DecodePublicKey as _;
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::error::SigstoreVerifyError;
@@ -249,6 +250,158 @@ fn hash_children(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
         *slot = *byte;
     }
     arr
+}
+
+/// RFC 6962 leaf-node hash: `SHA-256(0x00 || leaf_data)`.
+///
+/// Rekor's Merkle leaf for an entry is the `0x00`-prefixed hash of the
+/// canonicalized entry body. Used by [`parse_rekor_log_entry`] to derive
+/// the [`RekorBundle::leaf_hash`] from the response's `body`.
+fn rfc6962_leaf_hash(leaf_data: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update([0x00u8]);
+    hasher.update(leaf_data);
+    let out = hasher.finalize();
+    let mut arr = [0u8; 32];
+    for (slot, byte) in arr.iter_mut().zip(out.iter()) {
+        *slot = *byte;
+    }
+    arr
+}
+
+// === Online mode: parse a Rekor v1 `GET /api/v1/log/entries/{uuid}`
+// response into a `RekorBundle` (D0024 §6.4). ===
+
+/// The Rekor v1 `InclusionProof` JSON object per the Rekor OpenAPI.
+#[derive(Deserialize)]
+struct InclusionProofJson {
+    #[serde(rename = "logIndex")]
+    log_index: u64,
+    hashes: Vec<String>,
+    checkpoint: String,
+}
+
+/// The `verification` sub-object of a Rekor log entry.
+#[derive(Deserialize)]
+struct VerificationJson {
+    #[serde(rename = "inclusionProof")]
+    inclusion_proof: InclusionProofJson,
+}
+
+/// One Rekor log entry. `body` is the base64 of the canonicalized entry
+/// whose `0x00`-prefixed hash is the Merkle leaf.
+#[derive(Deserialize)]
+struct LogEntryJson {
+    body: String,
+    verification: VerificationJson,
+}
+
+/// Parse a Rekor v1 `GET /api/v1/log/entries/{uuid}` response body into a
+/// [`RekorBundle`] ready for [`verify_rekor_inclusion`].
+///
+/// The response is a JSON object keyed by entry UUID; exactly one entry
+/// is expected. The leaf hash is derived as `SHA-256(0x00 || body)`; the
+/// inclusion proof's in-tree `logIndex` + `hashes` become the proof
+/// inputs; the `checkpoint` signed note is split into its signed body +
+/// DER ECDSA signature (the C2SP signed-note 4-byte key id is stripped).
+///
+/// This is pure parsing — no cryptographic verification. The returned
+/// bundle must still be passed to [`verify_rekor_inclusion`].
+///
+/// # Errors
+///
+/// [`SigstoreVerifyError::RekorResponseMalformed`] for any structural
+/// failure: bad JSON, no entries, bad hex in `hashes`, bad base64 in
+/// `body`, or a malformed `checkpoint` signed-note line.
+pub fn parse_rekor_log_entry(json: &str) -> Result<RekorBundle, SigstoreVerifyError> {
+    use std::collections::BTreeMap;
+
+    let entries: BTreeMap<String, LogEntryJson> =
+        serde_json::from_str(json).map_err(|_| SigstoreVerifyError::RekorResponseMalformed)?;
+    // Exactly one entry is expected for a single-UUID retrieval.
+    let entry = entries
+        .into_values()
+        .next()
+        .ok_or(SigstoreVerifyError::RekorResponseMalformed)?;
+
+    let body_bytes = base64::engine::general_purpose::STANDARD
+        .decode(entry.body.as_bytes())
+        .map_err(|_| SigstoreVerifyError::RekorResponseMalformed)?;
+    let leaf_hash = rfc6962_leaf_hash(&body_bytes);
+
+    let ip = entry.verification.inclusion_proof;
+    let mut proof_nodes = Vec::with_capacity(ip.hashes.len());
+    for h in &ip.hashes {
+        proof_nodes.push(hex_to_32(h).ok_or(SigstoreVerifyError::RekorResponseMalformed)?);
+    }
+
+    let (checkpoint_note, checkpoint_signature) = parse_signed_checkpoint(&ip.checkpoint)
+        .ok_or(SigstoreVerifyError::RekorResponseMalformed)?;
+
+    Ok(RekorBundle {
+        leaf_hash,
+        leaf_index: ip.log_index,
+        proof_nodes,
+        checkpoint_note,
+        checkpoint_signature,
+    })
+}
+
+/// Split a C2SP signed-note checkpoint string into (signed note body
+/// bytes, DER signature bytes).
+///
+/// The signed note is `<note text ending in \n>` + a blank line (`\n`) +
+/// one or more signature lines `— <key name> <base64(keyid||sig)>`. The
+/// signed bytes are the note text (including its final newline, excluding
+/// the blank line). The first signature line's base64 decodes to a 4-byte
+/// key id followed by the raw signature (ASN.1 DER for ECDSA); the key id
+/// is stripped.
+fn parse_signed_checkpoint(checkpoint: &str) -> Option<(Vec<u8>, Vec<u8>)> {
+    // Split note text from the signature block at the first blank line.
+    let (note_body, sig_block) = checkpoint.split_once("\n\n")?;
+    // The note text the log signed includes its trailing newline (the
+    // first `\n` of the `\n\n` separator).
+    let mut note_bytes = note_body.as_bytes().to_vec();
+    note_bytes.push(b'\n');
+
+    // First signature line: "— <key name> <base64>". The em dash is
+    // U+2014 followed by a space.
+    let sig_line = sig_block.lines().next()?;
+    let rest = sig_line.strip_prefix("\u{2014} ")?;
+    let (_key_name, b64) = rest.rsplit_once(' ')?;
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(b64.as_bytes())
+        .ok()?;
+    // 4-byte key id prefix + signature.
+    let sig = raw.get(4..)?.to_vec();
+    if sig.is_empty() {
+        return None;
+    }
+    Some((note_bytes, sig))
+}
+
+/// Decode a 64-character lowercase/uppercase hex string into `[u8; 32]`.
+fn hex_to_32(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut out = [0u8; 32];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let hi = hex_nibble(*bytes.get(i.checked_mul(2)?)?)?;
+        let lo = hex_nibble(*bytes.get(i.checked_mul(2)?.checked_add(1)?)?)?;
+        *slot = (hi << 4) | lo;
+    }
+    Some(out)
+}
+
+const fn hex_nibble(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c.wrapping_sub(b'0')),
+        b'a'..=b'f' => Some(c.wrapping_sub(b'a').wrapping_add(10)),
+        b'A'..=b'F' => Some(c.wrapping_sub(b'A').wrapping_add(10)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

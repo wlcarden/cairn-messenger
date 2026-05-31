@@ -72,6 +72,16 @@ pub enum SigstoreVerifyError {
     #[error("sigstore-verify: rekor signed checkpoint did not verify against the pinned key")]
     RekorCheckpointVerifyFailed,
 
+    /// A Rekor log-entry HTTP response (online mode per D0024 §6.4)
+    /// could not be parsed into a `RekorBundle`: malformed JSON,
+    /// missing inclusion-proof fields, bad hex/base64, or a malformed
+    /// signed-checkpoint note line. Distinct from
+    /// [`SigstoreVerifyError::RekorInclusionProofVerifyFailed`] /
+    /// [`SigstoreVerifyError::RekorCheckpointVerifyFailed`], which are
+    /// cryptographic-verification failures over a well-formed bundle.
+    #[error("sigstore-verify: malformed rekor log-entry response")]
+    RekorResponseMalformed,
+
     /// The release manifest's `prior_release_hash` does not
     /// reference the expected predecessor per D0024 §4.2's
     /// rollback-resistance property.

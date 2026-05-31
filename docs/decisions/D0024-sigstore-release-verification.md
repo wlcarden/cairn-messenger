@@ -282,7 +282,7 @@ impl SigstoreVerifier {
 
 The verifier supports two modes:
 
-- **Online mode.** The verifier may fetch fresh Rekor inclusion proofs from `https://rekor.sigstore.dev/api/v2/log/entries/{uuid}` and witness cosignatures from the witness pool. This is the default v1 mode (pilot devices have network connectivity).
+- **Online mode.** The verifier may fetch fresh Rekor inclusion proofs from `https://rekor.sigstore.dev/api/v1/log/entries/{uuid}` and witness cosignatures from the witness pool. This is the default v1 mode (pilot devices have network connectivity). _[Revised 2026-05-30]_ The original draft wrote `/api/v2/`; the stable endpoint that returns an inclusion-proof-with-checkpoint in a single JSON response is **`/api/v1/log/entries/{uuid}`** (per the Rekor OpenAPI: the `verification.inclusionProof` object carries `logIndex`, `rootHash`, `treeSize`, `hashes`, and the signed `checkpoint`). The Rekor v2 tile-backed API uses a different retrieval model and is deferrable; `SigstoreVerifier::fetch_rekor_bundle` targets v1.
 - **Offline mode.** The release bundle includes a pre-captured Rekor inclusion proof + signed checkpoint + witness cosignatures. The verifier checks the bundle without making network calls. This is the air-gapped install path that D0015's "offline signed images" v1.5+ deferral activates against.
 
 The verify path is the same in both modes; the difference is whether the bundle was pre-populated or freshly fetched. v1 ships both modes; the offline mode is the architecturally important one because it is the path that does not require trusting whichever network the verifier sits on.
@@ -406,10 +406,10 @@ This D-doc is accepted. The matching `cairn-sigstore-verify` crate skeleton + Re
 2. `cairn-sigstore-verify/src/fulcio.rs` — cert-chain validation against the pinned root. _Stubbed (`NetworkUnreached`); pending the `x509-parser` body._
 3. ✅ `cairn-sigstore-verify/src/rekor.rs` — inclusion proof + signed checkpoint verify. **Landed 2026-05-30**: RFC 6962 inclusion + C2SP signed-note ECDSA P-256 checkpoint verify, offline + exhaustively unit-tested.
 4. ✅ `cairn-sigstore-verify/src/compose.rs` — composition with `cairn-sigsum-client` per §5. **Landed** (skeleton).
-5. `cairn-sigstore-verify/src/client.rs` — async `SigstoreVerifier` handle wrapping the steps above. _Constructor + config landed; `verify_release` orchestration stubbed pending the Fulcio body + online fetch._
+5. `cairn-sigstore-verify/src/client.rs` — async `SigstoreVerifier` handle wrapping the steps above. _Constructor + config landed; ✅ the online Rekor fetch (`fetch_rekor_bundle` / `fetch_and_verify_rekor`, GET `/api/v1/log/entries/{uuid}` + parse + verify) landed 2026-05-30; the full `verify_release` orchestration remains stubbed pending the Fulcio body._
 6. Workspace pin additions per §6.5: ✅ `p256` **landed 2026-05-30** (Rekor checkpoint); `x509-parser` deferred (Fulcio body).
 7. CLI integration in `cairn-cli`: `verify-release` subcommand for end-to-end demo. _Pending._
-8. Integration testing: a wiremock-based mock Rekor for the online-fetch path; opt-in real-Rekor test gated behind `--features integration-tests` so CI does not depend on external network availability (same pattern as D0023 §10). _The offline verifier (step 3) is tested directly without wiremock (it is pure crypto); the wiremock harness covers the online fetch + JSON/signed-note parsing, pending the fetch path._
+8. Integration testing: a wiremock-based mock Rekor for the online-fetch path; opt-in real-Rekor test gated behind `--features integration-tests` so CI does not depend on external network availability (same pattern as D0023 §10). ✅ **Landed 2026-05-30**: the offline verifier (step 3) is tested directly without wiremock (pure crypto); `tests/rekor_wiremock.rs` covers the online fetch + JSON/signed-note parsing end-to-end (accept / inclusion-tamper / checkpoint-key-mismatch / malformed / retry-budget). The opt-in real-Rekor test remains future work.
 
 The release-pipeline side (CI signing, Rekor posting, Sigsum emission) is operational and lives outside this crate; it lands separately as a release-pipeline runbook.
 

@@ -86,4 +86,4 @@ pub use compose::release_leaf_hash_for_envelope_bytes;
 pub use error::SigstoreVerifyError;
 pub use fulcio::validate_cert_chain;
 pub use manifest::{ArtifactHash, ReleaseManifest, SHA256_LEN};
-pub use rekor::{RekorBundle, RekorCheckpoint, verify_rekor_inclusion};
+pub use rekor::{RekorBundle, RekorCheckpoint, parse_rekor_log_entry, verify_rekor_inclusion};

@@ -35,10 +35,11 @@
 //!    expected predecessor per D0024 §4.2.
 
 use cairn_sigsum_client::{RetryBudget, SigsumClient};
+use url::Url;
 
 use crate::error::SigstoreVerifyError;
 use crate::manifest::ReleaseManifest;
-use crate::rekor::RekorBundle;
+use crate::rekor::{RekorBundle, RekorCheckpoint, parse_rekor_log_entry, verify_rekor_inclusion};
 
 /// Configuration bundle for constructing a [`SigstoreVerifier`].
 ///
@@ -115,17 +116,14 @@ pub struct VerifiedRelease {
 /// composed [`SigsumClient`]. Each async call routes through the
 /// retry logic per D0024 §6.3.
 pub struct SigstoreVerifier {
-    /// HTTPS client per D0024 §6 (same workspace pin as D0023).
-    #[allow(
-        dead_code,
-        reason = "wired in v1 skeleton; populated for the network surface"
-    )]
+    /// HTTPS client per D0024 §6 (same workspace pin as D0023). Used by
+    /// the online Rekor fetch path.
     http: reqwest::Client,
     /// Pinned Fulcio root in PEM bytes per D0024 §2.
     #[allow(dead_code, reason = "v1 skeleton; populated for the Fulcio body")]
     fulcio_root_pem: Vec<u8>,
-    /// Pinned Rekor public key in PEM bytes per D0024 §3.
-    #[allow(dead_code, reason = "v1 skeleton; populated for the Rekor body")]
+    /// Pinned Rekor public key (PEM/SPKI, ECDSA P-256) per D0024 §3.
+    /// Consumed by [`SigstoreVerifier::fetch_and_verify_rekor`].
     rekor_pubkey_pem: Vec<u8>,
     /// Expected OIDC issuer URL per D0024 §1.1.
     expected_oidc_issuer: String,
@@ -211,6 +209,98 @@ impl SigstoreVerifier {
         _expected_predecessor_hash: Option<[u8; 32]>,
     ) -> Result<VerifiedRelease, SigstoreVerifyError> {
         Err(SigstoreVerifyError::NetworkUnreached)
+    }
+
+    /// Fetch a Rekor log entry (online mode per D0024 §6.4) and parse it
+    /// into a [`RekorBundle`].
+    ///
+    /// Issues `GET {rekor_base_url}/api/v1/log/entries/{entry_uuid}`,
+    /// retried per the default retry budget on transient transport
+    /// failures, then parses the response via
+    /// [`parse_rekor_log_entry`]. _[Revised 2026-05-30]_ D0024 §6.4
+    /// referenced `/api/v2/`; the JSON endpoint that returns an
+    /// inclusion-proof-with-checkpoint in one response is the stable
+    /// Rekor `/api/v1/log/entries/{uuid}` (the v2 tile-backed API uses a
+    /// different retrieval model, deferrable).
+    ///
+    /// This performs NO cryptographic verification — the returned bundle
+    /// must be passed to [`verify_rekor_inclusion`] (or use
+    /// [`Self::fetch_and_verify_rekor`]).
+    ///
+    /// # Errors
+    ///
+    /// - [`SigstoreVerifyError::Network`] if the transport fails after
+    ///   the retry budget is exhausted.
+    /// - [`SigstoreVerifyError::RekorResponseMalformed`] if the URL join
+    ///   fails or the response body does not parse.
+    pub async fn fetch_rekor_bundle(
+        &self,
+        rekor_base_url: &Url,
+        entry_uuid: &str,
+    ) -> Result<RekorBundle, SigstoreVerifyError> {
+        let url = rekor_base_url
+            .join(&format!("api/v1/log/entries/{entry_uuid}"))
+            .map_err(|_| SigstoreVerifyError::RekorResponseMalformed)?;
+        let body = self.http_get_text(url).await?;
+        parse_rekor_log_entry(&body)
+    }
+
+    /// Fetch + verify a Rekor entry online: fetches the bundle via
+    /// [`Self::fetch_rekor_bundle`], then verifies it against the pinned
+    /// Rekor public key via [`verify_rekor_inclusion`]. Returns the
+    /// verified [`RekorCheckpoint`] (whose root hash is surfaced per
+    /// D0024 §3.3).
+    ///
+    /// # Errors
+    ///
+    /// Any error from the fetch ([`SigstoreVerifyError::Network`] /
+    /// [`SigstoreVerifyError::RekorResponseMalformed`]) or the verify
+    /// ([`SigstoreVerifyError::RekorInclusionProofVerifyFailed`] /
+    /// [`SigstoreVerifyError::RekorCheckpointVerifyFailed`]).
+    pub async fn fetch_and_verify_rekor(
+        &self,
+        rekor_base_url: &Url,
+        entry_uuid: &str,
+    ) -> Result<RekorCheckpoint, SigstoreVerifyError> {
+        let bundle = self.fetch_rekor_bundle(rekor_base_url, entry_uuid).await?;
+        verify_rekor_inclusion(&bundle, &self.rekor_pubkey_pem)
+    }
+
+    /// `GET url`, retrying transient transport failures up to the default
+    /// retry budget. Returns the response body text. Mirrors
+    /// `cairn_sigsum_client`'s `http_get_tree_head` retry shape per
+    /// D0024 §6.3 (shared `RetryBudget`).
+    async fn http_get_text(&self, url: Url) -> Result<String, SigstoreVerifyError> {
+        let budget = self.default_retry_budget;
+        let mut delay = budget.initial_delay;
+        let mut attempt: u8 = 0;
+        loop {
+            match self.http.get(url.clone()).send().await {
+                Ok(resp) => match resp.error_for_status() {
+                    Ok(ok) => {
+                        return ok
+                            .text()
+                            .await
+                            .map_err(|_| SigstoreVerifyError::RekorResponseMalformed);
+                    }
+                    Err(_) if attempt < budget.max_retries => {}
+                    Err(_) => {
+                        return Err(SigstoreVerifyError::Network {
+                            retry_budget_used: attempt,
+                        });
+                    }
+                },
+                Err(_) if attempt < budget.max_retries => {}
+                Err(_) => {
+                    return Err(SigstoreVerifyError::Network {
+                        retry_budget_used: attempt,
+                    });
+                }
+            }
+            tokio::time::sleep(delay).await;
+            delay = delay.saturating_mul(2).min(budget.max_delay);
+            attempt = attempt.saturating_add(1);
+        }
     }
 }
 
