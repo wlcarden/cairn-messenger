@@ -227,6 +227,24 @@ impl SimplexAdapterHandle {
         Ok(connection.0)
     }
 
+    /// Await an inbound connection becoming established after this side
+    /// created + shared an invitation (the peer accepted it), returning the
+    /// connection id. The inviter-side counterpart to `accept_invitation`'s
+    /// establishment wait (D0026 §12).
+    ///
+    /// # Errors
+    ///
+    /// The facade mapping of the transport error
+    /// ([`CairnFfiError::SidecarFailure`] when the sidecar is unreachable).
+    pub async fn await_connection(&self) -> Result<String, CairnFfiError> {
+        let connection = self
+            .adapter
+            .await_connection()
+            .await
+            .map_err(CairnFfiError::from)?;
+        Ok(connection.0)
+    }
+
     /// Build → sign (in StrongBox) → pad → persist a Cairn envelope to
     /// `recipient_operational_pubkey` over `connection_id`, then hand it
     /// to the transport. Returns the persisted record id + the advanced

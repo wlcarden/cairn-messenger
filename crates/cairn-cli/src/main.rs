@@ -713,6 +713,11 @@ impl SidecarTransport for FileSidecarTransport {
         Ok(ConnectionId("file-wire".to_string()))
     }
 
+    async fn await_connection(&self) -> Result<ConnectionId, SimplexAdapterError> {
+        // The file wire is immediately "established".
+        Ok(ConnectionId("file-wire".to_string()))
+    }
+
     async fn send(&self, _conn: &ConnectionId, raw: &[u8]) -> Result<(), SimplexAdapterError> {
         // Per D0026 §3.2 (c) the seam carries no message number — the adapter
         // owns the per-pair chain position. The file wire just stores bytes.

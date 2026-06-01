@@ -69,10 +69,24 @@ pub trait SidecarTransport: Sync {
         &self,
     ) -> impl Future<Output = Result<Invitation, SimplexAdapterError>> + Send;
 
-    /// Complete out-of-band pairing for a peer's invitation.
+    /// Accept a peer's invitation and **await the connection becoming
+    /// established**, returning the established [`ConnectionId`].
+    ///
+    /// Per the D0026 §12 live-validation finding, a real sidecar reports only
+    /// a *pending* connection synchronously; the usable connection id arrives
+    /// with a later async establishment event, so this awaits it.
     fn accept_invitation(
         &self,
         invitation: Invitation,
+    ) -> impl Future<Output = Result<ConnectionId, SimplexAdapterError>> + Send;
+
+    /// Await an inbound connection becoming established after this side
+    /// created + shared an [`Invitation`] (the peer accepted it). Returns the
+    /// established [`ConnectionId`]. This is the inviter-side counterpart to
+    /// [`Self::accept_invitation`]'s establishment wait (D0026 §12): the
+    /// inviter learns its connection id only once the peer connects.
+    fn await_connection(
+        &self,
     ) -> impl Future<Output = Result<ConnectionId, SimplexAdapterError>> + Send;
 
     /// Send `raw` envelope bytes over `conn`.
@@ -226,13 +240,21 @@ mod simploxide {
             invitation: Invitation,
         ) -> Result<ConnectionId, SimplexAdapterError> {
             let user_id = self.conn().await?.user_id;
-            let frame = self
+            // The `/_connect <link>` response only confirms acceptance
+            // (`sentConfirmation` with a *pending* pccConnId); the usable
+            // contactId arrives with the async `contactConnected` event
+            // (D0026 §12 live-validation finding), so await it.
+            let _ = self
                 .command(protocol::cmd_connect_via_link(user_id, &invitation.uri))
                 .await?;
-            let resp = Resp::from_frame(&frame).ok_or(SimplexAdapterError::SidecarProtocol)?;
-            let id =
-                protocol::parse_connection_id(&resp).ok_or(SimplexAdapterError::SidecarProtocol)?;
-            Ok(ConnectionId(id))
+            self.await_contact_connected().await
+        }
+
+        async fn await_connection(&self) -> Result<ConnectionId, SimplexAdapterError> {
+            // Inviter side: after `create_invitation` + sharing the link out
+            // of band, await the peer connecting (the `contactConnected`
+            // event), which yields the established contactId.
+            self.await_contact_connected().await
         }
 
         async fn send(&self, conn: &ConnectionId, raw: &[u8]) -> Result<(), SimplexAdapterError> {
@@ -279,6 +301,24 @@ mod simploxide {
             path.to_str()
                 .map(ToString::to_string)
                 .ok_or(SimplexAdapterError::SidecarUnavailable)
+        }
+
+        /// Drain incoming events until a `contactConnected` arrives, returning
+        /// its `contact.contactId` as the established [`ConnectionId`] (D0026
+        /// §12 finding: the pending `pccConnId` from the create/accept response
+        /// is NOT usable for `/_send`; the usable id arrives only with this
+        /// event). Intermediate establishment events (`contactConnecting`, the
+        /// peer's profile `newChatItems`, etc.) are skipped.
+        async fn await_contact_connected(&self) -> Result<ConnectionId, SimplexAdapterError> {
+            loop {
+                let frame = self.next_event().await?;
+                let Some(resp) = Resp::from_frame(&frame) else {
+                    continue;
+                };
+                if let Some(contact_id) = protocol::parse_contact_connected(&resp) {
+                    return Ok(ConnectionId(contact_id.to_string()));
+                }
+            }
         }
 
         /// Drain incoming events until a `CryptoFile` for `conn` arrives:
@@ -409,6 +449,12 @@ impl SidecarTransport for MockSidecarTransport {
         Ok(id)
     }
 
+    async fn await_connection(&self) -> Result<ConnectionId, SimplexAdapterError> {
+        // Mock connections establish instantly; mirror accept_invitation.
+        self.accept_invitation(Invitation { uri: String::new() })
+            .await
+    }
+
     async fn send(&self, conn: &ConnectionId, raw: &[u8]) -> Result<(), SimplexAdapterError> {
         let mut wire = self
             .wire
@@ -494,6 +540,17 @@ mod mock_ws_tests {
             if ws.send(Message::text(reply.to_string())).await.is_err() {
                 break;
             }
+            // After an accept (/_connect with a link), push the async
+            // `contactConnected` event the real daemon emits once established,
+            // so accept_invitation's establishment-await (D0026 §12) resolves
+            // with the contactId.
+            if command.starts_with("/_connect 1 ") {
+                let evt =
+                    json!({"resp": {"type": "contactConnected", "contact": {"contactId": 42}}});
+                if ws.send(Message::text(evt.to_string())).await.is_err() {
+                    break;
+                }
+            }
         }
     }
 
@@ -523,7 +580,10 @@ mod mock_ws_tests {
     }
 
     #[tokio::test]
-    async fn accept_invitation_parses_connection_id() {
+    async fn accept_invitation_awaits_contact_connected() {
+        // accept_invitation sends `/_connect <uid> <link>` then awaits the
+        // async contactConnected event (D0026 §12); the ConnectionId is the
+        // established contact.contactId (42), NOT the pending pccConnId.
         let transport = transport_against_mock().await;
         let conn = transport
             .accept_invitation(Invitation {

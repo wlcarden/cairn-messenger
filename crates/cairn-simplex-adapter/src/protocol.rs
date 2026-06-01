@@ -157,20 +157,19 @@ pub(crate) fn parse_invitation_link(resp: &Resp<'_>) -> Option<String> {
     extract_conn_link(link)
 }
 
-/// Extract the contact/connection id Cairn keys the connection by. After a
-/// successful `/_connect <link>` simplex-chat reports a pending-contact
-/// connection whose `pccConnId` (or `connId`) identifies it. Returns it as a
-/// string `ConnectionId` payload.
-pub(crate) fn parse_connection_id(resp: &Resp<'_>) -> Option<String> {
-    let connection = resp
-        .body
-        .get("connection")
-        .or_else(|| resp.body.get("pendingContactConnection"))
-        .unwrap_or(resp.body);
-    connection
-        .get("pccConnId")
-        .or_else(|| connection.get("connId"))
-        .map(value_to_id_string)
+/// Extract the established `contactId` from a `contactConnected` event — the
+/// reference Cairn keys the connection by and uses for `/_send @<contactId>`.
+///
+/// LIVE-VALIDATION FINDING (D0026 §12, 2026-06-01): a create/accept response
+/// carries only a *pending* `connection.pccConnId`, which is NOT usable for
+/// sending; the usable `contactId` arrives later with the async
+/// `contactConnected` event (`contact.contactId`). The transport therefore
+/// awaits this event before yielding a `ConnectionId`.
+pub(crate) fn parse_contact_connected(resp: &Resp<'_>) -> Option<i64> {
+    if resp.tag != "contactConnected" {
+        return None;
+    }
+    resp.body.get("contact")?.get("contactId")?.as_i64()
 }
 
 /// A received-file offer parsed from an incoming event: the `fileId` to
@@ -241,14 +240,6 @@ fn extract_conn_link(value: &Value) -> Option<String> {
         .map(ToString::to_string)
 }
 
-/// Render a JSON id (number or string) as the `ConnectionId` string Cairn
-/// stores, so callers needn't care whether the sidecar reported it numeric.
-fn value_to_id_string(value: &Value) -> String {
-    value
-        .as_str()
-        .map_or_else(|| value.to_string(), ToString::to_string)
-}
-
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -315,13 +306,20 @@ mod tests {
     }
 
     #[test]
-    fn parses_connection_id_from_pending_connection() {
+    fn parses_contact_connected_contact_id() {
         let frame =
-            parse_frame(r#"{"resp":{"type":"sentConfirmation","connection":{"pccConnId":17}}}"#)
+            parse_frame(r#"{"resp":{"type":"contactConnected","contact":{"contactId":4}}}"#)
                 .unwrap();
         assert_eq!(
-            parse_connection_id(&Resp::from_frame(&frame).unwrap()).as_deref(),
-            Some("17")
+            parse_contact_connected(&Resp::from_frame(&frame).unwrap()),
+            Some(4)
+        );
+        // A non-contactConnected event (e.g. the earlier contactConnecting
+        // phase) yields None.
+        let other = parse_frame(r#"{"resp":{"type":"contactConnecting"}}"#).unwrap();
+        assert_eq!(
+            parse_contact_connected(&Resp::from_frame(&other).unwrap()),
+            None
         );
     }
 

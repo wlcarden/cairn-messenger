@@ -232,6 +232,21 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
         self.transport.accept_invitation(invitation).await
     }
 
+    /// Await an inbound connection becoming established after this side
+    /// created + shared an invitation (the peer accepted it), returning the
+    /// established connection id (delegates to the transport).
+    ///
+    /// The inviter-side counterpart to [`Self::accept_invitation`]'s
+    /// establishment wait (D0026 §12): the usable connection id is the
+    /// established contact, learned only once the peer connects.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the transport surfaces.
+    pub async fn await_connection(&self) -> Result<ConnectionId, SimplexAdapterError> {
+        self.transport.await_connection().await
+    }
+
     /// Send `payload` to `recipient_operational_pubkey` over `conn`.
     ///
     /// Builds + signs + pads a Cairn envelope (chained to this pair's

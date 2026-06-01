@@ -33,6 +33,13 @@ tokio = { workspace = true, features = ["net"] }
 # simploxide-ws-core, so this adds no new crate to the graph. Pinned exact
 # for lockfile determinism per D0018.
 futures = "=0.3.32"
+# Identity + storage construction for the live `integration-tests` harness
+# (tests/live_simplex.rs) — building a LocalIdentity (device SigningKey) +
+# in-memory Storage to drive a real two-party envelope round-trip against
+# running simplex-chat CLI daemons. Dev-only; gated behind the feature.
+cairn-crypto = { path = "../cairn-crypto" }
+cairn-storage = { path = "../cairn-storage" }
+zeroize = { workspace = true }
 
 [dependencies]
 # === Foundational primitives ===
