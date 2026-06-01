@@ -25,7 +25,7 @@
 //! ## Underlying construction
 //!
 //! [`Prk`] stores the 32-byte PRK in `SecretBox<[u8; 32]>` and reconstructs
-//! `hkdf::Hkdf<Sha256>` on demand for each [`Self::expand`] call via
+//! `hkdf::Hkdf<Sha256>` on demand for each [`Prk::expand`] call via
 //! `Hkdf::from_prk`. This matches the `cairn-crypto::ed25519` and
 //! `cairn-crypto::x25519` pattern of storing raw key material under
 //! `SecretBox` discipline rather than retaining the cryptographic primitive
@@ -56,7 +56,7 @@ pub const MAX_OKM_LEN: usize = 255 * PRK_LEN;
 /// HKDF-SHA256 pseudorandom key (output of the Extract step).
 ///
 /// Stores the 32-byte PRK in `SecretBox<[u8; 32]>`. The bytes are
-/// exposed only via the private [`Self::with_hkdf`] helper for use inside
+/// exposed only via the private `Self::with_hkdf` helper for use inside
 /// [`Self::expand`]; there is no public byte-level accessor.
 ///
 /// Implements [`crate::never_export::NeverExport`] (via the

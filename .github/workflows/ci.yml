@@ -1,7 +1,7 @@
 # CI workflow per D0018 §8.5.
 #
 # Gates by category:
-#   - blocking: fmt, clippy, test, audit, deny, discipline-grep
+#   - blocking: fmt, clippy, doc, test, audit, deny, discipline-grep
 #   - informational: geiger, machete, auditable-release builds
 #   - cron-only: fuzz (PR), dudect-bencher (release-profile bench)
 
@@ -38,6 +38,17 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  doc:
+    name: doc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Broken intra-doc links + invalid-HTML-tag rustdoc lints (gated so
+      # they fail the PR rather than accruing silently; added 2026-05-31).
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
   test:
     name: test

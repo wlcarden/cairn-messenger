@@ -342,7 +342,7 @@ enum Command {
     /// timestamps are non-decreasing.
     VerifyTrustChain {
         /// Path to a trust-graph op envelope. Supply once per op in
-        /// chain order (ops[0] = genesis, ops[N-1] = chain head).
+        /// chain order (`ops[0]` = genesis, `ops[N-1]` = chain head).
         #[arg(long = "op", action = clap::ArgAction::Append)]
         ops: Vec<PathBuf>,
         /// Path to the capability-token envelope authorizing the

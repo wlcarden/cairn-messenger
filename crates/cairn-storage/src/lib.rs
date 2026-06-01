@@ -80,7 +80,7 @@
 //! [`KeyProvider`] is the only hardware-abstraction-layer surface
 //! this crate exposes. Implementations:
 //!
-//! - [`testing::InMemoryKeyProvider`] for unit + integration tests
+//! - [`key_provider::testing::InMemoryKeyProvider`] for unit + integration tests
 //!   inside the workspace (Argon2id with reduced parameters; fixed
 //!   in-memory StrongBox material).
 //! - `cairn-uniffi::AndroidKeyProvider` (future crate per D0018 §8.6)

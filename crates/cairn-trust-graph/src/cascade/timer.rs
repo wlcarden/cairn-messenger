@@ -25,8 +25,8 @@
 //!
 //! | Field | Type | Notes |
 //! | --- | --- | --- |
-//! | `first_observed_at` | uint Unix-seconds | When the storage layer first saw the flag |
-//! | `last_acknowledged_at` | Option<uint Unix-seconds> | Most recent user touch, if any |
+//! | `first_observed_at` | `uint` Unix-seconds | When the storage layer first saw the flag |
+//! | `last_acknowledged_at` | `Option<uint>` Unix-seconds | Most recent user touch, if any |
 //!
 //! The 90-day clock is measured from `last_acknowledged_at` if set,
 //! else from `first_observed_at`. Escalation fires when `now -

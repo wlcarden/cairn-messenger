@@ -40,7 +40,7 @@
 //! 3. Every key-generation function takes an explicit `&mut impl CryptoRng + RngCore`
 //!    or calls `OsRng` directly — never `thread_rng` or `SmallRng`.
 //! 4. Public values (signatures, public keys, fingerprints) cross the API as
-//!    plain bytes; secret-bearing types implement [`NeverExport`] and are
+//!    plain bytes; secret-bearing types implement [`crate::never_export::NeverExport`] and are
 //!    prevented from crossing the `UniFFI` boundary (per D0020 §3.7).
 //! 5. Errors carry indices, lengths, and type tags only — never `Vec<u8>` or
 //!    `&[u8]` payloads (per D0018 §4.2).
