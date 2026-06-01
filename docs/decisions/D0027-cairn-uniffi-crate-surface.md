@@ -78,14 +78,14 @@ The split rule, applied per type:
 
 **Opaque `uniffi::Object` handles (operation methods only; no byte-lowering of secrets):**
 
-| Type                     | Origin                                                   | Exposed methods (illustrative)                                               |
-| ------------------------ | -------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `OpIdentityKeyHandle`    | wraps `cairn-crypto` op-identity `SecretBox<SigningKey>` | `fingerprint()`, `sign(payload)` — never `to_bytes`                          |
-| `SimplexAdapterHandle`   | `cairn_simplex_adapter::SimplexAdapter`                  | `create_invitation()`, `accept_invitation()`, `send()`, `recv()` (async; §5) |
-| `SigsumClientHandle`     | `cairn_sigsum_client::SigsumClient`                      | `sigsum_emit()`, `verify_chain_links_with_sigsum()` (async)                  |
-| `TorTransportHandle`     | `cairn_tor_transport::TorTransport`                      | `connect()`, `observe_network_state()` (async + sync)                        |
-| `SigstoreVerifierHandle` | `cairn_sigstore_verify::SigstoreVerifier`                | `verify_release()` (async)                                                   |
-| `StorageHandle`          | `cairn_storage::Storage`                                 | category put/get/delete (the handle wraps the SQLite connection)             |
+| Type                     | Origin                                                   | Exposed methods (illustrative)                                                                                                                                                                                                                                     |
+| ------------------------ | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `OpIdentityKeyHandle`    | wraps `cairn-crypto` op-identity `SecretBox<SigningKey>` | `fingerprint()`, `sign(payload)` — never `to_bytes`                                                                                                                                                                                                                |
+| `SimplexAdapterHandle`   | `cairn_simplex_adapter::SimplexAdapter`                  | `create_invitation()`, `accept_invitation()`, `await_connection()`, `send()`, `recv()` (async; §5). LANDED + live-validated over the ws-core transport vs real simplex-chat v6.5.2 (D0026 §12); `await_connection` added per the §12 connection-lifecycle finding. |
+| `SigsumClientHandle`     | `cairn_sigsum_client::SigsumClient`                      | `sigsum_emit()`, `verify_chain_links_with_sigsum()` (async)                                                                                                                                                                                                        |
+| `TorTransportHandle`     | `cairn_tor_transport::TorTransport`                      | `connect()`, `observe_network_state()` (async + sync)                                                                                                                                                                                                              |
+| `SigstoreVerifierHandle` | `cairn_sigstore_verify::SigstoreVerifier`                | `verify_release()` (async)                                                                                                                                                                                                                                         |
+| `StorageHandle`          | `cairn_storage::Storage`                                 | category put/get/delete (the handle wraps the SQLite connection)                                                                                                                                                                                                   |
 
 **Plain `uniffi::Record` data (public / derived; cross by value):**
 

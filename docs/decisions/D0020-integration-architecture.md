@@ -180,8 +180,18 @@ pub trait Transport: Send + Sync {
     /// the peer can scan or paste to establish the connection.
     fn create_invitation(&self) -> Result<Invitation, Self::SendError>;
 
-    /// Accept a peer's invitation and complete the out-of-band pairing.
-    fn accept_invitation(&self, invitation: Invitation) -> Result<ConnectionId, Self::SendError>;
+    /// Accept a peer's invitation and **await** the connection becoming
+    /// established, returning the established connection id. (Live-validation
+    /// finding, D0026 §12: a real SimpleX connection is only *pending* when the
+    /// accept command returns; the usable id arrives with a later async
+    /// `contactConnected` event, so accept awaits it.)
+    async fn accept_invitation(&self, invitation: Invitation) -> Result<ConnectionId, Self::SendError>;
+
+    /// Await an inbound connection becoming established after this side created
+    /// + shared an invitation (the peer accepted it). The inviter-side
+    /// counterpart to `accept_invitation`'s establishment wait — the inviter
+    /// learns its connection id only once the peer connects (D0026 §12).
+    async fn await_connection(&self) -> Result<ConnectionId, Self::SendError>;
 
     /// Send a message over an established connection with forward-secrecy guarantees.
     async fn send(&self, conn: ConnectionId, payload: &[u8]) -> Result<(), Self::SendError>;
