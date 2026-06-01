@@ -28,7 +28,7 @@
 //! use for leaf hashes. A recipient observing the per-sender chain
 //! can detect gaps or substitutions by walking the hash chain.
 
-use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, SigningKey, VerifyingKey};
+use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, SIGNATURE_LEN, SigningKey, VerifyingKey};
 use cairn_envelope::canonical::Value;
 use cairn_envelope::cose_sign1::{CoseSign1, Sign1Builder};
 use ciborium::Value as CiboriumValue;
@@ -56,6 +56,48 @@ const KEY_TIMESTAMP: i64 = 4;
 const KEY_PRIOR_ENVELOPE_HASH: i64 = 5;
 const KEY_PAYLOAD: i64 = 6;
 const KEY_PADDING: i64 = 7;
+
+/// Produces the device-key Ed25519 signature over a Cairn message
+/// envelope's COSE `Sig_structure` (D0006 §9 hop #1).
+///
+/// This is the seam that lets the device signature be produced EITHER
+/// in-process (a software [`SigningKey`], used by the `cairn-cli` demo +
+/// the tests) OR out-of-process in hardware (an Android StrongBox
+/// `HardwareKeySigner` bridged in `cairn-uniffi` per D0020 §3.4), without
+/// the adapter's `send` path knowing which. The signing input is the
+/// canonical COSE `Sig_structure` built Rust-side, so the AAD domain tag
+/// (D0006 §8) is bound regardless of signer; for a hardware signer only
+/// the 64-byte signature crosses back — the device key never enters the
+/// process. See D0026 §2.3.
+pub trait EnvelopeSigner: Send + Sync {
+    /// Sign `signing_input` (the COSE `Sig_structure` bytes) with the
+    /// device key, returning the Ed25519 signature.
+    ///
+    /// # Errors
+    ///
+    /// [`SimplexAdapterError::EnvelopeSignatureVerifyFailed`] if signing
+    /// fails (e.g. a software-key payload-size limit, or a hardware-signer
+    /// failure surfaced by the FFI bridge).
+    fn sign_envelope(
+        &self,
+        signing_input: &[u8],
+    ) -> Result<[u8; SIGNATURE_LEN], SimplexAdapterError>;
+}
+
+/// In-process software-key signer: the `cairn-cli` demo + the crate's
+/// tests sign with a held [`SigningKey`]. The production Android path
+/// substitutes a hardware-backed [`EnvelopeSigner`] instead.
+impl EnvelopeSigner for SigningKey {
+    fn sign_envelope(
+        &self,
+        signing_input: &[u8],
+    ) -> Result<[u8; SIGNATURE_LEN], SimplexAdapterError> {
+        let signature = self
+            .sign(signing_input)
+            .map_err(|_| SimplexAdapterError::EnvelopeSignatureVerifyFailed)?;
+        Ok(signature.to_bytes())
+    }
+}
 
 /// Unsigned Cairn message envelope per D0026 §2.1.
 ///
@@ -191,28 +233,54 @@ impl MessageEnvelope {
         })
     }
 
-    /// Sign the envelope under the device key per D0006 §9 hop #1
-    /// with AAD = [`DOMAIN_TAG`].
+    /// Sign the envelope in-process under a software device key per D0006
+    /// §9 hop #1 with AAD = [`DOMAIN_TAG`].
     ///
-    /// Returns the canonical `COSE_Sign1` envelope bytes consuming
-    /// code passes to the SMP wire transport.
+    /// A convenience wrapper over [`Self::sign_with`] for a [`SigningKey`]
+    /// (the `cairn-cli` demo + the tests); the production Android/FFI path
+    /// uses [`Self::sign_with`] with a hardware-backed signer so the device
+    /// key never enters the process.
+    ///
+    /// Returns the canonical `COSE_Sign1` envelope bytes consuming code
+    /// passes to the transport.
     ///
     /// # Errors
     ///
-    /// - [`SimplexAdapterError::EnvelopeDecodeFailed`] if the
-    ///   canonical-CBOR encoding fails (unreachable for typed
-    ///   inputs).
-    /// - [`SimplexAdapterError::Envelope`] wrapping any
-    ///   `cairn-envelope` failure from the COSE_Sign1 builder.
+    /// See [`Self::sign_with`].
     pub fn sign(&self, device_key: &SigningKey) -> Result<Vec<u8>, SimplexAdapterError> {
+        self.sign_with(device_key)
+    }
+
+    /// Sign the envelope via an arbitrary [`EnvelopeSigner`] — a software
+    /// [`SigningKey`] OR a hardware StrongBox signer — per D0026 §2.3.
+    ///
+    /// Builds the canonical COSE `Sig_structure` Rust-side (binding the AAD
+    /// domain tag per D0006 §8), hands those bytes to `signer`, and
+    /// assembles the `COSE_Sign1` from the returned signature — so the
+    /// device key need never enter the process. Byte-identical to a direct
+    /// `finalize` when `signer` is the same software key: the
+    /// `cairn-envelope` external-signer path (`signing_input` +
+    /// `finalize_with_signature`) is the exact code `finalize` runs.
+    ///
+    /// # Errors
+    ///
+    /// - [`SimplexAdapterError::EnvelopeDecodeFailed`] if the canonical-CBOR
+    ///   encoding fails (unreachable for typed inputs).
+    /// - [`SimplexAdapterError::EnvelopeSignatureVerifyFailed`] wrapping a
+    ///   COSE builder failure or a `signer` failure.
+    pub fn sign_with(&self, signer: &dyn EnvelopeSigner) -> Result<Vec<u8>, SimplexAdapterError> {
         let payload = self.to_canonical_cbor()?;
-        let signed = Sign1Builder::new()
+        let builder = Sign1Builder::new()
             .with_payload(payload)
-            .with_external_aad(DOMAIN_TAG.to_vec())
-            .finalize(device_key)
+            .with_external_aad(DOMAIN_TAG.to_vec());
+        let signing_input = builder
+            .signing_input()
             .map_err(|_| SimplexAdapterError::EnvelopeSignatureVerifyFailed)?;
-        signed
-            .encode(false)
+        let sig_bytes = signer.sign_envelope(&signing_input)?;
+        let cose = builder
+            .finalize_with_signature(&sig_bytes)
+            .map_err(|_| SimplexAdapterError::EnvelopeSignatureVerifyFailed)?;
+        cose.encode(false)
             .map_err(|_| SimplexAdapterError::EnvelopeSignatureVerifyFailed)
     }
 }
@@ -376,6 +444,50 @@ mod tests {
         let (envelope, device_sk, _) = make_envelope();
         let signed_bytes = envelope.sign(&device_sk).unwrap();
         let recovered = verify_envelope(&signed_bytes, &device_sk.verifying_key()).unwrap();
+        assert_eq!(recovered, envelope);
+    }
+
+    /// A stand-in for the Android StrongBox `HardwareKeySigner` bridge: it
+    /// holds a software key and signs the COSE `Sig_structure` exactly as
+    /// the hardware callback would — only the signature bytes "cross back",
+    /// never the key. Used to exercise the `EnvelopeSigner` seam without an
+    /// in-process `SigningKey` on the signing path.
+    struct DelegatingSigner(SigningKey);
+
+    impl EnvelopeSigner for DelegatingSigner {
+        fn sign_envelope(
+            &self,
+            signing_input: &[u8],
+        ) -> Result<[u8; SIGNATURE_LEN], SimplexAdapterError> {
+            self.0
+                .sign(signing_input)
+                .map(|s| s.to_bytes())
+                .map_err(|_| SimplexAdapterError::EnvelopeSignatureVerifyFailed)
+        }
+    }
+
+    #[test]
+    fn sign_with_external_signer_matches_sign_and_verifies() {
+        // sign_with via an arbitrary EnvelopeSigner (here a delegating
+        // stand-in for the hardware bridge) must be byte-identical to the
+        // in-process sign(&key) for the same key, and the result must
+        // verify under the device verifying key. This is the adapter-level
+        // guarantee that the StrongBox signing path (D0026 §2.3) produces
+        // the same wire envelope as the software path.
+        let (envelope, device_sk, _) = make_envelope();
+        let vk = device_sk.verifying_key();
+
+        let direct = envelope.sign(&device_sk).unwrap();
+
+        // Move the key into the signer AFTER the borrow above ends.
+        let signer = DelegatingSigner(device_sk);
+        let external = envelope.sign_with(&signer).unwrap();
+
+        assert_eq!(
+            direct, external,
+            "sign_with(&signer) must match sign(&key) byte-for-byte"
+        );
+        let recovered = verify_envelope(&external, &vk).unwrap();
         assert_eq!(recovered, envelope);
     }
 

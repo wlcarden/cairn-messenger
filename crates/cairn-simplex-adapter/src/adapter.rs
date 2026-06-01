@@ -33,12 +33,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, SigningKey, VerifyingKey};
+use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, VerifyingKey};
 use cairn_sigsum_client::RetryBudget;
 use cairn_storage::{Storage, StorageError, categories};
 
 use crate::envelope::{
-    ENVELOPE_SCHEMA_VERSION, MessageEnvelope, next_prior_envelope_hash, verify_envelope,
+    ENVELOPE_SCHEMA_VERSION, EnvelopeSigner, MessageEnvelope, next_prior_envelope_hash,
+    verify_envelope,
 };
 use crate::error::SimplexAdapterError;
 use crate::padding::{generate_padding, padding_bytes_required};
@@ -85,14 +86,23 @@ pub struct ConnectionId(pub String);
 /// The local operational identity the adapter sends + signs as.
 ///
 /// Per D0006's delegation model the envelope is SIGNED by the device key
-/// but is FROM the operational identity, so both are held: the device key
-/// produces the `COSE_Sign1` signature; `operational_pubkey` populates the
-/// envelope's sender field (key 2) + the message-history record-id.
+/// but is FROM the operational identity, so both are held: the
+/// [`EnvelopeSigner`] produces the `COSE_Sign1` device signature;
+/// `operational_pubkey` populates the envelope's sender field (key 2) +
+/// the message-history record-id.
 ///
-/// No `Debug` impl — it holds a secret signing key.
+/// `device_signer` is an [`EnvelopeSigner`] rather than a concrete
+/// `SigningKey` so the device signature can be produced EITHER in-process
+/// (a software key, for the `cairn-cli` demo + tests) OR in hardware (an
+/// Android StrongBox bridge via `cairn-uniffi` per D0020 §3.4) — the latter
+/// is what lets the FFI messaging handle exist without a software key ever
+/// crossing the boundary (D0026 §2.3 / D0027 §2.4).
+///
+/// No `Debug` impl — the signer may hold a secret key.
 pub struct LocalIdentity {
-    /// Device Ed25519 signing key (signs the envelope per D0006 §9).
-    pub device_signing_key: SigningKey,
+    /// Device-key envelope signer (software key OR hardware bridge), per
+    /// D0006 §9 / D0026 §2.3.
+    pub device_signer: Arc<dyn EnvelopeSigner>,
     /// This identity's operational-identity public key (D0026 §2.1 key 2).
     pub operational_pubkey: [u8; PUBLIC_KEY_LEN],
 }
@@ -254,7 +264,7 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             payload: payload.to_vec(),
             padding,
         };
-        let cose = envelope.sign(&self.identity.device_signing_key)?;
+        let cose = envelope.sign_with(self.identity.device_signer.as_ref())?;
 
         let message_number = self.transport.send(conn, &cose).await?;
 
@@ -511,6 +521,7 @@ fn now_unix() -> u64 {
 mod tests {
     use super::*;
     use crate::sidecar::MockSidecarTransport;
+    use cairn_crypto::ed25519::SigningKey;
     use cairn_storage::key_provider::testing::InMemoryKeyProvider;
     use rand_core::OsRng;
     use zeroize::Zeroizing;
@@ -539,7 +550,7 @@ mod tests {
             .to_bytes();
         let config = SimplexAdapterConfig {
             identity: LocalIdentity {
-                device_signing_key: device_sk,
+                device_signer: Arc::new(device_sk),
                 operational_pubkey,
             },
             storage: make_storage(),
@@ -582,7 +593,7 @@ mod tests {
         let (_, operational_pubkey) = identity_for_seed(seed);
         let config = SimplexAdapterConfig {
             identity: LocalIdentity {
-                device_signing_key,
+                device_signer: Arc::new(device_signing_key),
                 operational_pubkey,
             },
             storage,
@@ -812,7 +823,7 @@ mod tests {
         let transport = SimploxideTransport::new(SidecarEndpoint::default());
         let config = SimplexAdapterConfig {
             identity: LocalIdentity {
-                device_signing_key: SigningKey::generate(&mut OsRng),
+                device_signer: Arc::new(SigningKey::generate(&mut OsRng)),
                 operational_pubkey: [0u8; PUBLIC_KEY_LEN],
             },
             storage: make_storage(),

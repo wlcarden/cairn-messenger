@@ -125,7 +125,8 @@ pub use adapter::{
     SimplexAdapter, SimplexAdapterConfig,
 };
 pub use envelope::{
-    DOMAIN_TAG, ENVELOPE_SCHEMA_VERSION, MessageEnvelope, next_prior_envelope_hash, verify_envelope,
+    DOMAIN_TAG, ENVELOPE_SCHEMA_VERSION, EnvelopeSigner, MessageEnvelope, next_prior_envelope_hash,
+    verify_envelope,
 };
 pub use error::SimplexAdapterError;
 pub use padding::{

@@ -200,6 +200,8 @@ The canonical encoder for emit-side bytes remains `cairn-envelope::canonical` pe
 
 **Tag confirmation per D0006 §6.** `CoseSign1::TAG = 18` per IANA CBOR Tags registry (verified via docs.rs). Cairn uses **untagged** form: `CoseSign1::to_vec()` and `from_slice()`. Tag 98 (COSE_Sign multi-signer) is NOT used.
 
+**External-signer path (added 2026-06-01, for hardware-resident device keys).** `cairn-envelope::cose_sign1::Sign1Builder` exposes `signing_input()` (the canonical `Sig_structure` bytes per RFC 9052 §4.4) + `finalize_with_signature(sig)` (assemble the `COSE_Sign1` from an externally-produced 64-byte Ed25519 signature) alongside the in-process `finalize(&SigningKey)`. This lets a device key that never enters the process — an Android StrongBox key per D0020 §3.4 / D0006 §9 — sign the `Sig_structure` in hardware while the envelope is built + assembled in Rust; only the signature crosses back. `finalize` is reimplemented as `signing_input` + an in-process Ed25519 sign + `finalize_with_signature`, so all three paths are byte-identical by construction (regression-tested in `external_signer_path_matches_finalize`). `cairn-simplex-adapter`'s `EnvelopeSigner` (D0026 §2.3) is the first consumer; the trust-graph / capability-token / release-manifest signers continue to use `finalize` unchanged.
+
 ### 2.3 Canonical encoding helper: `cairn-cbor-canonical`
 
 Both `ciborium` and `coset` have gaps relative to strict cross-implementation determinism. Cairn writes a project-owned `cairn-cbor-canonical` helper module per the consolidated triage CBOR/COSE research. The helper is part of the `cairn-envelope` crate and is the audit-target surface per D0011 pre-pilot audit scope.
