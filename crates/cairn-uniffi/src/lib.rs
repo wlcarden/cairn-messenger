@@ -101,15 +101,25 @@
 //!   `suspend fun`s. Control plane only; the data-plane `TorStream` is
 //!   consumed Rust-side, not crossed.
 //!
-//! The one remaining per-domain module is `messaging`
-//! (`SimplexAdapterHandle`): the generic `SimplexAdapter<T>` forces the
-//! `SimploxideTransport` stub, so it is non-functional (`NetworkUnreached`)
-//! until `simploxide-client` lands. The `fuzz_uniffi_boundary` harness
-//! (D0018 §5.2) is a follow-up.
+//! - [`messaging`] — [`SimplexAdapterHandle`] ([`SidecarEndpointConfig`] /
+//!   [`MessageSentRecord`] / [`ReceivedMessageRecord`]): the last async
+//!   Object. `create_invitation` / `accept_invitation` / `send` / `recv`
+//!   export as `suspend fun`s. The device key signs each envelope's
+//!   `COSE_Sign1` in StrongBox via the [`HardwareKeySigner`] callback
+//!   (bridged into `cairn_simplex_adapter::EnvelopeSigner`; the key never
+//!   crosses — D0026 §2.3), and the handle shares the [`StorageHandle`]'s
+//!   `Arc<Storage>` for the `MESSAGES` history. `send` / `recv` exercise
+//!   the full build → sign → persist path but return `NetworkUnreached`
+//!   over the deferred `SimploxideTransport` (D0026 §12) until
+//!   `simploxide-client` lands.
+//!
+//! All seven per-domain modules (D0027 §2) have now landed. The
+//! `fuzz_uniffi_boundary` harness (D0018 §5.2) is a follow-up.
 
 pub mod error;
 pub mod hardware;
 pub mod identity;
+pub mod messaging;
 pub mod never_export_gate;
 pub mod recovery;
 pub mod storage;
@@ -120,6 +130,9 @@ pub mod trust_graph;
 pub use error::CairnFfiError;
 pub use hardware::{AttestationCertificate, HardwareKeySigner, HardwarePublicKey, KeyGenSpec};
 pub use identity::{CapabilityTokenRecord, identity_verify_capability_token};
+pub use messaging::{
+    MessageSentRecord, ReceivedMessageRecord, SidecarEndpointConfig, SimplexAdapterHandle,
+};
 pub use recovery::{
     MasterAttestationRecord, ShareRecord, recovery_reconstruct_and_attest,
     recovery_verify_master_attestation,

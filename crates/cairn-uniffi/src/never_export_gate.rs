@@ -88,6 +88,15 @@ pub const fn assert_v1_carrier_types_exportable() {
     // public values (bridge-manifest text, cookie path, connectivity).
     assert_exportable::<crate::tor::TorControlConfig>();
     assert_exportable::<crate::tor::NetworkStateFfi>();
+    // messaging (D0027 §2): the endpoint config + the sent/received
+    // message records carry only public values (host/port + retry cap; the
+    // MESSAGES record-id hash + message number; the sender pubkey + the
+    // application payload + a receive timestamp). The device key signs
+    // envelopes in StrongBox via the HardwareKeySigner callback and never
+    // crosses; the payload is the app's own decrypted content, not a key.
+    assert_exportable::<crate::messaging::SidecarEndpointConfig>();
+    assert_exportable::<crate::messaging::MessageSentRecord>();
+    assert_exportable::<crate::messaging::ReceivedMessageRecord>();
 }
 
 #[cfg(test)]
