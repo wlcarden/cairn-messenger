@@ -59,18 +59,26 @@
 //! - Threshold check (2-of-3 acceptance) per D0023 §3.4
 //! - Typed error surface per D0023 §7
 //!
-//! [`SigsumClient::refresh_tree_head`] is implemented end-to-end: a
-//! real `get-tree-head` fetch, log-signature verification, the 2-of-3
-//! cosignature threshold, split-view detection, and a cache write. It
-//! is validated by the hermetic wiremock harness in
-//! `tests/refresh_tree_head_wiremock.rs`.
+//! All three network-bound surfaces are implemented end-to-end and
+//! validated by hermetic wiremock harnesses (no `NetworkUnreached`
+//! stub remains in the crate):
 //!
-//! [`SigsumClient::emit_leaf`] + [`SigsumClient::verify_inclusion`]
-//! still return [`SigsumError::NetworkUnreached`] pending their
-//! `add-leaf` + inclusion-proof bodies per D0023 §10. The
-//! `integration-tests` cargo feature flag gates the eventual
-//! real-Sigsum network-exercising tests (the wiremock harness above
-//! runs without it).
+//! - [`SigsumClient::refresh_tree_head`] — `get-tree-head` fetch,
+//!   log-signature verification, the 2-of-3 cosignature threshold,
+//!   split-view detection, and a cache write
+//!   (`tests/refresh_tree_head_wiremock.rs`).
+//! - [`SigsumClient::emit_leaf`] — builds the Sigsum `tree_leaf`, POSTs
+//!   `add-leaf` (retrying `202` until `200`), and caches an
+//!   [`EmittedLeaf`] (`tests/emit_leaf_wiremock.rs`).
+//! - [`SigsumClient::verify_inclusion`] — reconstructs the Merkle leaf
+//!   hash from the cached [`EmittedLeaf`], fetches a fresh accepted
+//!   head plus `get-inclusion-proof`, verifies the RFC 6962 inclusion
+//!   against the head's root, and caches the [`InclusionProof`]
+//!   (`tests/verify_inclusion_wiremock.rs`).
+//!
+//! The `integration-tests` cargo feature flag gates the eventual
+//! real-Sigsum network-exercising tests (the wiremock harnesses above
+//! run without it).
 
 pub mod cache;
 pub mod client;
@@ -81,7 +89,8 @@ pub mod verify;
 pub mod witness;
 
 pub use cache::{
-    EmittedLeaf, InclusionProof, TreeHead, cache_record_id_for_leaf, cache_record_id_for_log,
+    EmittedLeaf, InclusionProof, TreeHead, cache_record_id_for_inclusion_proof,
+    cache_record_id_for_leaf, cache_record_id_for_log,
 };
 pub use client::{RetryBudget, SigsumClient, SigsumClientConfig};
 pub use emit::{EmissionStatus, EmitOutcome, sigsum_emit};

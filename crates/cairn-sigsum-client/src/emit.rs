@@ -245,10 +245,11 @@ mod tests {
     #[tokio::test]
     async fn sigsum_emit_persists_op_in_v1_skeleton() {
         // Per §6.1: persistence is the source of truth, emission is
-        // best-effort. v1 skeleton's emit_leaf returns NetworkUnreached
-        // so we expect EmissionStatus::Deferred AND a populated
-        // record_id pointing at a real row in the trust-graph
-        // category.
+        // best-effort. emit_leaf is real, but this client points at an
+        // unreachable log (127.0.0.1:1, 0 retries), so emission fails
+        // fast with a Network error → EmissionStatus::Deferred, AND a
+        // populated record_id still points at a real row in the
+        // trust-graph category.
         let storage = open_storage();
         let client = make_client(Arc::clone(&storage));
         let mut rng = OsRng;

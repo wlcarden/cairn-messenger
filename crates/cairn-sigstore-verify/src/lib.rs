@@ -80,10 +80,13 @@
 //!
 //! **One composition gap remains (D0024 §5):** `verify_release` does
 //! NOT yet perform the witness-cosigned Sigsum-anchored-release-log
-//! step — it depends on `cairn_sigsum_client::verify_inclusion`, still
-//! a `NetworkUnreached` stub. The composed `SigsumClient` is held for
-//! that step. The `integration-tests` cargo feature flag gates the
-//! eventual real-Rekor / real-Fulcio network-exercising tests.
+//! step. Its dependency, `cairn_sigsum_client::verify_inclusion`, is
+//! now implemented — so the step is unblocked, but wiring it is its own
+//! follow-up: a release manifest is not a `SignedTrustGraphOp` (what
+//! `verify_inclusion` consumes), so the release-leaf representation must
+//! be settled first. The composed `SigsumClient` is held for that step.
+//! The `integration-tests` cargo feature flag gates the eventual
+//! real-Rekor / real-Fulcio network-exercising tests.
 
 pub mod client;
 pub mod compose;

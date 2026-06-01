@@ -21,10 +21,17 @@
 //! reconstruct the Merkle leaf hash. Validated by the hermetic wiremock
 //! harness in `tests/emit_leaf_wiremock.rs`.
 //!
-//! [`SigsumClient::verify_inclusion`] still returns
-//! [`SigsumError::NetworkUnreached`] pending its `get-inclusion-proof`
-//! fetch + RFC 6962 verification against the accepted head (the next
-//! surface to land; it consumes the `EmittedLeaf` record emit caches).
+//! [`SigsumClient::verify_inclusion`] is **implemented**: it loads the
+//! emit-time [`crate::cache::EmittedLeaf`] to recompute the Sigsum
+//! Merkle leaf hash, fetches a fresh accepted head, fetches
+//! `get-inclusion-proof`, verifies the RFC 6962 inclusion against the
+//! head's root, and caches the [`crate::cache::InclusionProof`].
+//! Validated by the hermetic wiremock harness in
+//! `tests/verify_inclusion_wiremock.rs`.
+//!
+//! All three network surfaces (`emit_leaf`, `refresh_tree_head`,
+//! `verify_inclusion`) are now implemented; no `NetworkUnreached` stub
+//! remains in this crate.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -36,8 +43,8 @@ use sha2::{Digest, Sha256};
 use url::Url;
 
 use crate::cache::{
-    Cosignature, EmittedLeaf, InclusionProof, TreeHead, cache_record_id_for_leaf,
-    cache_record_id_for_log,
+    Cosignature, EmittedLeaf, InclusionProof, TreeHead, cache_record_id_for_inclusion_proof,
+    cache_record_id_for_leaf, cache_record_id_for_log,
 };
 use crate::error::SigsumError;
 use crate::leaf::LeafHash;
@@ -275,29 +282,153 @@ impl SigsumClient {
         }
     }
 
-    /// Verify that `signed_op` is included in the latest accepted
-    /// log head per D0023 §5 + §6.2.
+    /// Verify that `signed_op` is included in the latest accepted log
+    /// head per D0023 §5 + §6.2, against the real Sigsum v1
+    /// `get-inclusion-proof` endpoint.
     ///
-    /// v1 skeleton: returns [`SigsumError::NetworkUnreached`].
+    /// Flow:
+    /// 1. Compute Cairn's leaf hash (the submitted `message`).
+    /// 2. Load the emit-time [`EmittedLeaf`] for this leaf from the
+    ///    cache and reconstruct the Sigsum `tree_leaf` → its Merkle leaf
+    ///    hash `H(0x00 ‖ tree_leaf)` (the value the log addresses). This
+    ///    requires the leaf to have been emitted ([`Self::emit_leaf`])
+    ///    or its `EmittedLeaf` transmitted + cached — a verifying
+    ///    recipient cannot recompute the submitter's tree-leaf signature
+    ///    (D0023 §1.4).
+    /// 3. Fetch + verify a fresh accepted head via
+    ///    [`Self::refresh_tree_head`] (cosigned + split-view-checked).
+    /// 4. For a tree of size 1, check inclusion locally (`leaf_hash ==
+    ///    root_hash` per the Sigsum spec §3.2); otherwise
+    ///    `GET get-inclusion-proof/<size>/<merkle_leaf_hash>`, parse the
+    ///    `leaf_index` + `node_hash` lines, and reconstruct the RFC 6962
+    ///    root, which must equal the accepted head's root.
+    /// 5. Cache the verified [`InclusionProof`] (under a key
+    ///    domain-separated from the [`EmittedLeaf`] record) and return
+    ///    it.
     ///
     /// # Errors
     ///
-    /// - [`SigsumError::NetworkUnreached`] (skeleton only)
-    /// - When the body lands:
-    ///   [`SigsumError::InclusionProofVerifyFailed`],
-    ///   [`SigsumError::InsufficientWitnessCosignatures`],
-    ///   [`SigsumError::LogSplitView`],
-    ///   [`SigsumError::Storage`] for cache I/O failures.
-    #[allow(
-        clippy::unused_async,
-        reason = "v1 skeleton; network body lands with the integration-tests gate per D0023 §10"
-    )]
+    /// - [`SigsumError::Storage`] — the `EmittedLeaf` is not cached (the
+    ///   leaf was never emitted / its record was not transmitted), or a
+    ///   cache read/write failed.
+    /// - any error from [`Self::refresh_tree_head`] (network /
+    ///   cosignature / split-view).
+    /// - [`SigsumError::Network`] — the `get-inclusion-proof` fetch
+    ///   failed (incl. 404 "not included") after the retry budget.
+    /// - [`SigsumError::MalformedResponse`] — unparseable
+    ///   `get-inclusion-proof` response.
+    /// - [`SigsumError::InclusionProofVerifyFailed`] — the proof's
+    ///   reconstructed root did not match the accepted head's root.
     pub async fn verify_inclusion(
         &self,
         signed_op: &SignedTrustGraphOp,
     ) -> Result<InclusionProof, SigsumError> {
-        let _hash = crate::leaf::leaf_hash_for(signed_op)?;
-        Err(SigsumError::NetworkUnreached)
+        // (1) Cairn leaf hash (the submitted message).
+        let leaf_hash = crate::leaf::leaf_hash_for(signed_op)?;
+
+        // (2) Load the emit-time tree_leaf -> Sigsum Merkle leaf hash.
+        let emitted_id = cache_record_id_for_leaf(&self.log_url, &leaf_hash);
+        let emitted = self.load_emitted_leaf(&emitted_id)?;
+        let merkle_leaf_hash = emitted.tree_leaf().merkle_leaf_hash();
+
+        // (3) Fresh, cosigned, split-view-checked accepted head.
+        let head = self.refresh_tree_head().await?;
+
+        // (4) Verify inclusion against the accepted head.
+        let (leaf_index, proof_nodes) = if head.tree_size == 0 {
+            return Err(SigsumError::InclusionProofVerifyFailed);
+        } else if head.tree_size == 1 {
+            // Sigsum spec §3.2: in a size-1 tree a leaf is included iff
+            // its hash equals the root hash; no proof is fetched.
+            if merkle_leaf_hash != head.root_hash {
+                return Err(SigsumError::InclusionProofVerifyFailed);
+            }
+            (0u64, Vec::new())
+        } else {
+            let body = self
+                .http_get_inclusion_proof(head.tree_size, &merkle_leaf_hash)
+                .await?;
+            let (leaf_index, proof_nodes) = parse_get_inclusion_proof(&body)?;
+            let computed = rfc6962_root_from_inclusion_proof(
+                leaf_index,
+                head.tree_size,
+                &merkle_leaf_hash,
+                &proof_nodes,
+            )
+            .ok_or(SigsumError::InclusionProofVerifyFailed)?;
+            if computed != head.root_hash {
+                return Err(SigsumError::InclusionProofVerifyFailed);
+            }
+            (leaf_index, proof_nodes)
+        };
+
+        // (5) Cache + return the verified inclusion proof. The proof is
+        // cached under a key domain-separated from the EmittedLeaf
+        // record so the two per-leaf records do not collide.
+        let proof = InclusionProof {
+            leaf_hash,
+            tree_size: head.tree_size,
+            proof_nodes,
+            leaf_index,
+            observed_at: now_unix(),
+        };
+        let proof_id = cache_record_id_for_inclusion_proof(&self.log_url, &leaf_hash);
+        self.storage.put(
+            categories::SIGSUM_CACHE,
+            &proof_id,
+            &proof.to_canonical_cbor()?,
+        )?;
+        Ok(proof)
+    }
+
+    /// Load + decode the cached [`EmittedLeaf`] for this leaf. A cache
+    /// miss surfaces as [`SigsumError::Storage`].
+    fn load_emitted_leaf(&self, record_id: &[u8]) -> Result<EmittedLeaf, SigsumError> {
+        let bytes = self.storage.get(categories::SIGSUM_CACHE, record_id)?;
+        EmittedLeaf::from_canonical_cbor(&bytes)
+    }
+
+    /// `GET {log_url}/get-inclusion-proof/{size}/{hex(merkle_leaf_hash)}`,
+    /// retrying transient transport / 5xx failures up to the retry
+    /// budget. A 404 ("not included") surfaces as the terminal
+    /// [`SigsumError::Network`] after the budget.
+    async fn http_get_inclusion_proof(
+        &self,
+        size: u64,
+        merkle_leaf_hash: &[u8; 32],
+    ) -> Result<String, SigsumError> {
+        let path = format!("get-inclusion-proof/{size}/{}", lower_hex(merkle_leaf_hash));
+        let url = self
+            .log_url
+            .join(&path)
+            .map_err(|_| SigsumError::MalformedResponse)?;
+        let budget = self.default_retry_budget;
+        let mut delay = budget.initial_delay;
+        let mut attempt: u8 = 0;
+        loop {
+            match self.http.get(url.clone()).send().await {
+                Ok(resp) => match resp.error_for_status() {
+                    Ok(ok) => {
+                        return ok.text().await.map_err(|_| SigsumError::MalformedResponse);
+                    }
+                    Err(_) if attempt < budget.max_retries => {}
+                    Err(_) => {
+                        return Err(SigsumError::Network {
+                            retry_budget_used: attempt,
+                        });
+                    }
+                },
+                Err(_) if attempt < budget.max_retries => {}
+                Err(_) => {
+                    return Err(SigsumError::Network {
+                        retry_budget_used: attempt,
+                    });
+                }
+            }
+            tokio::time::sleep(delay).await;
+            delay = delay.saturating_mul(2).min(budget.max_delay);
+            attempt = attempt.saturating_add(1);
+        }
     }
 
     /// Refresh the latest accepted tree head per D0023 §4.1 +
@@ -611,6 +742,83 @@ fn lower_hex(bytes: &[u8]) -> String {
     s
 }
 
+/// Parse a Sigsum v1 `get-inclusion-proof` response (spec §3.2): a
+/// `leaf_index=<dec>` line followed by one or more `node_hash=<hex>`
+/// lines in RFC 6962 leaf→root order.
+fn parse_get_inclusion_proof(body: &str) -> Result<(u64, Vec<[u8; 32]>), SigsumError> {
+    let mut leaf_index: Option<u64> = None;
+    let mut nodes = Vec::new();
+    for line in body.lines() {
+        let line = line.trim_end();
+        if line.is_empty() {
+            continue;
+        }
+        let (key, value) = line.split_once('=').ok_or(SigsumError::MalformedResponse)?;
+        match key {
+            "leaf_index" => {
+                if leaf_index.is_some() {
+                    return Err(SigsumError::MalformedResponse);
+                }
+                leaf_index = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| SigsumError::MalformedResponse)?,
+                );
+            }
+            "node_hash" => nodes.push(parse_hex_array::<32>(value)?),
+            _ => {} // forward-compat: ignore unknown keys
+        }
+    }
+    Ok((leaf_index.ok_or(SigsumError::MalformedResponse)?, nodes))
+}
+
+/// Reconstruct the RFC 6962 Merkle root from an inclusion proof
+/// (transparency-dev `inner`/`border` decomposition). Returns `None` if
+/// the index is out of range or the proof length is wrong.
+fn rfc6962_root_from_inclusion_proof(
+    index: u64,
+    size: u64,
+    leaf_hash: &[u8; 32],
+    proof: &[[u8; 32]],
+) -> Option<[u8; 32]> {
+    if index >= size {
+        return None;
+    }
+    let size_minus_one = size.wrapping_sub(1);
+    let inner: u32 = u64::BITS.saturating_sub((index ^ size_minus_one).leading_zeros());
+    let border = index.checked_shr(inner).map_or(0, u64::count_ones);
+    let inner_len = inner as usize;
+    if proof.len() != inner_len.saturating_add(border as usize) {
+        return None;
+    }
+    let (inner_nodes, border_nodes) = proof.split_at(inner_len);
+    let mut res = *leaf_hash;
+    for (i, node) in (0u32..).zip(inner_nodes.iter()) {
+        let bit = index.checked_shr(i).unwrap_or(0) & 1;
+        res = if bit == 0 {
+            hash_children(&res, node)
+        } else {
+            hash_children(node, &res)
+        };
+    }
+    for node in border_nodes {
+        res = hash_children(node, &res);
+    }
+    Some(res)
+}
+
+/// RFC 6962 interior-node hash: `SHA-256(0x01 ‖ left ‖ right)`.
+fn hash_children(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update([0x01u8]);
+    hasher.update(left);
+    hasher.update(right);
+    let out = hasher.finalize();
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&out);
+    arr
+}
+
 #[cfg(test)]
 #[allow(clippy::indexing_slicing, clippy::panic, clippy::unwrap_used)]
 mod tests {
@@ -699,16 +907,24 @@ mod tests {
     // `tests/emit_leaf_wiremock.rs`.
 
     #[tokio::test]
-    async fn verify_inclusion_returns_network_unreached_in_skeleton() {
+    async fn verify_inclusion_without_emitted_leaf_is_storage_error() {
+        // verify_inclusion needs the emit-time EmittedLeaf cached (to
+        // rebuild the Sigsum Merkle leaf hash). For an op that was never
+        // emitted, the cache lookup misses and surfaces a Storage error
+        // before any network call. The full accept path is validated in
+        // `tests/verify_inclusion_wiremock.rs`.
         let client = make_test_client();
         let mut rng = OsRng;
         let signed_op = make_signed_op(&mut rng);
         let result = client.verify_inclusion(&signed_op).await;
-        assert!(matches!(result, Err(SigsumError::NetworkUnreached)));
+        assert!(
+            matches!(result, Err(SigsumError::Storage(_))),
+            "got {result:?}"
+        );
     }
 
-    // `refresh_tree_head` is no longer a stub — it performs a real
-    // get-tree-head fetch + C2SP cosignature verification. Its
-    // behavior is validated end-to-end against a hermetic wiremock
-    // Sigsum log in `tests/refresh_tree_head_wiremock.rs`.
+    // `emit_leaf` + `refresh_tree_head` are no longer stubs — both
+    // perform real network work, validated end-to-end against hermetic
+    // wiremock Sigsum logs in `tests/emit_leaf_wiremock.rs` +
+    // `tests/refresh_tree_head_wiremock.rs`.
 }

@@ -266,7 +266,9 @@ Per emitted trust-graph op, cache:
   for `verify_inclusion`, and cannot be recomputed by a verifying
   recipient (the submitter signature needs the submitter's private key).
 - The inclusion proof at the `tree_size` when first observed (cached by
-  `verify_inclusion` once it lands).
+  `verify_inclusion`, which reconstructs the RFC 6962 root from the
+  cached `EmittedLeaf` + the fetched `get-inclusion-proof` and requires
+  it to equal the accepted head's root before caching).
 - The log URL.
 - The Unix-seconds when the leaf was emitted / the proof last verified.
 
@@ -460,6 +462,14 @@ This D-doc is accepted. The matching `cairn-sigsum-client` crate skeleton + the 
 6. CLI integration in cairn-cli: `sigsum-emit` + `sigsum-verify` subcommands for end-to-end demo
 
 The `witnesses.toml` baked-in resource is a release-time decision; the v1 ship will include three witness entries the Q5 partner outreach has recruited (per D0015).
+
+_[Implementation note — 2026-05-31]_ All three network-bound surfaces have left the v1 skeleton and are implemented + hermetically validated, with no `NetworkUnreached` stub remaining in the crate:
+
+- `refresh_tree_head` — real `get-tree-head` fetch + pinned-log-key tree-head signature verify + C2SP `tlog-cosignature/v1` 2-of-3 threshold + split-view detection + cache write; `tests/refresh_tree_head_wiremock.rs` (11 cases).
+- `emit_leaf` — builds the Sigsum `tree_leaf` (§1.4 revised), POSTs `add-leaf` (retrying `202` until `200`), caches an `EmittedLeaf`; `tests/emit_leaf_wiremock.rs` (3 cases).
+- `verify_inclusion` — loads the `EmittedLeaf`, reconstructs `merkle_leaf_hash`, fetches a fresh accepted head, fetches `get-inclusion-proof`, reconstructs the RFC 6962 root (transparency-dev inner/border decomposition; size-1 trees check locally per the spec §3.2), requires it to equal the accepted head's root, and caches the verified `InclusionProof`; `tests/verify_inclusion_wiremock.rs` (8 cases).
+
+The hermetic wiremock harnesses run on every CI invocation (no feature gate); the `--features integration-tests` flag (item 3 above) still gates the eventual real-network tests against a public Sigsum log.
 
 ---
 

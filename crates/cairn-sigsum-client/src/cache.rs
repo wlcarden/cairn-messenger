@@ -457,8 +457,8 @@ pub fn cache_record_id_for_log(log_url: &url::Url) -> [u8; CACHE_RECORD_ID_LEN] 
     arr
 }
 
-/// Compute the SIGSUM_CACHE record id for one (log, leaf) inclusion
-/// proof per D0023 §4.2.
+/// Compute the SIGSUM_CACHE record id for one (log, leaf) [`EmittedLeaf`]
+/// record per D0023 §4.2 — `SHA-256(log_url ‖ leaf_hash)`.
 #[must_use]
 pub fn cache_record_id_for_leaf(
     log_url: &url::Url,
@@ -467,6 +467,28 @@ pub fn cache_record_id_for_leaf(
     let mut hasher = Sha256::new();
     hasher.update(log_url.as_str().as_bytes());
     hasher.update(leaf_hash.as_bytes());
+    let out = hasher.finalize();
+    let mut arr = [0u8; CACHE_RECORD_ID_LEN];
+    arr.copy_from_slice(&out);
+    arr
+}
+
+/// Compute the SIGSUM_CACHE record id for one (log, leaf)
+/// [`InclusionProof`] record per D0023 §4.2.
+///
+/// Domain-separated from [`cache_record_id_for_leaf`] (a trailing
+/// `"\x00inclusion-proof"` tag) so the per-leaf `EmittedLeaf` (written by
+/// `emit_leaf`) and `InclusionProof` (written by `verify_inclusion`)
+/// records do not collide on the same key.
+#[must_use]
+pub fn cache_record_id_for_inclusion_proof(
+    log_url: &url::Url,
+    leaf_hash: &LeafHash,
+) -> [u8; CACHE_RECORD_ID_LEN] {
+    let mut hasher = Sha256::new();
+    hasher.update(log_url.as_str().as_bytes());
+    hasher.update(leaf_hash.as_bytes());
+    hasher.update(b"\x00inclusion-proof");
     let out = hasher.finalize();
     let mut arr = [0u8; CACHE_RECORD_ID_LEN];
     arr.copy_from_slice(&out);

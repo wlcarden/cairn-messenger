@@ -25,10 +25,13 @@
 //!
 //! **One gap remains (D0024 §5):** the witness-cosigned
 //! Sigsum-anchored-release-log composition step is NOT wired into
-//! `verify_release` — it depends on
-//! `cairn_sigsum_client::SigsumClient::verify_inclusion`, still a
-//! `NetworkUnreached` stub. The composed [`SigsumClient`] is held for
-//! that step; it lands when `verify_inclusion` does.
+//! `verify_release`. Its dependency,
+//! `cairn_sigsum_client::SigsumClient::verify_inclusion`, is now fully
+//! implemented (2026-05-31) — so this step is unblocked, but wiring it
+//! is its own follow-up: a release manifest is not itself a
+//! `SignedTrustGraphOp`, so composing the release log onto Sigsum needs
+//! the release-leaf representation settled first (D0024 §5). The
+//! composed [`SigsumClient`] is held in the verifier for that step.
 
 use cairn_envelope::cose_sign1::CoseSign1;
 use cairn_sigsum_client::{RetryBudget, SigsumClient};
@@ -205,11 +208,13 @@ impl SigstoreVerifier {
     /// # Sigsum composition gap (D0024 §5)
     ///
     /// The witness-cosigned Sigsum-anchored-release-log step (§5) is
-    /// NOT performed here: it depends on
-    /// `cairn_sigsum_client::SigsumClient::verify_inclusion`, which is
-    /// still a `NetworkUnreached` stub. It is intentionally left
-    /// unwired (not faked) until that surface lands; the composed
-    /// [`SigsumClient`] is held in the verifier for that step.
+    /// NOT performed here. Its dependency,
+    /// `cairn_sigsum_client::SigsumClient::verify_inclusion`, is now
+    /// implemented, so the step is unblocked — but it stays unwired
+    /// (not faked) pending the release-leaf representation it needs (a
+    /// release manifest is not a `SignedTrustGraphOp`, which is what
+    /// `verify_inclusion` consumes). The composed [`SigsumClient`] is
+    /// held in the verifier for that step.
     ///
     /// # Errors
     ///

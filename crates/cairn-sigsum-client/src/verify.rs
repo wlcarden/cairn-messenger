@@ -27,16 +27,21 @@
 //!    [`VerifyChainWithSigsumError::SigsumInclusion`] carrying its
 //!    `op_index`.
 //!
-//! ## v1 skeleton status
+//! ## Inclusion-gate behavior
 //!
-//! The wrapper composes against the v1 skeleton's stubbed
-//! [`SigsumClient::verify_inclusion`] which returns
-//! [`SigsumError::NetworkUnreached`] unconditionally. Every wrapper
-//! invocation in v1 therefore surfaces
-//! `SigsumInclusion { op_index: 0, source: NetworkUnreached }` once
-//! the chain itself verifies. Once the network surface lands, the
-//! wrapper returns `Ok(Vec<&TrustGraphOp>)` on full chain-and-
-//! inclusion verification.
+//! The wrapper composes against the fully-implemented
+//! [`SigsumClient::verify_inclusion`] (D0023 §5 + §6.2). For each op
+//! whose chain link verifies, the gate requires both (a) a cached
+//! [`crate::EmittedLeaf`] from a prior [`SigsumClient::emit_leaf`] and
+//! (b) an inclusion proof that reconstructs to the cosigned, split-
+//! view-checked accepted tree head. The first op that fails either
+//! requirement short-circuits with
+//! `SigsumInclusion { op_index, source }`: an op that was never
+//! emitted surfaces `source: SigsumError::Storage(..)` (the cache
+//! miss); an op not yet merged into the log surfaces a network or
+//! [`SigsumError::InclusionProofVerifyFailed`] error. The wrapper
+//! returns `Ok(Vec<&TrustGraphOp>)` only when every op both chain-
+//! link- and inclusion-verifies.
 
 use cairn_crypto::ed25519::VerifyingKey;
 use cairn_trust_graph::{SignedTrustGraphOp, TrustGraphError, TrustGraphOp, verify_chain_links};
@@ -282,11 +287,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sigsum_inclusion_failure_pinpoints_op_index_in_skeleton() {
-        // In v1 skeleton, verify_inclusion always returns
-        // NetworkUnreached. For a single-op chain the first failing
-        // op is at index 0; the wrapper must surface that index in
-        // SigsumInclusion.op_index per §6.2.
+    async fn sigsum_inclusion_failure_pinpoints_op_index() {
+        // For a single-op chain whose link verifies but whose leaf was
+        // never emitted, verify_inclusion fails at the cache-load step
+        // (no EmittedLeaf record) with SigsumError::Storage — before
+        // any network call. The wrapper must surface that failure at
+        // op_index 0 per §6.2, proving it attributes the inclusion
+        // failure to the correct position in the input slice.
         let client = make_client();
         let (ops, token_bytes, op_identity) = make_single_op_chain();
 
@@ -297,7 +304,7 @@ mod tests {
             result,
             Err(VerifyChainWithSigsumError::SigsumInclusion {
                 op_index: 0,
-                source: SigsumError::NetworkUnreached,
+                source: SigsumError::Storage(_),
             })
         ));
     }
