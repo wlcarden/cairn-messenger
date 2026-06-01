@@ -158,7 +158,7 @@ impl WitnessPool {
     /// Since the constructor rejects undersized pools, this should
     /// always return `false` for a successfully-constructed pool.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.witnesses.is_empty()
     }
 }

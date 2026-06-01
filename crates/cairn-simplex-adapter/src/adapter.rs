@@ -12,11 +12,10 @@
 //! sign → pad on send; verify → bind → chain-check → unpad on recv) is
 //! implemented ONCE, generically, and is fully testable over an in-memory
 //! `MockSidecarTransport` — without the SimpleX Chat CLI
-//! sidecar (D0026 §1.2). Production uses
-//! `SimplexAdapter<`[`crate::sidecar::SimploxideTransport`]`>`; that
-//! concrete transport's WebSocket body is deferred pending the
-//! `simploxide-client` crate (D0026 §12), but every layer Cairn owns is
-//! live below.
+//! sidecar (D0026 §1.2). Production uses `SimplexAdapter` over the ws-core
+//! [`crate::sidecar::SimploxideTransport`], whose loopback-WebSocket body is
+//! live-validated against a real simplex-chat daemon (D0026 §12); every layer
+//! Cairn owns is live below it.
 //!
 //! ## What rides over the seam
 //!

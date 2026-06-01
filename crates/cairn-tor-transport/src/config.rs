@@ -108,7 +108,7 @@ impl BridgeManifest {
     /// Return `true` if no bridges are configured. In that case,
     /// C-Tor bootstraps without bridges (direct Tor).
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.bridges.is_empty()
     }
 }

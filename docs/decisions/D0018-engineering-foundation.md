@@ -547,11 +547,13 @@ This is documented in `docs/design-brief.md` §6.3 as the v1 pilot device baseli
 
 ```toml
 [toolchain]
-channel = "1.85.0"  # pinned; rotated deliberately
+channel = "1.88.0"  # pinned; rotated deliberately (bumped 1.85 -> 1.88, see below)
 targets = ["aarch64-linux-android", "x86_64-linux-android"]
 profile = "minimal"
 components = ["rustfmt", "clippy"]
 ```
+
+> **Toolchain bump 1.85.0 → 1.88.0 (2026-06-01 — the first deliberate rotation).** Triply-justified, all converging on rust ≥1.88: (1) the SimpleX **Android FFI transport** — `simploxide-sxcrt-sys`'s `build.rs` uses `let`-chains (stabilized 1.88) per D0026 §12; (2) the high-level `simploxide-client` (`const Duration::from_hours`, ~1.87+); (3) the **`time` RUSTSEC-2026-0009** fix (`time >= 0.3.47` needs 1.88). Workspace `rust-version` bumped to `1.88` in lockstep. Re-validation: all four CI gates (clippy `--all-targets --all-features -D warnings` / test / doc / fmt) pass on 1.88 across all 14 crates. Churn was minimal + mechanical: a removed `clippy::match_on_vec_items` allow (now covered by `indexing_slicing`), a `doc_link_code` doc-comment reword, and a `format_push_string` (nursery) workspace-allow (a tracked `write!`-conversion follow-up). Byte-stability discipline (§9.1) is unaffected — exact crate pins unchanged; this is a compiler-toolchain rotation, re-validated.
 
 **`RUSTFLAGS`** for release builds: `--remap-path-prefix=$PWD=. -C strip=symbols`. Sets Gradle's `BuildConfig.BUILD_TIME` to a fixed value (commit timestamp).
 
@@ -592,7 +594,7 @@ members = [
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"  # bumped 1.85 -> 1.88 (2026-06-01 coordination event; see §7.4)
 license = "AGPL-3.0-only"
 authors = ["Cairn maintainers and contributors"]
 repository = "https://github.com/cairn-project/cairn"  # placeholder; updated when repo created

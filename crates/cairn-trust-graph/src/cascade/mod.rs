@@ -235,7 +235,7 @@ const fn classify_against_withdrawal(
 }
 
 #[cfg(test)]
-#[allow(clippy::indexing_slicing, clippy::panic, clippy::match_on_vec_items)]
+#[allow(clippy::indexing_slicing, clippy::panic)]
 mod tests {
     use super::*;
     use cairn_crypto::ed25519::SigningKey;
@@ -439,7 +439,7 @@ mod tests {
 }
 
 #[cfg(test)]
-#[allow(clippy::indexing_slicing, clippy::panic, clippy::match_on_vec_items)]
+#[allow(clippy::indexing_slicing, clippy::panic)]
 mod proptests {
     use super::*;
     use cairn_crypto::ed25519::SigningKey;

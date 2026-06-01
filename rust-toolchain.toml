@@ -1,9 +1,22 @@
 # Pinned Rust toolchain per D0018 §7.4.
 # Changes to this file require a coordinated workspace upgrade
 # and re-validation of dependency-tree compatibility.
+#
+# Bumped 1.85.0 -> 1.88.0 (2026-06-01 coordination event). Triply-justified:
+#   (1) the SimpleX Android FFI transport (simploxide-sxcrt-sys build.rs uses
+#       `let`-chains, stabilized in 1.88) per D0026 §12;
+#   (2) the high-level simploxide-client (`const Duration::from_hours`, ~1.87+);
+#   (3) the `time` RUSTSEC-2026-0009 fix (time >= 0.3.47 needs 1.88).
+# Re-validation: all four CI gates (clippy --all-targets --all-features
+# -D warnings / test / doc / fmt) pass on 1.88 across all 14 crates. Churn was
+# minimal: dropped a removed `clippy::match_on_vec_items` allow (now covered by
+# indexing_slicing), reworded a `doc_link_code` doc comment, and allowed the
+# nursery `format_push_string` (a tracked style follow-up). 1.85 was the prior
+# pin; the byte-stability discipline (D0018 §9.1) is unaffected (exact crate
+# pins unchanged; this is a compiler-toolchain bump, re-validated).
 
 [toolchain]
-channel = "1.85.0"
+channel = "1.88.0"
 targets = [
     "aarch64-linux-android",  # primary v1 target (Pixel-on-GrapheneOS)
     "x86_64-linux-android",   # secondary v1 target (Chromebook + emulator + audit testing)

@@ -62,7 +62,11 @@ members = [
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+# Bumped 1.85 -> 1.88 (2026-06-01 coordination event, D0018 §7.4): the SimpleX
+# Android FFI transport (simploxide-sxcrt-sys `let`-chains), simploxide-client
+# (`const from_hours`), and the `time` RUSTSEC-2026-0009 fix all require 1.88.
+# Workspace re-validated on 1.88 (all four CI gates). See rust-toolchain.toml.
+rust-version = "1.88"
 license = "AGPL-3.0-only"
 authors = ["Cairn maintainers and contributors"]
 repository = "https://github.com/cairn-project/cairn"
@@ -279,6 +283,13 @@ exit = "deny"
 module_name_repetitions = "allow"
 missing_errors_doc = "warn"
 missing_panics_doc = "warn"
+# Surfaced by the 1.85->1.88 MSRV bump (D0018 §7.4): clippy's `nursery`
+# `format_push_string` flags `buf.push_str(&format!(..))` in favor of
+# `write!(buf, ..)`. A style/allocation nit (not correctness) across the
+# Sigsum/Tor/Sigstore string-building; allowed here to keep the MSRV bump
+# focused on the toolchain. Converting those sites to `write!` is a tracked
+# follow-up cleanup, not part of the coordination event.
+format_push_string = "allow"
 
 [profile.release]
 opt-level = 3
