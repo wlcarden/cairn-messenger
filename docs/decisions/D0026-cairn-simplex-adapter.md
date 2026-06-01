@@ -319,6 +319,15 @@ This document is accepted (revised). The matching `cairn-simplex-adapter` crate 
 
 **Removed from the original skeleton:** `ratchet.rs` (the project-owned double-ratchet) is deleted — SimpleX owns the ratchet.
 
+> **Revision 2026-06-01 — `simploxide-client =0.11.0` pre-pin audit (step 5 readiness).** Ahead of committing the step-5 pin, the published `simploxide-client =0.11.0` subtree was audited in a network-capable environment. The pin itself is **NOT** committed — it remains the deliberate D0018 §1/§9.1 coordination event. Findings (dep scratch-added, then reverted):
+>
+> - **Resolves clean against the exact `tokio =1.40.0` pin** — no conflict; `tokio v1.40.0` is shared (used by `simploxide-ws-core`). 12 new crates: `simploxide-{client,api-types,core,ws-core}`, `tokio-tungstenite 0.29`, `tungstenite 0.29`, `tokio-stream 0.1.18`, `sha1 0.10.6`, `signal-hook-registry 1.4.8`, `serde-aux 4.7`, `serde-value 0.7`, `ordered-float 2.10.1`.
+> - **Licenses**: all 12 are MIT or MIT-OR-Apache-2.0 (allowlisted per D0019 / `deny.toml`); `simploxide-client` is `MIT OR Apache-2.0 OR AGPL-3.0`, satisfied via MIT/Apache under the `OR`.
+> - **Duplicate versions**: none introduced (all 12 are new crate names, not new versions of existing crates).
+> - **Advisories**: ZERO new — a `cargo audit` baseline with vs. without the subtree was identical. (`cargo-deny` could not build on rust 1.85 here; its license/ban/source checks were reproduced via `cargo tree --format {l}` + `cargo tree -d` + `cargo audit 0.22.1`. The formal `cargo-deny` run is the CI gate at the pin cycle.)
+>
+> **Verdict: the subtree is clean to pin.** The pin commit + the `SimploxideTransport` body + live integration testing (steps 5/7) still require the SimpleX Chat CLI binary + relay access — deferred to a CLI-present cycle. **Step 6 landed this session**: the `cairn-cli` `simplex-send` / `simplex-recv` demo over a file-wire mock (commit `ce1a756`).
+
 ---
 
 ## 13. Cross-references
