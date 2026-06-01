@@ -159,6 +159,8 @@ The two layers are orthogonal: a ratchet compromise (SimpleX layer) reveals mess
 
 Operational-identity addressing (not device-key) means device-key rotation under suspected compromise does not break message chains — the operational identity is stable.
 
+> **Revision 2026-06-01 (FFI/Android signing path) — the device signature is produced in StrongBox, requiring an external-signer path.** On Android the device key (D0006 §9 hop #1) is StrongBox-resident and `NeverExport` (D0020 §3.4), so the cairn-uniffi messaging handle cannot hold a `SigningKey`. The adapter's current `LocalIdentity { device_signing_key: SigningKey }` + `MessageEnvelope::sign(&SigningKey)` path is retained for the `cairn-cli` demo + the mock-transport tests, but the production FFI path must sign the `COSE_Sign1` `Sig_structure` in StrongBox via cairn-uniffi's `HardwareKeySigner` callback. Realizing that requires (a) an additive `cairn-envelope` `Sign1Builder` external-signer path (build the `Sig_structure` + AAD Rust-side; inject the externally-produced 64-byte Ed25519 signature; today `finalize` only accepts an in-Rust `&SigningKey`) and (b) a `cairn-simplex-adapter` signer abstraction replacing the concrete `SigningKey` field — the same shape D0023's `TreeLeafSigner` took for the Sigsum leaf. This is a D0006 §9 / D0018 §2.1 signing-model touch when implemented. Deferred to the cycle that lands `SimploxideTransport` (§12); the FFI surface design is resolved in D0027 §2.4 (revision 2026-06-01).
+
 ---
 
 ## 3. Size-bin padding
