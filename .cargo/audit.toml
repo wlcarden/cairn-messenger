@@ -1,0 +1,18 @@
+# cargo-audit configuration.
+#
+# The authoritative advisory triage + per-advisory rationale lives in
+# `deny.toml` `[advisories].ignore` and `docs/decisions/D0026-cairn-simplex-adapter.md`
+# §12 (the 2026-06-01 audit revision note). This file mirrors that ignore
+# list so the `rustsec/audit-check` CI job (cargo-audit) agrees with the
+# `cargo-deny` gate. Each fix is blocked on a deliberate coordination event
+# (MSRV / exact-pin bump) or is N/A / dev-only — see `deny.toml` for reasons.
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0009", # time DoS — fix needs Rust 1.88 (workspace MSRV is 1.85); deferred to an MSRV bump. Bounded impact (cert-validity parse, release-verify path).
+    "RUSTSEC-2024-0421", # idna — url=2.5.2 parses trusted config URLs only (not untrusted domains); fix pulls the heavy ICU tree. Low impact.
+    "RUSTSEC-2025-0023", # tokio broadcast clone/Sync — N/A: Cairn uses no tokio::sync::broadcast.
+    "RUSTSEC-2025-0134", # rustls-pemfile unmaintained — transitive via reqwest=0.12.5; fix is a reqwest pin bump, deferred.
+    "RUSTSEC-2021-0139", # ansi_term unmaintained — dev-only (dudect-bencher -> clap 2.x bench harness); never shipped.
+    "RUSTSEC-2024-0375", # atty unmaintained — dev-only (dudect-bencher -> clap 2.x); never shipped.
+    "RUSTSEC-2021-0145", # atty potential unaligned read (Windows-only) — dev-only (dudect-bencher -> clap 2.x).
+]

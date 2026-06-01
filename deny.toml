@@ -7,7 +7,18 @@ all-features = true
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
-ignore = []
+# Triaged + accepted advisories (2026-06-01). Full triage in
+# docs/decisions/D0026 §12 (audit revision note). Each fix is blocked on a
+# deliberate coordination event (MSRV / exact-pin bump) or is N/A / dev-only.
+ignore = [
+    { id = "RUSTSEC-2026-0009", reason = "time DoS (stack exhaustion). Fix (time>=0.3.47) requires Rust 1.88; workspace MSRV is 1.85 (D0018). Deferred to an MSRV-bump coordination event. Impact bounded: cert-validity parsing on the sigstore release-verify path (not a hot loop)." },
+    { id = "RUSTSEC-2024-0421", reason = "idna Punycode. Via url=2.5.2, used only to parse TRUSTED config URLs (Sigsum log URL, Tor bridge manifest), not untrusted domains. Fix (url 2.5.4 -> idna 1.0) drags in the heavy ICU tree; not worth it for this low-impact, trusted-input path." },
+    { id = "RUSTSEC-2025-0023", reason = "tokio broadcast clone/Sync. N/A: Cairn uses no tokio::sync::broadcast (verified by grep). Vulnerable API unreachable; the tokio=1.40.0 pin is deliberate (D0018 §9.1)." },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained (not a vuln). Transitive via reqwest=0.12.5; fix is a reqwest pin bump (coordination event), deferred." },
+    { id = "RUSTSEC-2021-0139", reason = "ansi_term unmaintained. DEV-ONLY: dudect-bencher -> clap 2.x (constant-time benchmark harness); never in shipped artifacts; upstream dudect-bencher pins clap 2.x." },
+    { id = "RUSTSEC-2024-0375", reason = "atty unmaintained. DEV-ONLY: dudect-bencher -> clap 2.x; never shipped; upstream-bound." },
+    { id = "RUSTSEC-2021-0145", reason = "atty potential unaligned read (Windows-only). DEV-ONLY: dudect-bencher -> clap 2.x; not reachable in CI/release builds." },
+]
 # vulnerability = "deny" and notice = "warn" are now the cargo-deny defaults
 # (since v0.14; explicit settings would emit deprecation warnings)
 
