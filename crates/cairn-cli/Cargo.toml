@@ -27,9 +27,16 @@ cairn-recovery = { path = "../cairn-recovery" }
 cairn-shamir = { path = "../cairn-shamir" }
 cairn-trust-graph = { path = "../cairn-trust-graph" }
 
+# === Messaging demo (D0026 §12 step 6) ===
+cairn-simplex-adapter = { path = "../cairn-simplex-adapter" }
+cairn-storage = { path = "../cairn-storage" }
+
 # === App-layer utilities (D0018 §4.1-4.3) ===
 anyhow = { workspace = true }
 clap = { workspace = true }
+# Drives the adapter's async send/recv from the sync CLI (one-shot
+# current-thread runtime); inherits the workspace =1.40.0 pin + features.
+tokio = { workspace = true }
 
 # === SHA-256 for the compute-issuer-cert-hash unverified path ===
 # (cairn-cli decodes envelopes without verification for byte-level

@@ -64,7 +64,8 @@
 //! - Token envelope files contain raw `COSE_Sign1` CBOR bytes
 //!   (untagged 4-tuple, per `cairn-envelope::cose_sign1`'s default).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, SEED_LEN, SigningKey, VerifyingKey};
@@ -72,6 +73,12 @@ use cairn_envelope::cose_sign1::{CoseSign1, Sign1Builder};
 use cairn_identity::{CapabilityToken, SignedCapabilityToken};
 use cairn_recovery::{SignedMasterAttestation, reconstruct_and_attest};
 use cairn_shamir::{COMMITMENT_LEN, Commitment, SECRET_LEN, Share, reconstruct, split};
+use cairn_simplex_adapter::{
+    ConnectionId, Invitation, LocalIdentity, RetryBudget, SidecarTransport, SimplexAdapter,
+    SimplexAdapterConfig, SimplexAdapterError,
+};
+use cairn_storage::Storage;
+use cairn_storage::key_provider::testing::InMemoryKeyProvider;
 use cairn_trust_graph::{
     OpType, QuarantineStatus, SignedTrustGraphOp, TrustGraphOp, compute_quarantine_state,
     verify_chain_links,
@@ -181,6 +188,44 @@ enum Command {
         /// Optional capability string the token must authorize.
         #[arg(long)]
         required_capability: Option<String>,
+    },
+    /// Send a Cairn message envelope over a local file "wire" (D0026 §12
+    /// step 6 demo — no `SimpleX` sidecar). Builds → signs → pads →
+    /// persists, and writes the `COSE_Sign1` envelope bytes to the wire
+    /// file. For the demo the sender's seed doubles as device key +
+    /// operational identity.
+    SimplexSend {
+        /// 32-byte seed file: the sender's device key (also the
+        /// operational identity for this demo).
+        #[arg(long)]
+        sender_seed: PathBuf,
+        /// 32-byte pubkey file: the recipient's operational identity.
+        #[arg(long)]
+        recipient_pubkey: PathBuf,
+        /// The message text to send (UTF-8).
+        #[arg(long)]
+        message: String,
+        /// Output path for the wire envelope bytes.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Receive + verify a Cairn message envelope from a local file "wire"
+    /// (the `simplex-send` counterpart). Verifies the `COSE_Sign1`
+    /// signature + AAD domain tag, binds the sender to the expected
+    /// operational identity, checks the prior-envelope-hash chain, and
+    /// strips padding.
+    SimplexRecv {
+        /// 32-byte seed file: the recipient's device key (== operational
+        /// identity for the demo).
+        #[arg(long)]
+        recipient_seed: PathBuf,
+        /// 32-byte pubkey file: the expected sender (its operational
+        /// identity, also used as the device verifying key for the demo).
+        #[arg(long)]
+        sender_pubkey: PathBuf,
+        /// The wire envelope file written by `simplex-send`.
+        #[arg(long)]
+        wire: PathBuf,
     },
     /// Split a 32-byte seed into Shamir shares per D0006 §9. Writes
     /// N share files (`<prefix>-share-NN.bin`, each 33 bytes:
@@ -448,6 +493,17 @@ fn main() -> Result<()> {
             &external_aad,
             required_capability.as_deref(),
         ),
+        Command::SimplexSend {
+            sender_seed,
+            recipient_pubkey,
+            message,
+            out,
+        } => cmd_simplex_send(&sender_seed, &recipient_pubkey, &message, &out),
+        Command::SimplexRecv {
+            recipient_seed,
+            sender_pubkey,
+            wire,
+        } => cmd_simplex_recv(&recipient_seed, &sender_pubkey, &wire),
         Command::SplitSeed {
             seed,
             threshold,
@@ -629,6 +685,161 @@ fn cmd_verify_token(envelope: &PathBuf, expected_issuer_pubkey: &PathBuf) -> Res
             token.signature_chain_to_master.len()
         );
     }
+    Ok(())
+}
+
+/// A file-backed [`SidecarTransport`] for the local messaging demo
+/// (D0026 §12 step 6): the "wire" is a single file. `send` writes the
+/// opaque (signed + padded) envelope bytes; `recv` reads them back.
+/// Single-message (number 0); the production `SimploxideTransport`
+/// (D0026 §12) carries multi-message streams over the `SimpleX` WebSocket.
+/// No `SimpleX` sidecar is needed — this exercises everything ABOVE the
+/// network hop.
+struct FileSidecarTransport {
+    wire: PathBuf,
+}
+
+impl SidecarTransport for FileSidecarTransport {
+    async fn create_invitation(&self) -> Result<Invitation, SimplexAdapterError> {
+        Ok(Invitation {
+            uri: "cairn-cli://file-wire".to_string(),
+        })
+    }
+
+    async fn accept_invitation(
+        &self,
+        _invitation: Invitation,
+    ) -> Result<ConnectionId, SimplexAdapterError> {
+        Ok(ConnectionId("file-wire".to_string()))
+    }
+
+    async fn send(&self, _conn: &ConnectionId, raw: &[u8]) -> Result<u64, SimplexAdapterError> {
+        std::fs::write(&self.wire, raw).map_err(|_| SimplexAdapterError::SidecarUnavailable)?;
+        Ok(0)
+    }
+
+    async fn recv(&self, _conn: &ConnectionId) -> Result<(u64, Vec<u8>), SimplexAdapterError> {
+        let raw = std::fs::read(&self.wire).map_err(|_| SimplexAdapterError::SidecarUnavailable)?;
+        Ok((0, raw))
+    }
+}
+
+/// Open an in-memory demo store (the `InMemoryKeyProvider` uses reduced
+/// Argon2id parameters). The CLI demo does not persist across runs — the
+/// envelope crosses between `simplex-send` and `simplex-recv` via the
+/// wire file, and each side's `prior_envelope_hash` chain starts at
+/// genesis (single message).
+fn open_demo_storage() -> Result<Arc<Storage>> {
+    let provider = InMemoryKeyProvider::new();
+    let passphrase = Zeroizing::new(b"cairn-cli-simplex-demo".to_vec());
+    let storage = Storage::open_in_memory(&provider, &passphrase)
+        .map_err(|e| anyhow!("failed to open demo storage: {e:?}"))?;
+    Ok(Arc::new(storage))
+}
+
+/// Send a Cairn message envelope over a local file wire (D0026 §12 step 6).
+///
+/// Demo simplification: the sender's seed doubles as the device signing
+/// key AND the operational identity (production separates them — the
+/// device key signs, the operational identity is the envelope sender per
+/// D0006 §9). Signing routes through `cairn_simplex_adapter::EnvelopeSigner`
+/// over the software `SigningKey` — the same seam the Android FFI handle
+/// drives in `StrongBox`.
+fn cmd_simplex_send(
+    sender_seed: &PathBuf,
+    recipient_pubkey: &PathBuf,
+    message: &str,
+    out: &Path,
+) -> Result<()> {
+    let seed = read_seed(sender_seed)?;
+    let device_signing_key = SigningKey::from_seed(&seed);
+    let operational_pubkey = device_signing_key.verifying_key().to_bytes();
+    let recipient = read_pubkey(recipient_pubkey)?.to_bytes();
+
+    let config = SimplexAdapterConfig {
+        identity: LocalIdentity {
+            device_signer: Arc::new(device_signing_key),
+            operational_pubkey,
+        },
+        storage: open_demo_storage()?,
+        default_retry_budget: RetryBudget::default(),
+    };
+    let adapter = SimplexAdapter::new(
+        FileSidecarTransport {
+            wire: out.to_path_buf(),
+        },
+        config,
+    )
+    .map_err(|e| anyhow!("adapter construction failed: {e:?}"))?;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .context("failed to build tokio runtime")?;
+    let sent = runtime
+        .block_on(adapter.send(
+            &ConnectionId("file-wire".to_string()),
+            &recipient,
+            message.as_bytes(),
+        ))
+        .map_err(|e| anyhow!("send failed: {e:?}"))?;
+
+    eprintln!(
+        "Wrote wire envelope to {} ({}-byte message, signed + padded)",
+        out.display(),
+        message.len()
+    );
+    println!("record-id:           {}", hex_encode(&sent.record_id));
+    println!("next-message-number: {}", sent.next_message_number);
+    Ok(())
+}
+
+/// Receive + verify a Cairn message envelope from a local file wire (the
+/// `simplex-send` counterpart). The sender's pubkey doubles as both the
+/// expected operational identity AND the device verifying key for the
+/// demo.
+fn cmd_simplex_recv(recipient_seed: &PathBuf, sender_pubkey: &PathBuf, wire: &Path) -> Result<()> {
+    let seed = read_seed(recipient_seed)?;
+    let device_signing_key = SigningKey::from_seed(&seed);
+    let operational_pubkey = device_signing_key.verifying_key().to_bytes();
+    let sender_device_vk = read_pubkey(sender_pubkey)?;
+    let sender_operational_pubkey = sender_device_vk.to_bytes();
+
+    let config = SimplexAdapterConfig {
+        identity: LocalIdentity {
+            device_signer: Arc::new(device_signing_key),
+            operational_pubkey,
+        },
+        storage: open_demo_storage()?,
+        default_retry_budget: RetryBudget::default(),
+    };
+    let adapter = SimplexAdapter::new(
+        FileSidecarTransport {
+            wire: wire.to_path_buf(),
+        },
+        config,
+    )
+    .map_err(|e| anyhow!("adapter construction failed: {e:?}"))?;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .context("failed to build tokio runtime")?;
+    let received = runtime
+        .block_on(adapter.recv(
+            &ConnectionId("file-wire".to_string()),
+            &sender_operational_pubkey,
+            &sender_device_vk,
+        ))
+        .map_err(|e| anyhow!("recv/verify failed: {e:?}"))?;
+
+    println!("VERIFIED");
+    println!(
+        "sender-pubkey: {}",
+        hex_encode(&received.sender_operational_pubkey)
+    );
+    println!(
+        "payload:       {}",
+        String::from_utf8_lossy(&received.payload)
+    );
     Ok(())
 }
 

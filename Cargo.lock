@@ -409,10 +409,13 @@ dependencies = [
  "cairn-identity",
  "cairn-recovery",
  "cairn-shamir",
+ "cairn-simplex-adapter",
+ "cairn-storage",
  "cairn-trust-graph",
  "clap 4.6.1",
  "rand_core 0.6.4",
  "sha2",
+ "tokio",
  "zeroize",
 ]
 
