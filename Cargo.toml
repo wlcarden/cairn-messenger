@@ -141,7 +141,13 @@ url = "=2.5.2"
 # JSON response shapes per D0023 §2.3. Cairn's canonical CBOR remains
 # the on-the-wire format for trust-graph + capability tokens; serde is
 # only used at integration boundaries with external JSON / TOML.
-serde = { version = "=1.0.215", features = ["derive"] }
+# Bumped 1.0.215 -> 1.0.220 (2026-06-01 coordination event, D0018 §9.1),
+# paired with the 1.88 MSRV event (§7.4): `time` 0.3.47 (the RUSTSEC-2026-0009
+# fix) depends on the post-split `serde_core ^1.0.220`, and 1.0.215 predates
+# the serde/serde_core split — so the exact `=1.0.215` pin made the advisory
+# unfixable. 1.0.220 is the minimal version that provides `serde_core 1.0.220`;
+# serde is a verify-/parse-path-only boundary dep (no canonical-CBOR exposure).
+serde = { version = "=1.0.220", features = ["derive"] }
 serde_json = "=1.0.133"
 toml = "=0.8.23"
 
