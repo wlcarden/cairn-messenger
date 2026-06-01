@@ -14,7 +14,7 @@
 //! which lives in StrongBox (D0020 §3.4 / D0006 §9). So the handle does
 //! NOT hold a software signing key — it takes the
 //! [`crate::hardware::HardwareKeySigner`] callback, bridged into
-//! `cairn_simplex_adapter::EnvelopeSigner` by [`FfiEnvelopeSigner`]. The
+//! `cairn_simplex_adapter::EnvelopeSigner` by `FfiEnvelopeSigner`. The
 //! adapter builds the COSE `Sig_structure` Rust-side, the key signs it in
 //! hardware, and only the 64-byte signature crosses back (D0026 §2.3 /
 //! D0018 §2.2). This is what lets the handle be CONSTRUCTED at all: the
@@ -30,18 +30,20 @@
 //! Cairn message history (the `MESSAGES` category, D0026 §4) lives in the
 //! same unlocked store as the rest of the app — no second connection.
 //!
-//! ## Deferred transport
+//! ## Transport (ws-core; live, two-party gated on the CLI sidecar)
 //!
-//! The concrete `SimploxideTransport` (the loopback WebSocket to the
-//! SimpleX Chat CLI) is deferred pending the `simploxide-client` crate
-//! (D0026 §1.3 / §12), so `create_invitation` / `accept_invitation` /
-//! `send` / `recv` return [`CairnFfiError::NetworkUnreached`] over the
-//! stub. But the handle's construction + the full envelope build → sign →
-//! pad → persist → chain-advance path are real + exercised: a `send`
-//! invokes the StrongBox-signing callback (and persists the envelope)
-//! BEFORE it reaches the transport's network hop. Only that hop awaits
-//! the transport; the handle slots onto the live transport with no
-//! surface change when it lands.
+//! The concrete `SimploxideTransport` is a real `simploxide-ws-core`
+//! WebSocket client of the SimpleX Chat CLI sidecar (D0026 §1.3 / §12): it
+//! lazily dials `ws://host:port`, issues simplex-chat commands, and drains
+//! events. With no sidecar listening, `create_invitation` /
+//! `accept_invitation` / `send` / `recv` surface
+//! [`CairnFfiError::SidecarFailure`] (the facade mapping of the transport's
+//! `SidecarUnavailable`). The handle's construction + the full envelope
+//! build → sign → pad → persist → chain-advance path are real + exercised: a
+//! `send` invokes the StrongBox-signing callback (and persists the envelope)
+//! BEFORE it reaches the transport's network hop. Live two-party messaging
+//! is validated under the adapter's `integration-tests` feature against a
+//! running SimpleX Chat CLI (D0026 §12), not in unit tests.
 
 use std::sync::Arc;
 
@@ -122,7 +124,7 @@ pub struct ReceivedMessageRecord {
 }
 
 /// An opaque async handle to the Cairn SimpleX messaging adapter
-/// (D0027 §2.2), over the deferred `SimploxideTransport` (D0026 §12).
+/// (D0027 §2.2), over the ws-core `SimploxideTransport` (D0026 §1.3 / §12).
 #[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Object))]
 pub struct SimplexAdapterHandle {
     adapter: SimplexAdapter<SimploxideTransport>,
@@ -194,8 +196,7 @@ impl SimplexAdapterHandle {
     /// # Errors
     ///
     /// The facade mapping of the transport error —
-    /// [`CairnFfiError::NetworkUnreached`] over the deferred
-    /// `SimploxideTransport`.
+    /// [`CairnFfiError::SidecarFailure`] when the sidecar is unreachable.
     pub async fn create_invitation(&self) -> Result<String, CairnFfiError> {
         let invitation = self
             .adapter
@@ -236,7 +237,7 @@ impl SimplexAdapterHandle {
     /// - [`CairnFfiError::MalformedData`] if `recipient_operational_pubkey`
     ///   is not 32 bytes.
     /// - The facade mapping of any `SimplexAdapterError`:
-    ///   [`CairnFfiError::NetworkUnreached`] over the deferred transport,
+    ///   [`CairnFfiError::SidecarFailure`] when the sidecar is unreachable,
     ///   [`CairnFfiError::EnvelopeVerifyFailed`] on a signer failure, or
     ///   [`CairnFfiError::StorageFailure`] on a persist failure.
     #[allow(
@@ -274,7 +275,7 @@ impl SimplexAdapterHandle {
     /// - [`CairnFfiError::MalformedData`] if either pubkey is not 32 bytes
     ///   / not a valid Ed25519 key.
     /// - The facade mapping of any `SimplexAdapterError`:
-    ///   [`CairnFfiError::NetworkUnreached`] over the deferred transport,
+    ///   [`CairnFfiError::SidecarFailure`] when the sidecar is unreachable,
     ///   [`CairnFfiError::EnvelopeVerifyFailed`] on a bad signature or
     ///   sender binding, or [`CairnFfiError::EnvelopeChainGap`] on a gap.
     #[allow(
@@ -380,7 +381,14 @@ mod tests {
             storage: test_storage(),
             default_retry_budget: RetryBudget::default(),
         };
-        let transport = SimploxideTransport::new(SidecarEndpoint::default());
+        // A deterministically-closed port (1): the lazy ws-core dial refuses
+        // fast, so the transport surfaces SidecarFailure — hermetic, no live
+        // sidecar. (Live two-party behavior is the integration-tests gate,
+        // D0026 §12.)
+        let transport = SimploxideTransport::new(SidecarEndpoint {
+            host: "127.0.0.1".to_string(),
+            port: 1,
+        });
         let adapter = SimplexAdapter::new(transport, config).unwrap();
         (SimplexAdapterHandle { adapter }, calls)
     }
@@ -436,33 +444,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_invitation_over_stub_is_network_unreached() {
+    async fn create_invitation_unreachable_sidecar_is_sidecar_failure() {
         // Exercises the async export bridge (tokio runtime + await + error
-        // mapping) end-to-end; the deferred transport surfaces as
-        // NetworkUnreached, not a panic.
+        // mapping) end-to-end; with no sidecar listening, the ws-core dial
+        // refuses and the facade surfaces SidecarFailure, not a panic.
         let (handle, _calls) = test_handle();
         assert!(matches!(
             handle.create_invitation().await,
-            Err(CairnFfiError::NetworkUnreached)
+            Err(CairnFfiError::SidecarFailure)
         ));
     }
 
     #[tokio::test]
-    async fn send_signs_in_hardware_then_reports_network_unreached() {
+    async fn send_signs_in_hardware_then_reports_sidecar_failure() {
         // The whole point of the unblocked handle: a send CONSTRUCTS the
         // envelope and signs it via the StrongBox callback BEFORE the
         // transport's network hop. So the signer is invoked exactly once,
-        // and the call then surfaces NetworkUnreached over the stub. This
-        // proves the hardware-signing path is wired through the FFI, even
-        // though the network transport is deferred.
+        // and the call then surfaces SidecarFailure over the unreachable
+        // sidecar. This proves the hardware-signing path is wired through the
+        // FFI; live two-party network is the integration-tests gate (§12).
         let (handle, calls) = test_handle();
         let recipient = vec![0x22u8; PUBLIC_KEY_LEN];
         let result = handle
             .send("conn-1".to_string(), recipient, b"hello".to_vec())
             .await;
         assert!(
-            matches!(result, Err(CairnFfiError::NetworkUnreached)),
-            "send over the stub must surface NetworkUnreached"
+            matches!(result, Err(CairnFfiError::SidecarFailure)),
+            "send over an unreachable sidecar must surface SidecarFailure"
         );
         assert_eq!(
             calls.load(Ordering::SeqCst),

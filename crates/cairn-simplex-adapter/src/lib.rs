@@ -86,14 +86,19 @@
 //! - `storage::message_record_id_for` per D0026 §3.2.
 //! - Typed `SimplexAdapterError` surface per D0026 §9.
 //!
-//! The ONE deferred surface is the concrete
-//! [`sidecar::SimploxideTransport`] — the production loopback-WebSocket
-//! transport to the SimpleX Chat CLI. It returns
-//! [`SimplexAdapterError::NetworkUnreached`] pending the `simploxide-client`
-//! crate (not yet available to this build); when it lands it slots in
-//! behind the same seam with no change to the envelope flow above (D0026
-//! §12). The `integration-tests` cargo feature flag gates the eventual
-//! tests against a local SimpleX Chat CLI.
+//! The concrete [`sidecar::SimploxideTransport`] is now a real
+//! `simploxide-ws-core` WebSocket client of the SimpleX Chat CLI sidecar
+//! (D0026 §1.3 / §12): it lazily dials `ws://host:port`, runs the `/user`
+//! handshake, issues simplex-chat commands (the crate-internal `protocol`
+//! layer), and drains events for incoming `CryptoFile`s. Its connection +
+//! command-RPC + event-drain + error-mapping machinery is hermetically
+//! tested against a localhost mock WS server (`sidecar::mock_ws_tests`); the
+//! simplex-chat **wire fidelity** against a live daemon — especially the
+//! `CryptoFile`/XFTP recv lifecycle — is the `integration-tests` gate
+//! (D0026 §12), NOT asserted in unit tests. ws-core (the low-level raw WS
+//! client) was chosen over the high-level `simploxide-client` Bot SDK
+//! because it compiles on the pinned rust 1.85 and keeps Cairn off the
+//! subprocess path (D0026 §12 probe matrix).
 //!
 //! The per-`(sender, recipient)` chain cursor is cached in memory and
 //! **rehydrated lazily from the `MESSAGES` history** on the first chain
@@ -111,6 +116,11 @@ pub mod adapter;
 pub mod envelope;
 pub mod error;
 pub mod padding;
+/// The simplex-chat command/response/event JSON layer (D0026 §1.3) —
+/// crate-internal, consumed by [`sidecar::SimploxideTransport`]. Pure
+/// command builders + defensive parsers; see the module docs for the
+/// verified-vs-live-gated boundary.
+mod protocol;
 /// The sidecar-transport seam (D0020 §1.10 / D0026 §1.2).
 ///
 /// The raw byte transport below the Cairn envelope, with the deferred

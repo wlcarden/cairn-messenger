@@ -713,14 +713,15 @@ impl SidecarTransport for FileSidecarTransport {
         Ok(ConnectionId("file-wire".to_string()))
     }
 
-    async fn send(&self, _conn: &ConnectionId, raw: &[u8]) -> Result<u64, SimplexAdapterError> {
+    async fn send(&self, _conn: &ConnectionId, raw: &[u8]) -> Result<(), SimplexAdapterError> {
+        // Per D0026 §3.2 (c) the seam carries no message number — the adapter
+        // owns the per-pair chain position. The file wire just stores bytes.
         std::fs::write(&self.wire, raw).map_err(|_| SimplexAdapterError::SidecarUnavailable)?;
-        Ok(0)
+        Ok(())
     }
 
-    async fn recv(&self, _conn: &ConnectionId) -> Result<(u64, Vec<u8>), SimplexAdapterError> {
-        let raw = std::fs::read(&self.wire).map_err(|_| SimplexAdapterError::SidecarUnavailable)?;
-        Ok((0, raw))
+    async fn recv(&self, _conn: &ConnectionId) -> Result<Vec<u8>, SimplexAdapterError> {
+        std::fs::read(&self.wire).map_err(|_| SimplexAdapterError::SidecarUnavailable)
     }
 }
 

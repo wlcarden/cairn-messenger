@@ -150,15 +150,19 @@ pub struct ReceivedMessage {
 /// The cache is rebuilt lazily on the first chain access after a restart
 /// by [`rehydrate_chain`] (which walks the `MESSAGES` history), so the
 /// `prior_envelope_hash` chain survives process restarts (D0026 §3.2).
-/// `Default` is the genesis cursor (empty `prior_hash`, message 0).
+/// `Default` is the genesis cursor (empty `prior_hash`, next message 0).
 #[derive(Default)]
 struct ChainState {
     /// `prior_envelope_hash` the NEXT envelope must commit to (empty until
     /// the first message has flowed).
     prior_hash: Vec<u8>,
-    /// Last in-order message number seen on this chain (for the
-    /// [`SimplexAdapterError::EnvelopeChainGap`] diagnostic).
-    last_message_number: u64,
+    /// The per-`(sender, recipient)` number the NEXT message on this chain
+    /// takes — **Cairn's chain position**, NOT a transport-assigned id
+    /// (D0026 §3.2 revision note (c): SimpleX's chat-item id is
+    /// global-monotonic + sparse-per-pair, which would break the
+    /// contiguous-walk rehydration). `0` at genesis; [`advance_chain`] sets
+    /// it to `used_number + 1` after each message.
+    next_message_number: u64,
 }
 
 /// The async Cairn SimpleX adapter per D0026 §7.
@@ -250,7 +254,7 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
         recipient_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
         payload: &[u8],
     ) -> Result<MessageSent, SimplexAdapterError> {
-        let prior_hash = self.send_chain_prior_hash(recipient_operational_pubkey)?;
+        let (prior_hash, message_number) = self.send_chain_state(recipient_operational_pubkey)?;
 
         let padding_len = padding_bytes_required(payload.len());
         let padding =
@@ -266,7 +270,9 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
         };
         let cose = envelope.sign_with(self.identity.device_signer.as_ref())?;
 
-        let message_number = self.transport.send(conn, &cose).await?;
+        // The seam carries no message number (D0026 §3.2 (c)); the number is
+        // Cairn's chain position, assigned above + advanced below.
+        self.transport.send(conn, &cose).await?;
 
         let record_id = message_record_id_for(
             &self.identity.operational_pubkey,
@@ -314,7 +320,7 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
         expected_sender_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
         sender_device_pubkey: &VerifyingKey,
     ) -> Result<ReceivedMessage, SimplexAdapterError> {
-        let (message_number, cose) = self.transport.recv(conn).await?;
+        let cose = self.transport.recv(conn).await?;
 
         let envelope = verify_envelope(&cose, sender_device_pubkey)?;
         // Bind the verified envelope to the expected peer: a validly-signed
@@ -324,11 +330,13 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             return Err(SimplexAdapterError::EnvelopeSignatureVerifyFailed);
         }
 
-        let (expected_prior, last_number) =
-            self.recv_chain_expectation(expected_sender_operational_pubkey)?;
+        // The message number is Cairn's recv-chain position (D0026 §3.2 (c)),
+        // not transport-supplied.
+        let (expected_prior, message_number) =
+            self.recv_chain_state(expected_sender_operational_pubkey)?;
         if envelope.prior_envelope_hash != expected_prior {
             return Err(SimplexAdapterError::EnvelopeChainGap {
-                last_observed_message_number: last_number,
+                last_observed_message_number: message_number.saturating_sub(1),
                 observed_message_number: message_number,
             });
         }
@@ -359,12 +367,12 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
         })
     }
 
-    /// The `prior_envelope_hash` for the next send to `recipient` (empty
-    /// for the first message).
-    fn send_chain_prior_hash(
+    /// The `(prior_envelope_hash, next_message_number)` for the next send to
+    /// `recipient` — `(empty, 0)` at genesis.
+    fn send_chain_state(
         &self,
         recipient: &[u8; PUBLIC_KEY_LEN],
-    ) -> Result<Vec<u8>, SimplexAdapterError> {
+    ) -> Result<(Vec<u8>, u64), SimplexAdapterError> {
         // Fast path: the cursor is already cached in memory. The guard is
         // scoped to this block so it drops before the rehydrate path.
         let cached = {
@@ -372,10 +380,12 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
                 .send_chains
                 .lock()
                 .map_err(|_| poisoned_chain_error())?;
-            guard.get(recipient).map(|state| state.prior_hash.clone())
+            guard
+                .get(recipient)
+                .map(|state| (state.prior_hash.clone(), state.next_message_number))
         };
-        if let Some(prior) = cached {
-            return Ok(prior);
+        if let Some(state) = cached {
+            return Ok(state);
         }
         // Miss (first access, e.g. after a restart): rebuild from the
         // MESSAGES history so the chain continues across restarts. The
@@ -386,18 +396,17 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             .send_chains
             .lock()
             .map_err(|_| poisoned_chain_error())?;
-        let prior = guard
+        let state = guard
             .entry(*recipient)
-            .or_insert_with(|| rehydrated.unwrap_or_default())
-            .prior_hash
-            .clone();
+            .or_insert_with(|| rehydrated.unwrap_or_default());
+        let result = (state.prior_hash.clone(), state.next_message_number);
         drop(guard);
-        Ok(prior)
+        Ok(result)
     }
 
-    /// The expected `(prior_envelope_hash, last_message_number)` for the
-    /// next recv from `sender`.
-    fn recv_chain_expectation(
+    /// The expected `(prior_envelope_hash, next_message_number)` for the next
+    /// recv from `sender` — `(empty, 0)` at genesis.
+    fn recv_chain_state(
         &self,
         sender: &[u8; PUBLIC_KEY_LEN],
     ) -> Result<(Vec<u8>, u64), SimplexAdapterError> {
@@ -409,7 +418,7 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
                 .map_err(|_| poisoned_chain_error())?;
             guard
                 .get(sender)
-                .map(|state| (state.prior_hash.clone(), state.last_message_number))
+                .map(|state| (state.prior_hash.clone(), state.next_message_number))
         };
         if let Some(expectation) = cached {
             return Ok(expectation);
@@ -425,7 +434,7 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             let state = guard
                 .entry(*sender)
                 .or_insert_with(|| rehydrated.unwrap_or_default());
-            (state.prior_hash.clone(), state.last_message_number)
+            (state.prior_hash.clone(), state.next_message_number)
         };
         drop(guard);
         Ok(expectation)
@@ -437,14 +446,14 @@ fn advance_chain(
     chains: &Mutex<HashMap<[u8; PUBLIC_KEY_LEN], ChainState>>,
     peer: [u8; PUBLIC_KEY_LEN],
     next_hash: [u8; 32],
-    message_number: u64,
+    used_number: u64,
 ) -> Result<(), SimplexAdapterError> {
     let mut guard = chains.lock().map_err(|_| poisoned_chain_error())?;
     guard.insert(
         peer,
         ChainState {
             prior_hash: next_hash.to_vec(),
-            last_message_number: message_number,
+            next_message_number: used_number.saturating_add(1),
         },
     );
     drop(guard);
@@ -491,7 +500,9 @@ fn rehydrate_chain(
     match last {
         Some((cose, number)) => Ok(Some(ChainState {
             prior_hash: next_prior_envelope_hash(&cose)?.to_vec(),
-            last_message_number: number,
+            // After the contiguous `0..=number` prefix, the next chain
+            // position is `number + 1`.
+            next_message_number: number.saturating_add(1),
         })),
         None => Ok(None),
     }
@@ -818,9 +829,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deferred_simploxide_transport_is_network_unreached() {
+    async fn simploxide_transport_unreachable_sidecar_is_sidecar_unavailable() {
+        // With no SimpleX Chat CLI listening, the lazy ws-core dial fails and
+        // the transport surfaces SidecarUnavailable (not a panic, not the old
+        // NetworkUnreached stub). Port 1 is deterministically closed, so this
+        // stays hermetic (localhost refusal, no external network). Live
+        // two-party behavior is the integration-tests gate (D0026 §12).
         use crate::sidecar::SimploxideTransport;
-        let transport = SimploxideTransport::new(SidecarEndpoint::default());
+        let transport = SimploxideTransport::new(SidecarEndpoint {
+            host: "127.0.0.1".to_string(),
+            port: 1,
+        });
         let config = SimplexAdapterConfig {
             identity: LocalIdentity {
                 device_signer: Arc::new(SigningKey::generate(&mut OsRng)),
@@ -831,7 +850,10 @@ mod tests {
         };
         let adapter = SimplexAdapter::new(transport, config).unwrap();
         let result = adapter.create_invitation().await;
-        assert!(matches!(result, Err(SimplexAdapterError::NetworkUnreached)));
+        assert!(
+            matches!(result, Err(SimplexAdapterError::SidecarUnavailable)),
+            "got {result:?}"
+        );
     }
 
     #[test]
