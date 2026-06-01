@@ -95,10 +95,16 @@
 //!   Sigsum tree-leaf via the [`HardwareKeySigner`] callback (the op key
 //!   stays in StrongBox).
 //!
-//! Remaining per-domain modules: the async `tor` handle (the `TorStream`
-//! opaque-handle design) + the `messaging` handle (the generic
-//! `SimplexAdapter<T>` ⇒ a concrete transport handle, non-functional
-//! until `simploxide-client`). The `fuzz_uniffi_boundary` harness
+//! - [`tor`] — [`TorTransportHandle`] ([`TorControlConfig`] /
+//!   [`NetworkStateFfi`]): the C-Tor control plane —
+//!   `observe_network_state` / `signal_newnym` / `bootstrap_phase` as
+//!   `suspend fun`s. Control plane only; the data-plane `TorStream` is
+//!   consumed Rust-side, not crossed.
+//!
+//! The one remaining per-domain module is `messaging`
+//! (`SimplexAdapterHandle`): the generic `SimplexAdapter<T>` forces the
+//! `SimploxideTransport` stub, so it is non-functional (`NetworkUnreached`)
+//! until `simploxide-client` lands. The `fuzz_uniffi_boundary` harness
 //! (D0018 §5.2) is a follow-up.
 
 pub mod error;
@@ -107,6 +113,7 @@ pub mod identity;
 pub mod never_export_gate;
 pub mod recovery;
 pub mod storage;
+pub mod tor;
 pub mod transparency;
 pub mod trust_graph;
 
@@ -118,6 +125,7 @@ pub use recovery::{
     recovery_verify_master_attestation,
 };
 pub use storage::{StorageHandle, StrongBoxKeyMaterial};
+pub use tor::{NetworkStateFfi, TorControlConfig, TorTransportHandle};
 pub use transparency::{SigsumClientHandle, SigsumLogConfig, TreeHeadRecord};
 pub use trust_graph::{QuarantineStatusFfi, trust_graph_verify_and_classify};
 

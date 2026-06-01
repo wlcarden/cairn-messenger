@@ -84,6 +84,10 @@ pub const fn assert_v1_carrier_types_exportable() {
     // crosses (it stays behind the HardwareKeySigner callback).
     assert_exportable::<crate::transparency::SigsumLogConfig>();
     assert_exportable::<crate::transparency::TreeHeadRecord>();
+    // tor (D0027 §2): the control config + network-state enum carry only
+    // public values (bridge-manifest text, cookie path, connectivity).
+    assert_exportable::<crate::tor::TorControlConfig>();
+    assert_exportable::<crate::tor::NetworkStateFfi>();
 }
 
 #[cfg(test)]
