@@ -19,24 +19,30 @@
 //!    ([`crate::rekor::verify_rekor_inclusion`]) against the pinned
 //!    Rekor key (D0024 §3).
 //! 5. Enforce `prior_release_hash` rollback resistance (D0024 §4.2).
+//! 6. Verify the witness-cosigned Sigsum-anchored release-log inclusion
+//!    (D0024 §5) offline via
+//!    [`cairn_sigsum_client::SigsumClient::verify_bundled_inclusion`]:
+//!    bind the bundled proof to the manifest's `release_leaf_hash`
+//!    (`SHA-256(COSE_Sign1.signature_bytes)`, the shared D0023 §1 / §5.1
+//!    primitive), re-verify the cosigned head + 2-of-3 witness threshold,
+//!    and reconstruct the RFC 6962 root.
 //!
-//! The online Rekor fetch ([`SigstoreVerifier::fetch_rekor_bundle`] /
-//! [`SigstoreVerifier::fetch_and_verify_rekor`]) is also implemented.
+//! All six steps are offline; the online Rekor fetch
+//! ([`SigstoreVerifier::fetch_rekor_bundle`] /
+//! [`SigstoreVerifier::fetch_and_verify_rekor`]) merely pre-populates the
+//! bundle, after which the identical offline verify runs.
 //!
-//! **One gap remains (D0024 §5):** the witness-cosigned
-//! Sigsum-anchored-release-log composition step is NOT wired into
-//! `verify_release`. Its dependency,
-//! `cairn_sigsum_client::SigsumClient::verify_inclusion`, is now fully
-//! implemented (2026-05-31) — so this step is unblocked, but wiring it
-//! is its own follow-up: a release manifest is not itself a
-//! `SignedTrustGraphOp`, so composing the release log onto Sigsum needs
-//! the release-leaf representation settled first (D0024 §5). The
-//! composed [`SigsumClient`] is held in the verifier for that step.
+//! The Sigsum step uses the offline `verify_bundled_inclusion`, NOT the
+//! self-emit `verify_inclusion`: a release verifier never emitted the
+//! release leaf, so the release signer transmits the tree-leaf
+//! components + raw proof bodies in the [`ReleaseBundle`] (D0023 §1.4),
+//! exactly as the Rekor proof is carried inline.
 
 use cairn_envelope::cose_sign1::CoseSign1;
-use cairn_sigsum_client::{RetryBudget, SigsumClient};
+use cairn_sigsum_client::{EmittedLeaf, RetryBudget, SigsumClient};
 use url::Url;
 
+use crate::compose::release_leaf_hash_for_envelope_bytes;
 use crate::error::SigstoreVerifyError;
 use crate::fulcio::validate_cert_chain;
 use crate::manifest::{RELEASE_MANIFEST_AAD, ReleaseManifest};
@@ -72,18 +78,26 @@ pub struct SigstoreVerifierConfig {
     pub default_retry_budget: RetryBudget,
 }
 
-/// A self-contained release bundle the verifier consumes per
-/// D0024 §6.4 (offline mode) or freshly fetched (online mode).
+/// A self-contained release bundle the verifier consumes per D0024 §6.4.
+///
+/// Every proof in the bundle is verified **offline** against the pinned
+/// trust roots; "online mode" merely pre-populates these same fields by
+/// fetching them first, then runs the identical offline verify.
 ///
 /// Carries:
 ///
 /// - the canonical-CBOR encoded `COSE_Sign1` of the manifest;
 /// - the Fulcio-issued signing certificate in DER bytes;
-/// - the Rekor inclusion + checkpoint bundle.
+/// - the Rekor inclusion + checkpoint bundle;
+/// - the Sigsum witness-cosigned release-log proof (D0024 §5).
 ///
-/// The Sigsum witness-cosigned release-log entry is fetched via the
-/// composed [`SigsumClient`] rather than carried inline; that path
-/// reuses the D0023 substrate without duplication.
+/// The Sigsum proof is carried **inline** (not fetched at verify time)
+/// for the same reason the Rekor proof is: the air-gapped install path
+/// (§6.4) must verify without network access. A verifier cannot
+/// recompute the submitter's tree-leaf signature (D0023 §1.4), so the
+/// emit-time [`EmittedLeaf`] is transmitted alongside the raw
+/// `get-tree-head` + `get-inclusion-proof` bodies the release signer
+/// captured.
 #[derive(Debug, Clone)]
 pub struct ReleaseBundle {
     /// `COSE_Sign1` envelope bytes over the canonical-CBOR
@@ -97,6 +111,18 @@ pub struct ReleaseBundle {
     /// Compared against the Fulcio cert's validity window per
     /// D0024 §2.1.
     pub rekor_signing_time_unix: u64,
+    /// The release signer's emit-time Sigsum tree-leaf components for
+    /// the release leaf (D0024 §5.1 + D0023 §1.4). Required to
+    /// reconstruct the Merkle leaf hash; the verifier cannot recompute
+    /// the submitter signature.
+    pub sigsum_emitted_leaf: EmittedLeaf,
+    /// Raw `get-tree-head` ASCII the Sigsum inclusion proof was captured
+    /// against — the cosigned accepted head, re-verified offline against
+    /// the pinned log key + witness pool.
+    pub sigsum_tree_head_body: String,
+    /// Raw `get-inclusion-proof` ASCII for the release leaf (ignored for
+    /// a size-1 tree, whose inclusion is checked locally).
+    pub sigsum_inclusion_proof_body: String,
 }
 
 /// Outcome of a successful [`SigstoreVerifier::verify_release`]
@@ -204,17 +230,15 @@ impl SigstoreVerifier {
     /// 5. Enforce rollback resistance: the manifest's
     ///    `prior_release_hash` must equal `expected_predecessor_hash`
     ///    when supplied (D0024 §4.2).
+    /// 6. Verify the witness-cosigned Sigsum-anchored release-log
+    ///    inclusion (D0024 §5) **offline** via
+    ///    [`SigsumClient::verify_bundled_inclusion`]: bind the bundled
+    ///    proof to this manifest's `release_leaf_hash`, re-verify the
+    ///    cosigned head + 2-of-3 threshold, and reconstruct the RFC 6962
+    ///    root.
     ///
-    /// # Sigsum composition gap (D0024 §5)
-    ///
-    /// The witness-cosigned Sigsum-anchored-release-log step (§5) is
-    /// NOT performed here. Its dependency,
-    /// `cairn_sigsum_client::SigsumClient::verify_inclusion`, is now
-    /// implemented, so the step is unblocked — but it stays unwired
-    /// (not faked) pending the release-leaf representation it needs (a
-    /// release manifest is not a `SignedTrustGraphOp`, which is what
-    /// `verify_inclusion` consumes). The composed [`SigsumClient`] is
-    /// held in the verifier for that step.
+    /// All six steps are offline: the bundle is self-contained, so a
+    /// verifier with the pinned trust roots makes no network calls.
     ///
     /// # Errors
     ///
@@ -227,10 +251,12 @@ impl SigstoreVerifier {
     /// [`SigstoreVerifyError::ManifestSignatureVerifyFailed`],
     /// [`SigstoreVerifyError::RekorInclusionProofVerifyFailed`] /
     /// [`SigstoreVerifyError::RekorCheckpointVerifyFailed`],
-    /// [`SigstoreVerifyError::ManifestPriorHashMismatch`].
+    /// [`SigstoreVerifyError::ManifestPriorHashMismatch`],
+    /// [`SigstoreVerifyError::SigsumReleaseLog`] (the wrapped Sigsum
+    /// failure pinpoints the cause).
     #[allow(
         clippy::unused_async,
-        reason = "offline-bundle verification is synchronous; async is retained per the D0024 §6 surface for the online-fetch composition + the gated Sigsum step"
+        reason = "offline-bundle verification is synchronous (incl. the Sigsum step); async is retained per the D0024 §6 surface for the online-fetch composition"
     )]
     pub async fn verify_release(
         &self,
@@ -270,8 +296,21 @@ impl SigstoreVerifier {
             }
         }
 
-        // (§5) Sigsum-anchored-release-log composition is intentionally
-        // NOT performed — see the doc comment's "Sigsum composition gap".
+        // (6) Sigsum-anchored release log (D0024 §5): bind the bundled,
+        // offline inclusion proof to THIS manifest's release leaf hash and
+        // re-verify it (cosigned head + 2-of-3 threshold + RFC 6962 root)
+        // against the composed client's pinned log key + witness pool. The
+        // release leaf hash is recomputed from the manifest envelope, so a
+        // proof for any other leaf fails the binding check. The decode
+        // here cannot fail — step (1) already decoded the same envelope.
+        let release_leaf_hash =
+            release_leaf_hash_for_envelope_bytes(&bundle.manifest_envelope_bytes)?;
+        self.sigsum_client.verify_bundled_inclusion(
+            &release_leaf_hash,
+            &bundle.sigsum_emitted_leaf,
+            &bundle.sigsum_tree_head_body,
+            &bundle.sigsum_inclusion_proof_body,
+        )?;
 
         Ok(VerifiedRelease { manifest })
     }
@@ -445,6 +484,18 @@ mod tests {
                 checkpoint_signature: vec![0xEE; 64],
             },
             rekor_signing_time_unix: 1_700_000_000,
+            // Placeholder Sigsum proof: this bundle is only used to assert
+            // verify_release fails at the first (manifest-decode) gate, so
+            // step (6) is never reached. The full valid + tampered Sigsum
+            // paths are covered in tests/verify_release.rs.
+            sigsum_emitted_leaf: EmittedLeaf {
+                message: [0; 32],
+                signature: [0; 64],
+                key_hash: [0; 32],
+                observed_at: 0,
+            },
+            sigsum_tree_head_body: String::new(),
+            sigsum_inclusion_proof_body: String::new(),
         }
     }
 

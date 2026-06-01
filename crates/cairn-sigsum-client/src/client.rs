@@ -388,6 +388,95 @@ impl SigsumClient {
         EmittedLeaf::from_canonical_cbor(&bytes)
     }
 
+    /// Verify a *bundled* Sigsum inclusion proof **offline** — no
+    /// network, no cache — against this client's pinned log key + witness
+    /// pool.
+    ///
+    /// This is the third-party-proof counterpart to
+    /// [`Self::verify_inclusion`]. Where `verify_inclusion` serves the
+    /// self-emit-then-verify flow (the same node emitted the leaf, so its
+    /// [`EmittedLeaf`] is in the local cache and a fresh head is fetched
+    /// from the network), `verify_bundled_inclusion` serves the
+    /// air-gapped flow (D0024 §6.4): the party that emitted the leaf
+    /// (e.g. the release signer) transmits the proof material, and a
+    /// recipient who never emitted the leaf verifies it without any I/O.
+    /// It is the Sigsum analogue of
+    /// `cairn_sigstore_verify::verify_rekor_inclusion`.
+    ///
+    /// Inputs (all transmitted alongside the artifact):
+    /// - `expected_leaf_hash` — the leaf hash the caller independently
+    ///   recomputed from the artifact (e.g. the release manifest's
+    ///   `release_leaf_hash` per D0024 §5.1). Binds the bundled proof to
+    ///   the artifact under verification.
+    /// - `emitted` — the emit-time [`EmittedLeaf`] (the submitter's
+    ///   tree-leaf signature + `key_hash`); a recipient cannot recompute
+    ///   the submitter signature (D0023 §1.4), so it must be transmitted.
+    /// - `tree_head_body` — the raw `get-tree-head` ASCII the proof was
+    ///   captured against (cosigned accepted head).
+    /// - `inclusion_proof_body` — the raw `get-inclusion-proof` ASCII
+    ///   (`leaf_index` + `node_hash` lines); ignored for a size-1 tree.
+    ///
+    /// Returns the verified accepted [`TreeHead`] on success.
+    ///
+    /// # Errors
+    ///
+    /// - [`SigsumError::InclusionProofVerifyFailed`] — the `emitted` leaf
+    ///   does not match `expected_leaf_hash` (binding failure), the tree
+    ///   is empty, the size-1 local check fails, or the reconstructed
+    ///   RFC 6962 root does not equal the accepted head's root.
+    /// - [`SigsumError::MalformedResponse`] — unparseable head/proof body,
+    ///   or the log tree-head signature did not verify.
+    /// - [`SigsumError::InsufficientWitnessCosignatures`] — fewer than the
+    ///   threshold of configured witnesses cosigned the head.
+    pub fn verify_bundled_inclusion(
+        &self,
+        expected_leaf_hash: &LeafHash,
+        emitted: &EmittedLeaf,
+        tree_head_body: &str,
+        inclusion_proof_body: &str,
+    ) -> Result<TreeHead, SigsumError> {
+        // (1) Bind the transmitted leaf to the artifact under
+        // verification. Without this, a valid proof for an unrelated leaf
+        // could be bundled against this artifact.
+        if &emitted.message != expected_leaf_hash.as_bytes() {
+            return Err(SigsumError::InclusionProofVerifyFailed);
+        }
+
+        // (2) Verify the cosigned accepted head offline (log signature +
+        // 2-of-3 cosignature threshold), exactly as the online path does.
+        let parsed = parse_get_tree_head(tree_head_body)?;
+        let head = self.verify_parsed_tree_head(&parsed)?;
+
+        // (3) Reconstruct the Sigsum Merkle leaf hash from the transmitted
+        // tree-leaf components.
+        let merkle_leaf_hash = emitted.tree_leaf().merkle_leaf_hash();
+
+        // (4) Verify inclusion against the accepted head's root.
+        if head.tree_size == 0 {
+            return Err(SigsumError::InclusionProofVerifyFailed);
+        } else if head.tree_size == 1 {
+            // Sigsum spec §3.2: in a size-1 tree a leaf is included iff its
+            // hash equals the root hash; no proof body is consulted.
+            if merkle_leaf_hash != head.root_hash {
+                return Err(SigsumError::InclusionProofVerifyFailed);
+            }
+        } else {
+            let (leaf_index, proof_nodes) = parse_get_inclusion_proof(inclusion_proof_body)?;
+            let computed = rfc6962_root_from_inclusion_proof(
+                leaf_index,
+                head.tree_size,
+                &merkle_leaf_hash,
+                &proof_nodes,
+            )
+            .ok_or(SigsumError::InclusionProofVerifyFailed)?;
+            if computed != head.root_hash {
+                return Err(SigsumError::InclusionProofVerifyFailed);
+            }
+        }
+
+        Ok(head)
+    }
+
     /// `GET {log_url}/get-inclusion-proof/{size}/{hex(merkle_leaf_hash)}`,
     /// retrying transient transport / 5xx failures up to the retry
     /// budget. A 404 ("not included") surfaces as the terminal
@@ -471,8 +560,43 @@ impl SigsumClient {
         let body = self.http_get_tree_head().await?;
         let parsed = parse_get_tree_head(&body)?;
 
-        // (3) Verify the log's own tree-head signature over the
-        // checkpoint note, using the pinned log key + its key hash.
+        // Verify the log tree-head signature + 2-of-3 cosignature
+        // threshold (shared with the offline bundled path).
+        let head = self.verify_parsed_tree_head(&parsed)?;
+
+        // Split-view detection against any cached head.
+        let record_id = cache_record_id_for_log(&self.log_url);
+        if let Some(cached) = self.load_cached_head(&record_id)? {
+            if head.tree_size < cached.tree_size {
+                return Err(SigsumError::LogTreeSizeRegression {
+                    cached_tree_size: cached.tree_size,
+                    fetched_tree_size: head.tree_size,
+                });
+            }
+            if head.tree_size == cached.tree_size && head.root_hash != cached.root_hash {
+                return Err(SigsumError::LogSplitView {
+                    tree_size: head.tree_size,
+                });
+            }
+        }
+
+        // Cache the accepted head.
+        let encoded = head.to_canonical_cbor()?;
+        self.storage
+            .put(categories::SIGSUM_CACHE, &record_id, &encoded)?;
+        Ok(head)
+    }
+
+    /// Verify a parsed `get-tree-head` against the pinned log key + the
+    /// configured witness pool, and assemble the accepted [`TreeHead`].
+    ///
+    /// Performs the log tree-head signature verification (over the C2SP
+    /// checkpoint note) + the 2-of-3 witness-cosignature threshold per
+    /// D0023 §3.4. Does NOT touch the network, the cache, or split-view
+    /// state — those are [`Self::refresh_tree_head`]'s concern. Shared
+    /// by `refresh_tree_head` and the offline
+    /// [`Self::verify_bundled_inclusion`].
+    fn verify_parsed_tree_head(&self, parsed: &ParsedTreeHead) -> Result<TreeHead, SigsumError> {
         let log_key_hash = sha256_of(&self.log_pubkey.to_bytes());
         let note = build_tree_head_note(&log_key_hash, parsed.tree_size, &parsed.root_hash);
         let log_sig = Signature::from_bytes(parsed.log_signature);
@@ -480,7 +604,6 @@ impl SigsumClient {
             .verify(&note, &log_sig)
             .map_err(|_| SigsumError::MalformedResponse)?;
 
-        // (4) Verify witness cosignatures against the configured pool.
         let accepted = self.verify_cosignatures(&note, &parsed.cosignatures);
         let valid = u8::try_from(accepted.len()).unwrap_or(u8::MAX);
         if valid < REQUIRED_COSIGNATURE_COUNT {
@@ -491,36 +614,16 @@ impl SigsumClient {
             });
         }
 
-        // (5) Split-view detection against any cached head.
-        let record_id = cache_record_id_for_log(&self.log_url);
-        if let Some(cached) = self.load_cached_head(&record_id)? {
-            if parsed.tree_size < cached.tree_size {
-                return Err(SigsumError::LogTreeSizeRegression {
-                    cached_tree_size: cached.tree_size,
-                    fetched_tree_size: parsed.tree_size,
-                });
-            }
-            if parsed.tree_size == cached.tree_size && parsed.root_hash != cached.root_hash {
-                return Err(SigsumError::LogSplitView {
-                    tree_size: parsed.tree_size,
-                });
-            }
-        }
-
-        // (6) Build + cache the accepted head. `timestamp` records the
-        // freshest cosignature time; `observed_at` is wall-clock now.
+        // `timestamp` records the freshest cosignature time; `observed_at`
+        // is wall-clock now.
         let freshest = accepted.iter().map(|c| c.timestamp).max().unwrap_or(0);
-        let head = TreeHead {
+        Ok(TreeHead {
             tree_size: parsed.tree_size,
             root_hash: parsed.root_hash,
             timestamp: freshest,
             cosignatures: accepted,
             observed_at: now_unix(),
-        };
-        let encoded = head.to_canonical_cbor()?;
-        self.storage
-            .put(categories::SIGSUM_CACHE, &record_id, &encoded)?;
-        Ok(head)
+        })
     }
 
     /// `GET {log_url}/get-tree-head`, retrying transient transport

@@ -17,9 +17,11 @@
 //! same RFC 8032 public key from the seed, so the key the cert binds is
 //! exactly the key that signs the manifest.
 //!
-//! The §5 Sigsum-anchored-release-log step is NOT exercised here: it is
-//! gated on `cairn_sigsum_client::verify_inclusion` (still stubbed), and
-//! `verify_release` intentionally does not invoke it yet.
+//! The §5 Sigsum-anchored-release-log step IS exercised: `valid_fixture`
+//! builds a cosigned `get-tree-head` + `get-inclusion-proof` (via a
+//! controlled witness pool whose keys also configure the verifier's
+//! composed `SigsumClient`) bound to the manifest's `release_leaf_hash`,
+//! and the tamper tests confirm `verify_release` enforces it offline.
 
 #![allow(
     clippy::unwrap_used,
@@ -39,7 +41,13 @@ use cairn_sigstore_verify::{
     ArtifactHash, RekorBundle, ReleaseBundle, ReleaseManifest, SigstoreVerifier,
     SigstoreVerifierConfig, SigstoreVerifyError,
 };
-use cairn_sigsum_client::{RetryBudget, SigsumClient, SigsumClientConfig, parse_witness_pool};
+use cairn_sigsum_client::witness::{
+    build_cosignature_signed_message, build_tree_head_note, witness_key_hash,
+};
+use cairn_sigsum_client::{
+    EmittedLeaf, LeafHash, RetryBudget, SigsumClient, SigsumClientConfig, SigsumError, WitnessPool,
+    build_tree_leaf, leaf_hash_for_cose_sign1_bytes, parse_witness_pool,
+};
 use cairn_storage::Storage;
 use cairn_storage::key_provider::testing::InMemoryKeyProvider;
 use p256::ecdsa::SigningKey as P256SigningKey;
@@ -236,37 +244,117 @@ fn signed_manifest_envelope(dev_sk: &SigningKey, prior: Vec<u8>) -> (Vec<u8>, Re
     (envelope, manifest)
 }
 
-fn make_witness_pool_toml(count: usize) -> String {
-    let mut rng = OsRng;
-    let mut out = String::new();
-    for i in 0..count {
-        let sk = SigningKey::generate(&mut rng);
-        let pubkey_hex = sk
-            .verifying_key()
-            .to_bytes()
-            .iter()
-            .fold(String::new(), |mut acc, b| {
-                use std::fmt::Write as _;
-                let _ = write!(&mut acc, "{b:02x}");
-                acc
-            });
-        out.push_str(&format!(
-            "[[witness]]\nname = \"W{i}\"\npubkey_hex = \"{pubkey_hex}\"\nurl = \"https://w-{i}.example.org\"\n\n"
-        ));
-    }
-    out
+// ===================================================================
+// Sigsum-anchored release-log fixtures (D0024 §5)
+// ===================================================================
+
+/// A controlled Sigsum log: the log signing key + three witnesses + the
+/// parsed pool, so the test can produce a valid cosigned head the
+/// verifier's composed client accepts.
+struct SigsumLog {
+    log_sk: SigningKey,
+    witnesses: Vec<(String, SigningKey)>,
+    pool: WitnessPool,
 }
 
-fn make_sigsum_client() -> SigsumClient {
+fn make_sigsum_log() -> SigsumLog {
+    let mut rng = OsRng;
+    let log_sk = SigningKey::generate(&mut rng);
+    let witnesses: Vec<(String, SigningKey)> = (0..3)
+        .map(|i| (format!("W{i}"), SigningKey::generate(&mut rng)))
+        .collect();
+    let mut toml = String::new();
+    for (i, (name, sk)) in witnesses.iter().enumerate() {
+        out_witness(&mut toml, i, name, sk);
+    }
+    let pool = parse_witness_pool(&toml).unwrap();
+    SigsumLog {
+        log_sk,
+        witnesses,
+        pool,
+    }
+}
+
+fn out_witness(toml: &mut String, i: usize, name: &str, sk: &SigningKey) {
+    use std::fmt::Write as _;
+    let _ = write!(
+        toml,
+        "[[witness]]\nname = \"{name}\"\npubkey_hex = \"{}\"\nurl = \"https://w-{i}.example.org\"\n\n",
+        hex_str(&sk.verifying_key().to_bytes()),
+    );
+}
+
+fn hex_str(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(&mut s, "{b:02x}");
+    }
+    s
+}
+
+/// A cosigned `get-tree-head` body: the log + the first `num_cosigners`
+/// witnesses sign over the checkpoint note for `size`/`root`.
+fn cosigned_tree_head(log: &SigsumLog, size: u64, root: &[u8; 32], num_cosigners: usize) -> String {
+    let lkh = {
+        let mut h = Sha256::new();
+        h.update(log.log_sk.verifying_key().to_bytes());
+        let o = h.finalize();
+        let mut a = [0u8; 32];
+        a.copy_from_slice(&o);
+        a
+    };
+    let note = build_tree_head_note(&lkh, size, root);
+    let log_sig = log.log_sk.sign(&note).unwrap();
+    let mut body = String::new();
+    body.push_str(&format!("size={size}\n"));
+    body.push_str(&format!("root_hash={}\n", hex_str(root)));
+    body.push_str(&format!("signature={}\n", hex_str(&log_sig.to_bytes())));
+    for (i, (name, sk)) in log.witnesses.iter().take(num_cosigners).enumerate() {
+        let ts = 1_700_000_100 + i as u64;
+        let key_hash = witness_key_hash(name, &sk.verifying_key());
+        let msg = build_cosignature_signed_message(ts, &note);
+        let sig = sk.sign(&msg).unwrap().to_bytes();
+        body.push_str(&format!(
+            "cosignature={} {} {}\n",
+            hex_str(&key_hash),
+            ts,
+            hex_str(&sig),
+        ));
+    }
+    body
+}
+
+/// Build the bundle's three Sigsum-proof fields bound to
+/// `release_leaf_hash`: a size-2 tree with the release leaf at index 0
+/// and an opaque sibling, all three witnesses cosigning.
+fn make_sigsum_proof(
+    log: &SigsumLog,
+    release_leaf_hash: &LeafHash,
+) -> (EmittedLeaf, String, String) {
+    let submitter_sk = SigningKey::generate(&mut OsRng);
+    let tl = build_tree_leaf(release_leaf_hash.as_bytes(), &submitter_sk).unwrap();
+    let emitted = EmittedLeaf {
+        message: *release_leaf_hash.as_bytes(),
+        signature: tl.signature,
+        key_hash: tl.key_hash,
+        observed_at: 0,
+    };
+    let sibling = [0x5Au8; 32];
+    let root = hash_children(&tl.merkle_leaf_hash(), &sibling);
+    let head = cosigned_tree_head(log, 2, &root, 3);
+    let proof = format!("leaf_index=0\nnode_hash={}\n", hex_str(&sibling));
+    (emitted, head, proof)
+}
+
+fn make_sigsum_client(log: &SigsumLog) -> SigsumClient {
     let provider = InMemoryKeyProvider::new();
     let passphrase = Zeroizing::new(b"test passphrase".to_vec());
     let storage = Arc::new(Storage::open_in_memory(&provider, &passphrase).unwrap());
-    let pool = parse_witness_pool(&make_witness_pool_toml(3)).unwrap();
-    let log_pubkey = SigningKey::generate(&mut OsRng).verifying_key();
     let config = SigsumClientConfig {
         log_url: Url::parse("https://log.example.org").unwrap(),
-        log_pubkey,
-        witness_pool: pool,
+        log_pubkey: log.log_sk.verifying_key(),
+        witness_pool: log.pool.clone(),
         default_retry_budget: RetryBudget::default(),
     };
     SigsumClient::new(config, storage).unwrap()
@@ -276,13 +364,14 @@ fn make_verifier(
     fulcio_root_pem: Vec<u8>,
     rekor_pubkey_pem: Vec<u8>,
     issuer: &str,
+    sigsum_log: &SigsumLog,
 ) -> SigstoreVerifier {
     let config = SigstoreVerifierConfig {
         fulcio_root_pem,
         rekor_pubkey_pem,
         expected_oidc_issuer: issuer.to_string(),
         expected_oidc_email: EMAIL.to_string(),
-        sigsum_client: make_sigsum_client(),
+        sigsum_client: make_sigsum_client(sigsum_log),
         default_retry_budget: RetryBudget::default(),
     };
     SigstoreVerifier::new(config).unwrap()
@@ -293,26 +382,39 @@ struct Fixture {
     bundle: ReleaseBundle,
     fulcio_root_pem: Vec<u8>,
     rekor_pem: Vec<u8>,
+    sigsum_log: SigsumLog,
 }
 
 /// Build a fully-valid release bundle: dev key → cert → manifest →
-/// Rekor bundle, all consistent.
+/// Rekor bundle → Sigsum-anchored release-log proof, all consistent.
 fn valid_fixture() -> Fixture {
     let (dev_kp, dev_sk) = make_dev_key();
     let (root, root_key) = make_root();
     let leaf_der = make_leaf(&root, &root_key, &dev_kp, ISSUER, EMAIL);
     let (envelope, _manifest) = signed_manifest_envelope(&dev_sk, PRIOR_HASH.to_vec());
     let (rekor_bundle, rekor_pem) = make_rekor_bundle();
+
+    // Sigsum proof bound to THIS manifest's release leaf hash (the shared
+    // SHA-256-of-signature-bytes primitive, D0024 §5.1).
+    let sigsum_log = make_sigsum_log();
+    let release_leaf_hash = leaf_hash_for_cose_sign1_bytes(&envelope).unwrap();
+    let (sigsum_emitted_leaf, sigsum_tree_head_body, sigsum_inclusion_proof_body) =
+        make_sigsum_proof(&sigsum_log, &release_leaf_hash);
+
     let bundle = ReleaseBundle {
         manifest_envelope_bytes: envelope,
         fulcio_cert_der: leaf_der,
         rekor_bundle,
         rekor_signing_time_unix: SIGNING_TIME,
+        sigsum_emitted_leaf,
+        sigsum_tree_head_body,
+        sigsum_inclusion_proof_body,
     };
     Fixture {
         bundle,
         fulcio_root_pem: root.pem().into_bytes(),
         rekor_pem,
+        sigsum_log,
     }
 }
 
@@ -323,7 +425,7 @@ fn valid_fixture() -> Fixture {
 #[tokio::test]
 async fn accepts_a_fully_valid_release() {
     let fx = valid_fixture();
-    let verifier = make_verifier(fx.fulcio_root_pem, fx.rekor_pem, ISSUER);
+    let verifier = make_verifier(fx.fulcio_root_pem, fx.rekor_pem, ISSUER, &fx.sigsum_log);
     let outcome = verifier
         .verify_release(&fx.bundle, Some(PRIOR_HASH))
         .await
@@ -335,7 +437,7 @@ async fn accepts_a_fully_valid_release() {
 #[tokio::test]
 async fn accepts_with_no_expected_predecessor() {
     let fx = valid_fixture();
-    let verifier = make_verifier(fx.fulcio_root_pem, fx.rekor_pem, ISSUER);
+    let verifier = make_verifier(fx.fulcio_root_pem, fx.rekor_pem, ISSUER, &fx.sigsum_log);
     // None skips the rollback check (e.g. the caller has no stored
     // predecessor yet).
     assert!(verifier.verify_release(&fx.bundle, None).await.is_ok());
@@ -344,7 +446,7 @@ async fn accepts_with_no_expected_predecessor() {
 #[tokio::test]
 async fn rejects_prior_hash_mismatch() {
     let fx = valid_fixture();
-    let verifier = make_verifier(fx.fulcio_root_pem, fx.rekor_pem, ISSUER);
+    let verifier = make_verifier(fx.fulcio_root_pem, fx.rekor_pem, ISSUER, &fx.sigsum_log);
     let wrong_predecessor = [0x66u8; 32];
     let err = verifier
         .verify_release(&fx.bundle, Some(wrong_predecessor))
@@ -368,14 +470,25 @@ async fn rejects_manifest_signed_by_wrong_key() {
     let imposter_sk = SigningKey::generate(&mut OsRng);
     let (envelope, _m) = signed_manifest_envelope(&imposter_sk, PRIOR_HASH.to_vec());
     let (rekor_bundle, rekor_pem) = make_rekor_bundle();
+    let sigsum_log = make_sigsum_log();
     let bundle = ReleaseBundle {
         manifest_envelope_bytes: envelope,
         fulcio_cert_der: leaf_der,
         rekor_bundle,
         rekor_signing_time_unix: SIGNING_TIME,
+        // Fails at step (3) (manifest signature) before the Sigsum step,
+        // so a placeholder proof suffices.
+        sigsum_emitted_leaf: EmittedLeaf {
+            message: [0; 32],
+            signature: [0; 64],
+            key_hash: [0; 32],
+            observed_at: 0,
+        },
+        sigsum_tree_head_body: String::new(),
+        sigsum_inclusion_proof_body: String::new(),
     };
 
-    let verifier = make_verifier(root.pem().into_bytes(), rekor_pem, ISSUER);
+    let verifier = make_verifier(root.pem().into_bytes(), rekor_pem, ISSUER, &sigsum_log);
     let err = verifier.verify_release(&bundle, None).await.unwrap_err();
     assert!(
         matches!(err, SigstoreVerifyError::ManifestSignatureVerifyFailed),
@@ -387,7 +500,12 @@ async fn rejects_manifest_signed_by_wrong_key() {
 async fn rejects_oidc_issuer_pin_mismatch() {
     let fx = valid_fixture();
     // Verifier pins a different issuer than the cert carries.
-    let verifier = make_verifier(fx.fulcio_root_pem, fx.rekor_pem, "https://evil.example.org");
+    let verifier = make_verifier(
+        fx.fulcio_root_pem,
+        fx.rekor_pem,
+        "https://evil.example.org",
+        &fx.sigsum_log,
+    );
     let err = verifier.verify_release(&fx.bundle, None).await.unwrap_err();
     assert!(
         matches!(err, SigstoreVerifyError::OidcIssuerMismatch),
@@ -401,10 +519,68 @@ async fn rejects_tampered_rekor_inclusion_proof() {
     // Corrupt a Rekor proof node: Fulcio + manifest still pass, but the
     // Rekor inclusion proof no longer reconstructs the checkpoint root.
     fx.bundle.rekor_bundle.proof_nodes[0][0] ^= 0xFF;
-    let verifier = make_verifier(fx.fulcio_root_pem, fx.rekor_pem, ISSUER);
+    let verifier = make_verifier(fx.fulcio_root_pem, fx.rekor_pem, ISSUER, &fx.sigsum_log);
     let err = verifier.verify_release(&fx.bundle, None).await.unwrap_err();
     assert!(
         matches!(err, SigstoreVerifyError::RekorInclusionProofVerifyFailed),
+        "got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn rejects_tampered_sigsum_inclusion_proof() {
+    // Fulcio + manifest + Rekor + rollback all pass, but the Sigsum
+    // inclusion proof's audit node is corrupted, so the reconstructed
+    // RFC 6962 root no longer matches the cosigned head. Proves step (6)
+    // is actually enforced (not skipped).
+    let mut fx = valid_fixture();
+    fx.bundle.sigsum_inclusion_proof_body =
+        format!("leaf_index=0\nnode_hash={}\n", "00".repeat(32));
+    let verifier = make_verifier(fx.fulcio_root_pem, fx.rekor_pem, ISSUER, &fx.sigsum_log);
+    let err = verifier.verify_release(&fx.bundle, None).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            SigstoreVerifyError::SigsumReleaseLog(SigsumError::InclusionProofVerifyFailed)
+        ),
+        "got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn rejects_sigsum_leaf_binding_mismatch() {
+    // The bundled emitted-leaf is for a different leaf than the manifest's
+    // release_leaf_hash — a valid proof bundled against the wrong
+    // artifact. The binding check in verify_bundled_inclusion must reject.
+    let mut fx = valid_fixture();
+    fx.bundle.sigsum_emitted_leaf.message = [0x99u8; 32];
+    let verifier = make_verifier(fx.fulcio_root_pem, fx.rekor_pem, ISSUER, &fx.sigsum_log);
+    let err = verifier.verify_release(&fx.bundle, None).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            SigstoreVerifyError::SigsumReleaseLog(SigsumError::InclusionProofVerifyFailed)
+        ),
+        "got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn rejects_sigsum_head_from_wrong_log_key() {
+    // The verifier's composed client pins log key A, but the bundled head
+    // is cosigned for a DIFFERENT log B. The pinned log tree-head
+    // signature fails -> MalformedResponse, surfaced as SigsumReleaseLog.
+    let fx = valid_fixture();
+    let other_log = make_sigsum_log();
+    // Build a verifier whose composed client pins `other_log`, while the
+    // bundle's head was signed by `fx.sigsum_log`.
+    let verifier = make_verifier(fx.fulcio_root_pem, fx.rekor_pem, ISSUER, &other_log);
+    let err = verifier.verify_release(&fx.bundle, None).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            SigstoreVerifyError::SigsumReleaseLog(SigsumError::MalformedResponse)
+        ),
         "got {err:?}"
     );
 }

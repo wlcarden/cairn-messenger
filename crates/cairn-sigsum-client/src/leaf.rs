@@ -162,14 +162,32 @@ impl LeafHash {
     }
 }
 
+/// Compute the leaf hash for the canonical bytes of a `COSE_Sign1`
+/// envelope per D0023 §1: `SHA-256(COSE_Sign1.signature_bytes)`.
+///
+/// This is the shared primitive underlying both [`leaf_hash_for`]
+/// (trust-graph ops, D0023 §1) and the release-manifest leaf hash
+/// (D0024 §5.1) — the "one audited primitive, two use cases" property.
+/// The trust-graph wrapper encodes the op to its envelope bytes first;
+/// the release path (`cairn-sigstore-verify`) passes the signed-
+/// manifest envelope bytes directly.
+///
+/// # Errors
+///
+/// [`SigsumError::MalformedResponse`] if `envelope_bytes` does not
+/// decode as a `COSE_Sign1` (unreachable for own-emitted envelopes; the
+/// variant covers the theoretical case).
+pub fn leaf_hash_for_cose_sign1_bytes(envelope_bytes: &[u8]) -> Result<LeafHash, SigsumError> {
+    let envelope =
+        CoseSign1::from_bytes(envelope_bytes).map_err(|_| SigsumError::MalformedResponse)?;
+    Ok(LeafHash(sha256(envelope.signature())))
+}
+
 /// Compute the leaf hash for a signed trust-graph op per D0023 §1.
 ///
-/// Steps:
-///
-/// 1. Encode the envelope to its canonical `COSE_Sign1` bytes.
-/// 2. Decode just enough to extract the signature bytes (the 4th
-///    element of the `COSE_Sign1` array).
-/// 3. SHA-256 the signature bytes.
+/// Encodes the op to its canonical `COSE_Sign1` bytes, then delegates
+/// to [`leaf_hash_for_cose_sign1_bytes`] (extract signature bytes →
+/// SHA-256).
 ///
 /// # Errors
 ///
@@ -180,16 +198,7 @@ impl LeafHash {
 ///   envelopes; the variant covers the theoretical case).
 pub fn leaf_hash_for(signed_op: &SignedTrustGraphOp) -> Result<LeafHash, SigsumError> {
     let envelope_bytes = signed_op.encode(false)?;
-    let envelope =
-        CoseSign1::from_bytes(&envelope_bytes).map_err(|_| SigsumError::MalformedResponse)?;
-    let signature_bytes = envelope.signature();
-
-    let mut hasher = Sha256::new();
-    hasher.update(signature_bytes);
-    let out = hasher.finalize();
-    let mut arr = [0u8; LEAF_HASH_LEN];
-    arr.copy_from_slice(&out);
-    Ok(LeafHash(arr))
+    leaf_hash_for_cose_sign1_bytes(&envelope_bytes)
 }
 
 #[cfg(test)]
@@ -233,6 +242,19 @@ mod tests {
         let leaf = leaf_hash_for(&signed_op).unwrap();
         let prior_hash = signed_op.prior_hash_bytes();
         assert_eq!(leaf.as_bytes(), &prior_hash);
+    }
+
+    #[test]
+    fn leaf_hash_for_matches_shared_cose_bytes_helper() {
+        // The trust-graph wrapper must produce the byte-identical leaf
+        // hash as the shared envelope-bytes primitive the release path
+        // uses (D0024 §5.2 "one audited primitive, two use cases").
+        let mut rng = OsRng;
+        let signed_op = make_signed_op(&mut rng);
+        let via_op = leaf_hash_for(&signed_op).unwrap();
+        let envelope_bytes = signed_op.encode(false).unwrap();
+        let via_bytes = leaf_hash_for_cose_sign1_bytes(&envelope_bytes).unwrap();
+        assert_eq!(via_op, via_bytes);
     }
 
     #[test]

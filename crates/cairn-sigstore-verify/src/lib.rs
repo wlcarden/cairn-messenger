@@ -75,16 +75,17 @@
 //! - [`client::SigstoreVerifier::verify_release`]: the end-to-end
 //!   offline orchestration (D0024 §6) — manifest decode → Fulcio +
 //!   OIDC → manifest `COSE_Sign1` verify → Rekor inclusion + checkpoint
-//!   → `prior_release_hash` rollback check. Validated end-to-end in
+//!   → `prior_release_hash` rollback check → Sigsum-anchored release-log
+//!   inclusion (D0024 §5). Validated end-to-end in
 //!   `tests/verify_release.rs`.
 //!
-//! **One composition gap remains (D0024 §5):** `verify_release` does
-//! NOT yet perform the witness-cosigned Sigsum-anchored-release-log
-//! step. Its dependency, `cairn_sigsum_client::verify_inclusion`, is
-//! now implemented — so the step is unblocked, but wiring it is its own
-//! follow-up: a release manifest is not a `SignedTrustGraphOp` (what
-//! `verify_inclusion` consumes), so the release-leaf representation must
-//! be settled first. The composed `SigsumClient` is held for that step.
+//! The §5 Sigsum step (now wired) verifies a *bundled* inclusion proof
+//! **offline** via `cairn_sigsum_client::verify_bundled_inclusion` — the
+//! release signer transmits the tree-leaf components + raw proof bodies
+//! in the [`client::ReleaseBundle`] (a release verifier never emitted
+//! the leaf, D0023 §1.4), and the `release_leaf_hash` binding it is the
+//! shared `SHA-256(COSE_Sign1.signature_bytes)` primitive via
+//! [`compose::release_leaf_hash_for_envelope_bytes`] (D0024 §5.1).
 //! The `integration-tests` cargo feature flag gates the eventual
 //! real-Rekor / real-Fulcio network-exercising tests.
 

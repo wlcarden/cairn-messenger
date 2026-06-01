@@ -307,11 +307,29 @@ impl SigsumClient {
         signed_op: &SignedTrustGraphOp,
     ) -> Result<InclusionProof, SigsumError>;
 
+    // [Added 2026-05-31] Offline, third-party-proof verify (no network,
+    // no cache). See the §5.3 revision note below.
+    pub fn verify_bundled_inclusion(
+        &self,
+        expected_leaf_hash: &LeafHash,
+        emitted: &EmittedLeaf,
+        tree_head_body: &str,
+        inclusion_proof_body: &str,
+    ) -> Result<TreeHead, SigsumError>;
+
     pub async fn refresh_tree_head(&self) -> Result<TreeHead, SigsumError>;
 }
 ```
 
 Per D0018 §6 the I/O surface is the only async-exposed layer; cryptographic verifications wrapped in `spawn_blocking` per D0018 §6's discipline pattern.
+
+### 5.3 Offline `verify_bundled_inclusion` (third-party proofs)
+
+_[Added 2026-05-31]_ `verify_inclusion` above is the **self-emit-then-verify** surface: the same node that called `emit_leaf` later verifies inclusion, so its `EmittedLeaf` is in the local cache and a fresh head is fetched from the network. A second consumer — D0024 §5's Sigsum-anchored **release** log — needs a different shape: the release signer emits the leaf, and a verifying device (which never emitted it, and may be air-gapped) checks a **transmitted** proof. `verify_inclusion` does not fit that flow (it reads the local emit cache + makes network calls), so `verify_bundled_inclusion` is the offline counterpart:
+
+- It takes the transmitted `EmittedLeaf` (the submitter cannot be recomputed — §1.4), plus the raw `get-tree-head` + `get-inclusion-proof` bodies the emitter captured.
+- It re-verifies the cosigned head offline (pinned log key signature + the 2-of-3 witness threshold, sharing the exact `verify_parsed_tree_head` helper `refresh_tree_head` uses), reconstructs the RFC 6962 root, and **binds** the proof to a caller-supplied `expected_leaf_hash` so a valid proof cannot be replayed against a different artifact.
+- It is synchronous (no I/O), the Sigsum analogue of `cairn_sigstore_verify::verify_rekor_inclusion`. The composition into `verify_release` is D0024 §5 / §6.4.
 
 ### 5.2 Cancel safety
 

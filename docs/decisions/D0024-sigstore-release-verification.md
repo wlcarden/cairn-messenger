@@ -188,7 +188,9 @@ The release leaf hash committed to the Sigsum-anchored release log is:
 release_leaf_hash = SHA-256( COSE_Sign1.signature_bytes( signed_manifest ) )
 ```
 
-This is the same composition as D0023 §1 for trust-graph leaves: SHA-256 of the signature bytes from the `COSE_Sign1` envelope. The leaf hash is computed via `cairn_sigsum_client::leaf::leaf_hash_for` against the signed-manifest envelope.
+This is the same composition as D0023 §1 for trust-graph leaves: SHA-256 of the signature bytes from the `COSE_Sign1` envelope.
+
+> **Revision 2026-05-31 — corrected the shared-helper reference.** The original text said the leaf hash "is computed via `cairn_sigsum_client::leaf::leaf_hash_for` against the signed-manifest envelope." That is wrong: `leaf_hash_for` takes a `&SignedTrustGraphOp` and cannot accept a manifest envelope. The actual "one audited primitive" the §5.2 rationale describes is `cairn_sigsum_client::leaf_hash_for_cose_sign1_bytes(&[u8]) -> LeafHash` (the SHA-256-of-`COSE_Sign1`-signature-bytes core); `leaf_hash_for` is now a thin wrapper over it that first encodes the op. The release path calls it through the crate-local `cairn_sigstore_verify::compose::release_leaf_hash_for_envelope_bytes` wrapper (which maps the decode error onto the `SigstoreVerifyError` surface). `cairn-sigsum-client`'s `compose.rs` previously duplicated the SHA-256 logic in the skeleton; the consolidation landed with the §5 wiring.
 
 ### 5.2 Rationale
 
@@ -286,6 +288,8 @@ The verifier supports two modes:
 - **Offline mode.** The release bundle includes a pre-captured Rekor inclusion proof + signed checkpoint + witness cosignatures. The verifier checks the bundle without making network calls. This is the air-gapped install path that D0015's "offline signed images" v1.5+ deferral activates against.
 
 The verify path is the same in both modes; the difference is whether the bundle was pre-populated or freshly fetched. v1 ships both modes; the offline mode is the architecturally important one because it is the path that does not require trusting whichever network the verifier sits on.
+
+> **Revision 2026-05-31 — the Sigsum release-log proof is carried inline + verified offline, like the Rekor proof.** When the §5 step was wired into `verify_release`, an inconsistency in the skeleton surfaced: the `ReleaseBundle` doc comment said the Sigsum entry would be "fetched via the composed `SigsumClient` rather than carried inline." That contradicts this section's offline mode and the bundled-proof pattern the Rekor step already follows. It also does not work mechanically: `SigsumClient::verify_inclusion` (D0023 §5) is shaped for the self-emit-then-verify flow — it reads the emitter's local `EmittedLeaf` cache and fetches a fresh head over the network — whereas a release **verifier never emitted the release leaf** and (offline) makes no network calls. A verifier also cannot recompute the submitter's tree-leaf signature (D0023 §1.4). The resolution: the `ReleaseBundle` carries the Sigsum proof **inline** — the release signer's `EmittedLeaf` (tree-leaf `signature` + `key_hash`) plus the raw `get-tree-head` + `get-inclusion-proof` ASCII bodies captured at release time — and `verify_release` verifies it with the new offline `SigsumClient::verify_bundled_inclusion` (D0023 §5, added 2026-05-31): re-verify the cosigned head (pinned log key + 2-of-3 threshold) + reconstruct the RFC 6962 root, binding the proof to the manifest's `release_leaf_hash`. Online mode simply pre-populates the same three bundle fields before running the identical offline verify.
 
 ### 6.5 Workspace pin additions
 

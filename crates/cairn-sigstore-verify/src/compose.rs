@@ -16,23 +16,18 @@
 //! cosigned Sigsum release log via the same code path the trust-
 //! graph crate uses for trust-graph leaves.
 //!
-//! ## v1 skeleton scope
+//! ## Shared leaf-hash primitive
 //!
-//! The skeleton provides:
-//!
-//! - [`release_leaf_hash_for_envelope_bytes`]: a local helper that
-//!   computes the release leaf hash from `COSE_Sign1` envelope
-//!   bytes. Documented to consolidate into `cairn-sigsum-client::leaf`
-//!   as a generic helper when the network bodies land; the skeleton
-//!   duplicates the small SHA-256-of-signature-bytes logic to avoid
-//!   churning the D0023 crate's public surface mid-skeleton.
-//!
-//! Once the network bodies for both crates land, the consolidation
-//! commit factors this into a single shared helper.
+//! [`release_leaf_hash_for_envelope_bytes`] is a thin crate-local
+//! wrapper that delegates to `cairn-sigsum-client`'s shared
+//! [`cairn_sigsum_client::leaf_hash_for_cose_sign1_bytes`] (the
+//! consolidation the skeleton deferred "until the network bodies
+//! land", now done). The wrapper exists only to map the decode failure
+//! onto this crate's [`SigstoreVerifyError`] surface so the release
+//! path never `unwrap`s; the SHA-256-of-signature-bytes logic itself is
+//! the single audited primitive shared with trust-graph leaves.
 
-use cairn_envelope::cose_sign1::CoseSign1;
-use cairn_sigsum_client::LeafHash;
-use sha2::{Digest, Sha256};
+use cairn_sigsum_client::{LeafHash, leaf_hash_for_cose_sign1_bytes};
 
 use crate::error::SigstoreVerifyError;
 
@@ -42,7 +37,8 @@ use crate::error::SigstoreVerifyError;
 /// The envelope bytes must be the canonical-CBOR encoded
 /// `COSE_Sign1` over the [`crate::manifest::ReleaseManifest`]
 /// canonical bytes. The leaf hash commits to the envelope's 64-byte
-/// Ed25519 signature only.
+/// Ed25519 signature only. Delegates to the shared
+/// [`cairn_sigsum_client::leaf_hash_for_cose_sign1_bytes`] primitive.
 ///
 /// # Errors
 ///
@@ -53,16 +49,8 @@ use crate::error::SigstoreVerifyError;
 pub fn release_leaf_hash_for_envelope_bytes(
     envelope_bytes: &[u8],
 ) -> Result<LeafHash, SigstoreVerifyError> {
-    let envelope = CoseSign1::from_bytes(envelope_bytes)
-        .map_err(|_| SigstoreVerifyError::ManifestDecodeFailed)?;
-    let signature_bytes = envelope.signature();
-
-    let mut hasher = Sha256::new();
-    hasher.update(signature_bytes);
-    let out = hasher.finalize();
-    let mut arr = [0u8; 32];
-    arr.copy_from_slice(&out);
-    Ok(LeafHash::from_bytes(arr))
+    leaf_hash_for_cose_sign1_bytes(envelope_bytes)
+        .map_err(|_| SigstoreVerifyError::ManifestDecodeFailed)
 }
 
 #[cfg(test)]
