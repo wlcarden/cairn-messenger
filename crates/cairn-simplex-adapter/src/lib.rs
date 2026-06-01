@@ -66,29 +66,39 @@
 //!   client implementing the D0020 §1.10 `Transport` seam.
 //! - [`error`] — typed error enum per D0018 §4.2 + D0026 §9.
 //!
-//! ## Implementation status (v1 skeleton)
+//! ## Implementation status
 //!
-//! The load-bearing primitives are implemented + tested:
+//! The adapter's security-critical envelope flow is **implemented +
+//! tested** over the [`sidecar::SidecarTransport`] seam (the dependency
+//! inversion of D0026 §1.2): `SimplexAdapter<T>` is generic over the
+//! transport, so `send` (build → sign → pad → persist → advance chain)
+//! and `recv` (verify → bind-to-sender → chain-check → unpad → persist)
+//! are exercised end-to-end over an in-memory
+//! `sidecar::MockSidecarTransport` — a two-party message round-trip,
+//! `prior_envelope_hash` chain-linking, signature/AAD verification,
+//! sender binding, and chain-gap rejection. Plus the load-bearing
+//! primitives:
 //!
-//! - `envelope::MessageEnvelope` canonical-CBOR round-trip per
-//!   D0026 §2
-//! - `envelope` sign + verify with AAD domain tag per D0006 §8
-//!   (tamper / wrong-key / wrong-AAD rejection covered)
-//! - `envelope::next_prior_envelope_hash` per D0026 §2.3 (same
-//!   composition as D0023 §1 + D0024 §5)
-//! - `padding::select_bucket` + `padding::generate_padding` per
-//!   D0026 §4
-//! - `storage::message_record_id_for` per D0026 §3.2
-//!   (`ratchet_record_id_for` retained-but-reserved per §4.1)
-//! - `adapter::SimplexAdapter` constructor + accessors
-//! - Typed `SimplexAdapterError` surface per D0026 §9
+//! - `envelope::MessageEnvelope` canonical-CBOR round-trip + sign/verify
+//!   with AAD domain tag per D0026 §2 / D0006 §8.
+//! - `envelope::next_prior_envelope_hash` per D0026 §2.3.
+//! - `padding::select_bucket` + `padding::generate_padding` per D0026 §4.
+//! - `storage::message_record_id_for` per D0026 §3.2.
+//! - Typed `SimplexAdapterError` surface per D0026 §9.
 //!
-//! The network-bound surfaces (the `SimplexAdapter` Transport-seam
-//! methods) are present as method signatures but return
-//! [`SimplexAdapterError::NetworkUnreached`] pending the SimplOxide-
-//! client body per D0026 §12. The `integration-tests` cargo feature
-//! flag gates the eventual tests against a local SimpleX Chat CLI;
-//! v1 skeleton ships without them.
+//! The ONE deferred surface is the concrete
+//! [`sidecar::SimploxideTransport`] — the production loopback-WebSocket
+//! transport to the SimpleX Chat CLI. It returns
+//! [`SimplexAdapterError::NetworkUnreached`] pending the `simploxide-client`
+//! crate (not yet available to this build); when it lands it slots in
+//! behind the same seam with no change to the envelope flow above (D0026
+//! §12). The `integration-tests` cargo feature flag gates the eventual
+//! tests against a local SimpleX Chat CLI.
+//!
+//! In-memory per-`(sender, recipient)` chain state (the
+//! `prior_envelope_hash` cursor) is a documented v1 simplification;
+//! rehydrating it from the `MESSAGES` history across restarts is a
+//! follow-up.
 //!
 //! ## What was removed in the D0020 re-anchor (2026-05-30)
 //!
@@ -101,13 +111,18 @@ pub mod adapter;
 pub mod envelope;
 pub mod error;
 pub mod padding;
+/// The sidecar-transport seam (D0020 §1.10 / D0026 §1.2).
+///
+/// The raw byte transport below the Cairn envelope, with the deferred
+/// SimplOxide-backed [`sidecar::SimploxideTransport`] + (test-only) mock.
+pub mod sidecar;
 pub mod storage;
 
 pub use cairn_sigsum_client::RetryBudget;
 
 pub use adapter::{
-    ConnectionId, Invitation, MessageSent, ReceivedMessage, SidecarEndpoint, SimplexAdapter,
-    SimplexAdapterConfig,
+    ConnectionId, Invitation, LocalIdentity, MessageSent, ReceivedMessage, SidecarEndpoint,
+    SimplexAdapter, SimplexAdapterConfig,
 };
 pub use envelope::{
     DOMAIN_TAG, ENVELOPE_SCHEMA_VERSION, MessageEnvelope, next_prior_envelope_hash, verify_envelope,
@@ -116,4 +131,5 @@ pub use error::SimplexAdapterError;
 pub use padding::{
     LARGEST_BUCKET, SIZE_BUCKETS, generate_padding, padding_bytes_required, select_bucket,
 };
+pub use sidecar::{SidecarTransport, SimploxideTransport};
 pub use storage::{RECORD_ID_LEN, message_record_id_for, ratchet_record_id_for};
