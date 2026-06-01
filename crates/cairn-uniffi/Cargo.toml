@@ -60,10 +60,16 @@ cairn-recovery = { path = "../cairn-recovery" }
 #     in RecoveryError, not directly. ===
 cairn-shamir = { path = "../cairn-shamir" }
 
-# === Memory hygiene (D0018 §1.6): the recovery module wraps incoming
-#     share bytes in Zeroizing before handing them to Share::try_from_parts
-#     so Rust's only copy is wiped on drop. ===
+# === Memory hygiene (D0018 §1.6): the recovery + storage modules wrap
+#     incoming secret bytes (Shamir shares, the storage passphrase) in
+#     Zeroizing before use so Rust's only copy is wiped on drop. ===
 zeroize = { workspace = true }
+
+# === Argon2id for the storage module's Rust-side KEK derivation
+#     (D0027 §2.4 resolution: the KEK is NeverExport, so derive_kek runs
+#     in Rust, not the Kotlin shell). Same =0.5.3 pin cairn-storage uses;
+#     production parameters m=64 MiB/t=3/p=1 per D0022 §2.2. ===
+argon2 = { workspace = true }
 
 # === Error Display (Cairn-authored strings only; no source Display
 #     crosses) per D0018 §4.2 ===
