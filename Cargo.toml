@@ -235,6 +235,31 @@ tokio = { version = "=1.40.0", features = ["rt-multi-thread", "macros", "time", 
 # + socket2 0.5.10 to satisfy it); no tokio bump, no MSRV coordination event.
 simploxide-ws-core = "=0.2.0"
 
+# === SimpleX in-process FFI transport — ANDROID ONLY (D0026 §12) ===
+# The Android SidecarTransport (D0020 §1.9): there is no standalone Android
+# simplex-chat CLI binary, so on device the SimpleX daemon runs IN-PROCESS via
+# the JNI `libsimplex` library. `simploxide-ffi-core` exposes the SAME raw
+# command/response/event String API as `simploxide-ws-core` (so Cairn's
+# `protocol.rs` + the shared transport `flow` are reused verbatim); it pulls
+# `simploxide-sxcrt-sys` (`links = "simplex"`), whose build script links
+# `libsimplex` + the GHC Haskell runtime (~161 `.so`/ABI from SimpleX's
+# official bundle) at build time. AGPL-3.0 (compatible with Cairn's AGPL).
+#
+# Referenced ONLY under `[target.'cfg(target_os = "android")'.dependencies]`
+# in cairn-simplex-adapter so the x86_64-linux CI host (clippy/test
+# `--all-features`) never builds `sxcrt-sys` (its script hard-fails without a
+# `libsimplex` bundle). The per-ABI link happens at the Android APK/cdylib
+# stage.
+#
+# MSRV (CORRECTED 2026-06-01): `sxcrt-sys 0.2.0`'s LIB uses
+# `Duration::from_mins` (stable since rust 1.91 — `duration_constructors`), so
+# the Android build needs rust >= ~1.91 — ABOVE the workspace's current 1.88
+# pin. The earlier "needs >= 1.88 (build.rs let-chains)" claim undercounted (a
+# probe on the default 1.94.1 toolchain masked it). Host builds are unaffected
+# (target-gated off); the Android APK build requires a FURTHER MSRV bump (a
+# tracked D0018 §7.4 follow-on, see D0026 §12). Needs no tokio bump.
+simploxide-ffi-core = "=0.2.0"
+
 # === Testing (D0018 §5) ===
 proptest = { version = "=1.5.0", default-features = false, features = ["std"] }
 arbitrary = { version = "=1.3.2", features = ["derive"] }

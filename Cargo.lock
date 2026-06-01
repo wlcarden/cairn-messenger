@@ -576,6 +576,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "simploxide-ffi-core",
  "simploxide-ws-core",
  "thiserror 1.0.63",
  "tokio",
@@ -2743,6 +2744,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "096e6d7cfd08d91f2a58ccd72073954fb33c0d5354e3675f2c8463946e249916"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "simploxide-ffi-core"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2851b79a98313c030b81a72aa893f58eb7e8c834bda29624104c1c94a21395a8"
+dependencies = [
+ "serde",
+ "serde_json",
+ "simploxide-core",
+ "simploxide-sxcrt-sys",
+ "slab",
+ "tokio",
+]
+
+[[package]]
+name = "simploxide-sxcrt-sys"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "446797738370611628d13e94344bbdfb8e99d33e4d0ad34bc47c2db098772ace"
+dependencies = [
+ "libc",
+ "log",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

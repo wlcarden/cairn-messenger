@@ -91,3 +91,14 @@ zeroize = { workspace = true }
 
 # === Error handling (D0018 §4.2) ===
 thiserror = { workspace = true }
+
+# === Android in-process FFI transport per D0026 §12 (ANDROID ONLY) ===
+# `simploxide-ffi-core` exposes the SAME raw command/response/event String API
+# as `simploxide-ws-core`, so the `FfiSidecarTransport` (sidecar.rs, gated
+# `#[cfg(target_os = "android")]`) reuses Cairn's `protocol.rs` + the shared
+# transport `flow` verbatim — only the bring-up differs (in-process `init`
+# with an app-private DB vs. a WebSocket dial). target_os-gated so the x86_64
+# CI host never pulls `simploxide-sxcrt-sys` (`links = "simplex"`), whose build
+# script hard-fails without a `libsimplex` bundle. See the workspace-pin note.
+[target.'cfg(target_os = "android")'.dependencies]
+simploxide-ffi-core = { workspace = true }

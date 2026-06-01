@@ -39,6 +39,12 @@ allow = [
     "CC0-1.0",
     "MPL-2.0",
     "AGPL-3.0-only",
+    # `AGPL-3.0` is the DEPRECATED SPDX spelling of AGPLv3 (ambiguous re:
+    # "-only" vs "-or-later"); `simploxide-ffi-core` + `simploxide-sxcrt-sys`
+    # (the Android in-process transport subtree, D0026 §12) declare it. Same
+    # AGPLv3 family as Cairn's own `AGPL-3.0-only` (D0019), so allowed. These
+    # crates only enter the graph under `cfg(target_os = "android")`.
+    "AGPL-3.0",
     # Apache-2.0 WITH LLVM-exception is permissive enough to allow
     "Apache-2.0 WITH LLVM-exception",
 ]

@@ -49,26 +49,39 @@ use serde_json::Value;
 
 /// A parsed simplex-chat response/event: the inner object + its `type` tag.
 ///
-/// simplex-chat frames are `{"corrId": "..", "resp": {"type": "..", ..}}`
-/// for command responses and `{"resp": {"type": "..", ..}}` (no `corrId`)
-/// for events. `simploxide-ws-core` already splits the two by `corrId` (its
-/// dispatcher routes responses to the awaiting `send` future and events to
-/// the queue), so here we only need to reach into `resp`.
+/// The same simplex-chat core wraps its replies differently per transport
+/// (D0026 §12 FFI host-runtime finding, 2026-06-01):
+/// - **ws-core / CLI-WebSocket:** `{"corrId": "..", "resp": {"type": ..}}`
+///   for command responses, `{"resp": {"type": ..}}` (no `corrId`) for events.
+///   `simploxide-ws-core` splits the two by `corrId` (its dispatcher routes
+///   responses to the awaiting `send` future and events to the queue).
+/// - **FFI / in-process `libsimplex`** (`simploxide-ffi-core`, Android):
+///   `{"result": {"type": ..}}` for BOTH responses and events (no `corrId`).
+///   Verified empirically against in-process `libsimplex` v6.5.3.0.
+///
+/// The outer envelope key differs (`resp` vs `result`) but the inner
+/// `{"type": .., ..}` object is identical, so [`Self::from_frame`] accepts
+/// either key and every downstream parser is transport-agnostic — the
+/// [`crate::sidecar`] FFI + ws-core transports share one protocol layer.
 pub(crate) struct Resp<'a> {
-    /// The `type` discriminator of the `resp` object (e.g. `"newChatItems"`,
+    /// The `type` discriminator of the inner object (e.g. `"newChatItems"`,
     /// `"activeUser"`, `"chatCmdError"`).
     pub(crate) tag: &'a str,
-    /// The `resp` object itself, for field extraction.
+    /// The inner `resp` / `result` object itself, for field extraction.
     pub(crate) body: &'a Value,
 }
 
 impl<'a> Resp<'a> {
-    /// Reach into a parsed frame's `resp` object + read its `type` tag.
+    /// Reach into a parsed frame's inner object (`resp` for ws-core/CLI,
+    /// `result` for the FFI/in-process transport) + read its `type` tag.
     ///
-    /// Returns `None` if there is no `resp` object or it lacks a string
-    /// `type` — both of which a caller treats as a protocol error.
+    /// Returns `None` if there is neither a `resp` nor a `result` object, or
+    /// it lacks a string `type` — both of which a caller treats as a protocol
+    /// error.
     pub(crate) fn from_frame(frame: &'a Value) -> Option<Self> {
-        let body = frame.get("resp")?;
+        // ws-core/CLI uses `resp`; FFI in-process uses `result` (D0026 §12).
+        // Both carry the same inner `{"type": ..}` object.
+        let body = frame.get("resp").or_else(|| frame.get("result"))?;
         let tag = body.get("type")?.as_str()?;
         Some(Self { tag, body })
     }
@@ -283,6 +296,40 @@ mod tests {
         let resp = Resp::from_frame(&frame).unwrap();
         assert_eq!(resp.tag, "activeUser");
         assert_eq!(parse_active_user_id(&resp), Some(5));
+    }
+
+    #[test]
+    fn parses_ffi_result_envelope() {
+        // The Android in-process FFI transport (simploxide-ffi-core) wraps
+        // replies as `{"result": {...}}` rather than the ws-core/CLI
+        // `{"resp": {...}}` — verified against in-process libsimplex v6.5.3.0
+        // (D0026 §12 FFI host-runtime proof). Resp::from_frame must accept it
+        // so the FFI + ws-core transports share one protocol layer. These
+        // fixtures are the EXACT shapes the host runtime proof observed.
+        let user = parse_frame(
+            r#"{"result":{"type":"activeUser","user":{"userId":1,"localDisplayName":"cairn"}}}"#,
+        )
+        .unwrap();
+        let resp = Resp::from_frame(&user).unwrap();
+        assert_eq!(resp.tag, "activeUser");
+        assert_eq!(parse_active_user_id(&resp), Some(1));
+
+        let inv = parse_frame(
+            r#"{"result":{"type":"invitation","connLinkInvitation":{"connFullLink":"simplex:/invitation#/?v=2-7"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parse_invitation_link(&Resp::from_frame(&inv).unwrap()).as_deref(),
+            Some("simplex:/invitation#/?v=2-7")
+        );
+
+        // The `resp` envelope still takes precedence + works (ws-core path).
+        let ws = parse_frame(r#"{"corrId":"1","resp":{"type":"activeUser","user":{"userId":9}}}"#)
+            .unwrap();
+        assert_eq!(
+            parse_active_user_id(&Resp::from_frame(&ws).unwrap()),
+            Some(9)
+        );
     }
 
     #[test]
