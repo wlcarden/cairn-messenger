@@ -145,6 +145,8 @@ The Android `ConnectivityManager` callback is the OS-level signal; per D0020 §2
 
 Transitions execute on edge changes; calling with the current state is a no-op.
 
+> **Revision 2026-05-31 — control-port client implemented; `observe_network_state` is async.** The §4.1 examples show `observe_network_state` as a sync call, but issuing `SIGNAL NEWNYM` on the `Offline → Online` edge requires control-port I/O, so the method is now `async fn observe_network_state(...) -> Result<(), TorTransportError>`. It updates the tracked state (releasing the mutex) BEFORE awaiting the NEWNYM, so a NEWNYM failure does not roll back the observed transition; the failure surfaces as the return error. The NEWNYM is skipped (returns `Ok`) when no control cookie path is configured. The control-port client (`crate::control`) authenticates with **SAFECOOKIE** (challenge-response; the 32-byte cookie is never transmitted) — HMAC-SHA256 computed as HKDF-Extract via the already-pinned `hkdf` (audited primitive, no new pin, no hand-rolled crypto) — using a per-command connection lifecycle (§5.2). `signal_newnym()` + `bootstrap_phase()` (`GETINFO status/bootstrap-phase` → progress 0–100) are exposed directly. Validated by `tests/control_port.rs` (8 cases) against a mock control-port server. Onion-service hosting (`ADD_ONION`, §7) remains the v1.5 follow-up.
+
 ---
 
 ## 5. Async surface

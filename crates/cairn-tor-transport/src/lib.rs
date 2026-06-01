@@ -58,18 +58,24 @@
 //! Validated by `tests/socks5_connect.rs` against a hermetic mock SOCKS5
 //! server.
 //!
+//! The **control-port client** (`127.0.0.1:9051`) is also **implemented**:
+//! SAFECOOKIE authentication (HMAC-SHA256 via the audited `hkdf`; the
+//! cookie never crosses the wire) + per-command lifecycle.
+//! `TorTransport::observe_network_state` is now async and issues `SIGNAL
+//! NEWNYM` on the `Offline → Online` edge (D0025 §4.1);
+//! `TorTransport::signal_newnym` + `TorTransport::bootstrap_phase` expose
+//! the commands. Validated by `tests/control_port.rs` against a hermetic
+//! mock control-port server.
+//!
 //! Also implemented + tested:
 //!
 //! - `BridgeManifest` TOML round-trip per D0025 §3.
 //! - `TorTransport::new` wiring the manifest + retry budget + the SOCKS
-//!   proxy address + observed network state.
-//! - `TorTransport::observe_network_state` +
-//!   `TorTransport::current_network_state` per D0025 §4.
+//!   proxy + control-port addresses + observed network state.
+//! - `TorTransport::current_network_state` per D0025 §4.
 //! - Typed `TorTransportError` surface per D0025 §6.
 //!
-//! Remaining follow-ups: the control-port client (`127.0.0.1:9051`,
-//! cookie auth) for `SIGNAL NEWNYM` on `Offline → Online` + bootstrap-
-//! status queries, and onion-service hosting
+//! Remaining follow-up: onion-service hosting
 //! ([`transport::TorTransport::host_onion_service`], a v1.5 slot per
 //! D0025 §7). The `integration-tests` cargo feature flag still gates the
 //! eventual real-C-Tor network tests.
@@ -83,6 +89,10 @@ pub mod transport;
 /// of the public surface — the public entry point is
 /// [`transport::TorTransport::connect`].
 pub(crate) mod socks5;
+
+/// Internal Tor control-port client (SAFECOOKIE auth + `SIGNAL NEWNYM` +
+/// bootstrap-status) per D0025 §1.1 / §4. Crate-visible, not public API.
+pub(crate) mod control;
 
 pub use cairn_sigsum_client::RetryBudget;
 

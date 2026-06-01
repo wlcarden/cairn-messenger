@@ -44,6 +44,17 @@ toml = { workspace = true }
 # event per D0018 §1.
 sha2 = { workspace = true }
 
+# === Control-port SAFECOOKIE auth (D0025 §1.1 / §4; control.rs) ===
+# HMAC-SHA256 for the Tor control-spec SAFECOOKIE challenge is computed as
+# HKDF-Extract (`Hkdf::<Sha256>::extract(Some(key), msg).0` == HMAC-SHA256)
+# via the already-pinned `hkdf` — an audited primitive, no hand-rolled
+# crypto, no new pin. `subtle` gives constant-time SERVERHASH comparison;
+# `getrandom` gives the 32-byte client nonce. All three are existing
+# workspace pins (NOT new coordination events per D0018 §1).
+hkdf = { workspace = true }
+subtle = { workspace = true }
+getrandom = { workspace = true }
+
 # === Error handling (D0018 §4.2) ===
 thiserror = { workspace = true }
 

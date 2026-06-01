@@ -599,8 +599,11 @@ name = "cairn-tor-transport"
 version = "0.1.0-dev"
 dependencies = [
  "cairn-sigsum-client",
+ "getrandom 0.2.15",
+ "hkdf",
  "serde",
  "sha2",
+ "subtle",
  "thiserror 1.0.63",
  "tokio",
  "toml",

@@ -20,29 +20,37 @@
 //! [`TorTransportError::SocksProtocol`]). Validated by
 //! `tests/socks5_connect.rs` against a hermetic mock SOCKS5 server.
 //!
+//! The **control-port client** (`crate::control`, `127.0.0.1:9051`) is
+//! also **implemented**: SAFECOOKIE authentication (the cookie is never
+//! sent on the wire; HMAC-SHA256 via the audited `hkdf`) + per-command
+//! lifecycle (D0025 §5.2). [`TorTransport::observe_network_state`] is now
+//! async and issues `SIGNAL NEWNYM` on the `Offline → Online` edge
+//! (D0025 §4.1); [`TorTransport::signal_newnym`] +
+//! [`TorTransport::bootstrap_phase`] expose the commands directly.
+//! Validated by `tests/control_port.rs` against a hermetic mock
+//! control-port server.
+//!
 //! Also implemented + tested:
 //!
 //! - [`TorTransport::new`] wiring the bridge manifest, the default retry
-//!   budget, and the SOCKS proxy address (default `127.0.0.1:9050`;
-//!   overridable via [`TorTransport::with_socks_proxy_addr`]).
-//! - [`TorTransport::observe_network_state`] +
-//!   [`TorTransport::current_network_state`] state tracking per D0025 §4.
-//! - [`TorTransport::shutdown`] (no-op: a [`TorStream`] owns its tunnel,
-//!   so there is no transport-held connection to close until the
-//!   control-port client lands).
+//!   budget, the SOCKS proxy address (default `127.0.0.1:9050`), and the
+//!   control-port address (default `127.0.0.1:9051`) + cookie path.
+//! - [`TorTransport::current_network_state`] state tracking per D0025 §4.
+//! - [`TorTransport::shutdown`] (no-op: a [`TorStream`] owns its tunnel
+//!   and the control-port client is per-command, so there is no
+//!   transport-held connection to close).
 //!
-//! Remaining follow-ups (separate from `connect`):
+//! Remaining follow-up:
 //!
-//! - The control-port client (`127.0.0.1:9051`, cookie auth) for
-//!   `SIGNAL NEWNYM` on `Offline → Online` (D0025 §4) + bootstrap-status
-//!   queries (which would let `connect` surface
-//!   [`TorTransportError::BootstrapIncomplete`] precisely rather than as
-//!   a generic SOCKS failure).
 //! - [`TorTransport::host_onion_service`] (`ADD_ONION`), a v1.5 slot per
-//!   D0025 §7 / D0020 §2.8.
+//!   D0025 §7 / D0020 §2.8. (`connect` could also consult
+//!   [`TorTransport::bootstrap_phase`] to surface
+//!   [`TorTransportError::BootstrapIncomplete`] precisely; left to the
+//!   caller for now to keep `connect` a single round-trip.)
 
 use std::io;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Mutex;
 use std::task::{Context, Poll};
@@ -52,11 +60,14 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 
 use crate::config::BridgeManifest;
+use crate::control::{self, ControlError};
 use crate::error::TorTransportError;
 use crate::socks5::{self, Socks5Error};
 
 /// Default C-Tor SOCKS proxy loopback port per D0020 §2 (`127.0.0.1:9050`).
 const DEFAULT_SOCKS_PROXY_PORT: u16 = 9050;
+/// Default C-Tor control-port loopback port per D0020 §2 (`127.0.0.1:9051`).
+const DEFAULT_CONTROL_PORT: u16 = 9051;
 
 /// Network connectivity state observed by the Android shell and
 /// signalled to the transport per D0025 §4.
@@ -187,6 +198,16 @@ pub struct TorTransport {
     /// [`TorTransport::with_socks_proxy_addr`] (used by tests to point at
     /// a mock SOCKS5 server).
     socks_proxy_addr: SocketAddr,
+    /// Loopback address of the C-Tor control port. Defaults to
+    /// `127.0.0.1:9051` (D0020 §2); overridable via
+    /// [`TorTransport::with_control_port_addr`].
+    control_port_addr: SocketAddr,
+    /// Path to the C-Tor control-port SAFECOOKIE auth cookie. `None` until
+    /// the Android shell supplies it via
+    /// [`TorTransport::with_control_cookie_path`]; while `None`, control-
+    /// port commands (`SIGNAL NEWNYM`, bootstrap-status) are unavailable
+    /// and `observe_network_state` skips the NEWNYM side effect.
+    control_cookie_path: Option<PathBuf>,
     /// Currently observed network state per D0025 §4.
     ///
     /// `Mutex<NetworkState>` rather than `Cell<NetworkState>` so the
@@ -222,6 +243,8 @@ impl TorTransport {
             bridge_manifest: config.bridge_manifest,
             default_retry_budget: config.default_retry_budget,
             socks_proxy_addr: SocketAddr::from(([127, 0, 0, 1], DEFAULT_SOCKS_PROXY_PORT)),
+            control_port_addr: SocketAddr::from(([127, 0, 0, 1], DEFAULT_CONTROL_PORT)),
+            control_cookie_path: None,
             network_state: Mutex::new(NetworkState::Online),
         })
     }
@@ -229,11 +252,29 @@ impl TorTransport {
     /// Override the C-Tor SOCKS proxy address.
     ///
     /// Production uses the `127.0.0.1:9050` default per D0020 §2; this
-    /// builder lets tests point `connect` at a mock SOCKS5 server. The
-    /// control-port address is independent (a v1.5 follow-up).
+    /// builder lets tests point `connect` at a mock SOCKS5 server.
     #[must_use]
     pub const fn with_socks_proxy_addr(mut self, addr: SocketAddr) -> Self {
         self.socks_proxy_addr = addr;
+        self
+    }
+
+    /// Override the C-Tor control-port address (default `127.0.0.1:9051`
+    /// per D0020 §2; tests point this at a mock control port).
+    #[must_use]
+    pub const fn with_control_port_addr(mut self, addr: SocketAddr) -> Self {
+        self.control_port_addr = addr;
+        self
+    }
+
+    /// Supply the path to the C-Tor control-port SAFECOOKIE auth cookie.
+    ///
+    /// The Android shell controls the C-Tor data dir and knows this path.
+    /// Without it, `SIGNAL NEWNYM` + bootstrap-status are unavailable and
+    /// `observe_network_state` skips the NEWNYM side effect.
+    #[must_use]
+    pub fn with_control_cookie_path(mut self, path: PathBuf) -> Self {
+        self.control_cookie_path = Some(path);
         self
     }
 
@@ -263,28 +304,94 @@ impl TorTransport {
 
     /// Signal a network-state transition per D0025 §4.
     ///
-    /// Idempotent: calling with the current state is a no-op.
-    /// Transitions execute on edge changes; v1 skeleton tracks state
-    /// only (no behavioral side effects). The implementation cycle
-    /// adds the `SIGNAL NEWNYM` control-port command + connect-retry-
-    /// pause per D0025 §4.1 / D0020 §2.9.
+    /// Updates the tracked state and, on the `Offline → Online` edge,
+    /// issues `SIGNAL NEWNYM` over the control port (D0025 §4.1) so Tor
+    /// builds fresh circuits — best-effort: the NEWNYM is skipped when no
+    /// control cookie path is configured. Idempotent: calling with the
+    /// current state is a no-op (no edge → no NEWNYM).
+    ///
+    /// The state is updated BEFORE the (async) NEWNYM, so a NEWNYM failure
+    /// does not roll back the observed transition; it surfaces as the
+    /// return error so the caller knows circuits were not refreshed.
     ///
     /// # Errors
     ///
-    /// Returns [`TorTransportError::Network`] with
-    /// `retry_budget_used: 0` if the internal mutex was poisoned.
-    pub fn observe_network_state(&self, new_state: NetworkState) -> Result<(), TorTransportError> {
-        let mut guard = self
-            .network_state
-            .lock()
-            .map_err(|_| TorTransportError::Network {
-                retry_budget_used: 0,
-            })?;
-        *guard = new_state;
-        // Explicit drop per clippy::significant_drop_in_scrutinee —
-        // the MutexGuard's Drop is observable (releases the lock).
-        drop(guard);
+    /// - [`TorTransportError::Network`] if the internal mutex was poisoned,
+    ///   or the control-port loopback connection failed.
+    /// - [`TorTransportError::ControlPortProtocol`] if the NEWNYM command
+    ///   was rejected (auth / protocol failure).
+    pub async fn observe_network_state(
+        &self,
+        new_state: NetworkState,
+    ) -> Result<(), TorTransportError> {
+        // Capture the previous state + write the new one. The std Mutex
+        // guard MUST be released before the await below.
+        let prev = {
+            let mut guard = self
+                .network_state
+                .lock()
+                .map_err(|_| TorTransportError::Network {
+                    retry_budget_used: 0,
+                })?;
+            let prev = *guard;
+            *guard = new_state;
+            prev
+        };
+
+        if prev == NetworkState::Offline && new_state == NetworkState::Online {
+            self.signal_newnym().await?;
+        }
         Ok(())
+    }
+
+    /// Issue `SIGNAL NEWNYM` over the control port (D0025 §4.1), asking Tor
+    /// to use fresh circuits for new connections.
+    ///
+    /// No-op (returns `Ok`) when no control cookie path is configured —
+    /// a `TorTransport` without a control port just tracks state.
+    ///
+    /// # Errors
+    ///
+    /// - [`TorTransportError::Network`] — control-port loopback connection
+    ///   failed.
+    /// - [`TorTransportError::ControlPortProtocol`] — cookie read,
+    ///   SAFECOOKIE auth, or the command was rejected.
+    pub async fn signal_newnym(&self) -> Result<(), TorTransportError> {
+        let Some(cookie_path) = self.control_cookie_path.as_deref() else {
+            return Ok(());
+        };
+        control::run_command(self.control_port_addr, cookie_path, "SIGNAL NEWNYM")
+            .await
+            .map(|_| ())
+            .map_err(|e| map_control_error(&e))
+    }
+
+    /// Query the C-Tor bootstrap progress (0–100) via
+    /// `GETINFO status/bootstrap-phase` (D0025 §1.1). A value of 100 means
+    /// circuits are available; lower values mean Tor is still bootstrapping
+    /// (the precise form of [`TorTransportError::BootstrapIncomplete`] the
+    /// SOCKS layer cannot itself detect).
+    ///
+    /// # Errors
+    ///
+    /// - [`TorTransportError::ControlPortProtocol`] — no control cookie
+    ///   path configured, cookie read / SAFECOOKIE auth failure, or an
+    ///   unparseable reply.
+    /// - [`TorTransportError::Network`] — control-port loopback connection
+    ///   failed.
+    pub async fn bootstrap_phase(&self) -> Result<u8, TorTransportError> {
+        let cookie_path = self
+            .control_cookie_path
+            .as_deref()
+            .ok_or(TorTransportError::ControlPortProtocol)?;
+        let reply = control::run_command(
+            self.control_port_addr,
+            cookie_path,
+            "GETINFO status/bootstrap-phase",
+        )
+        .await
+        .map_err(|e| map_control_error(&e))?;
+        parse_bootstrap_progress(&reply).ok_or(TorTransportError::ControlPortProtocol)
     }
 
     /// Open an outbound SOCKS5 stream to `(target_host, target_port)`
@@ -415,6 +522,33 @@ const fn map_socks5_error(err: &Socks5Error, attempt: u8) -> TorTransportError {
     }
 }
 
+/// Map an internal [`ControlError`] onto the public typed error surface
+/// per D0025 §6. A loopback transport failure is a `Network`; cookie-read,
+/// SAFECOOKIE-auth, and reply-protocol failures are `ControlPortProtocol`.
+const fn map_control_error(err: &ControlError) -> TorTransportError {
+    match err {
+        ControlError::Transport => TorTransportError::Network {
+            retry_budget_used: 0,
+        },
+        ControlError::CookieRead | ControlError::AuthFailed | ControlError::Protocol => {
+            TorTransportError::ControlPortProtocol
+        }
+    }
+}
+
+/// Extract the `PROGRESS=<n>` value from a `GETINFO status/bootstrap-phase`
+/// reply (e.g. `status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=100 …`).
+fn parse_bootstrap_progress(reply: &[String]) -> Option<u8> {
+    for line in reply {
+        for token in line.split(' ') {
+            if let Some(value) = token.strip_prefix("PROGRESS=") {
+                return value.parse::<u8>().ok();
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 #[allow(clippy::indexing_slicing, clippy::panic, clippy::unwrap_used)]
 mod tests {
@@ -466,12 +600,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn observe_network_state_updates_state() {
+    #[tokio::test]
+    async fn observe_network_state_updates_state() {
+        // No control cookie path is configured here, so the Offline→Online
+        // edge skips its NEWNYM side effect (covered in tests/control_port.rs).
         let transport = make_transport_with_bridges(0);
 
         transport
             .observe_network_state(NetworkState::Offline)
+            .await
             .unwrap();
         assert_eq!(
             transport.current_network_state().unwrap(),
@@ -480,6 +617,7 @@ mod tests {
 
         transport
             .observe_network_state(NetworkState::Online)
+            .await
             .unwrap();
         assert_eq!(
             transport.current_network_state().unwrap(),
@@ -488,6 +626,7 @@ mod tests {
 
         transport
             .observe_network_state(NetworkState::Constrained)
+            .await
             .unwrap();
         assert_eq!(
             transport.current_network_state().unwrap(),
@@ -495,15 +634,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn observe_network_state_is_idempotent() {
+    #[tokio::test]
+    async fn observe_network_state_is_idempotent() {
         let transport = make_transport_with_bridges(0);
 
         transport
             .observe_network_state(NetworkState::Online)
+            .await
             .unwrap();
         transport
             .observe_network_state(NetworkState::Online)
+            .await
             .unwrap();
         assert_eq!(
             transport.current_network_state().unwrap(),
