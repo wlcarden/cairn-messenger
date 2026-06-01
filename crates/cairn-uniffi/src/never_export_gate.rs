@@ -62,6 +62,11 @@ pub const fn assert_v1_carrier_types_exportable() {
     // The facade error itself crosses as a uniffi::Error; it carries
     // only type-tags + scalars per crate::error.
     assert_exportable::<crate::error::CairnFfiError>();
+    // Per-domain export types. Each new module adds its crossing types
+    // here so the gate fails to compile if one ever becomes
+    // secret-bearing. trust_graph (D0027 §2): the cascade-status enum
+    // carries only PUBLIC pubkey bytes + Unix-seconds.
+    assert_exportable::<crate::trust_graph::QuarantineStatusFfi>();
 }
 
 #[cfg(test)]

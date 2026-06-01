@@ -44,40 +44,48 @@
 //!   export as Kotlin `suspend fun`s with a single tokio runtime
 //!   registration; sync crypto-core ops export as plain funs.
 //!
-//! ## Implementation status (v1 skeleton)
+//! ## Implementation status
 //!
-//! The load-bearing, security-critical primitives are implemented +
-//! tested WITHOUT the UniFFI proc-macro (per D0027 §8):
+//! The pipeline this crate compiles against is up: the
+//! `uniffi = "=0.31.1"` workspace pin is present, the
+//! cargo-ndk-android-gradle build is validated (D0028), and the
+//! UniFFI scaffolding + the representative [`cairn_ffi_abi_version`]
+//! export bind end-to-end into the APK. The cross-cutting,
+//! security-critical primitives are implemented + tested:
 //!
 //! - [`error::CairnFfiError`] + the six total flat `From` mappings —
 //!   the no-error-oracle boundary discipline (the thing that most
-//!   needs to be right before any byte crosses to Kotlin).
+//!   needs to be right before any byte crosses to Kotlin). Derives
+//!   `uniffi::Error` under the feature.
 //! - [`never_export_gate`] — the compile-time exportability assertion
-//!   on the v1 carrier types.
-//! - [`hardware::HardwareKeySigner`] — the callback trait shape +
-//!   spec types, with a mock impl proving object-safety.
+//!   on every type that crosses the boundary.
+//! - [`hardware::HardwareKeySigner`] — the `callback_interface` trait
+//!   (D0020 §3.4), with a mock impl proving object-safety.
 //!
-//! Deferred behind the `uniffi-bindings` feature (lands when the
-//! cargo-ndk-android-gradle pipeline is stood up per D0020 §3.10 /
-//! D0027 §8):
+//! The per-domain `#[uniffi::export]` surface (D0027 §2) fills in
+//! behind that proven pipeline, one domain at a time. Landed:
 //!
-//! - The `#[derive(uniffi::Error)]` on `CairnFfiError`, the
-//!   `#[uniffi::export(callback_interface)]` on `HardwareKeySigner`,
-//!   the per-domain `#[uniffi::export]` / `#[uniffi::Object]` /
-//!   `#[uniffi::Record]` surface, the UDL generation, the
-//!   `uniffi = "=0.31.1"` workspace pin, and the
-//!   `fuzz_uniffi_boundary` harness.
+//! - [`trust_graph`] — [`trust_graph_verify_and_classify`] +
+//!   [`QuarantineStatusFfi`]: the fused verify-then-classify the
+//!   Android shell drives to render trust badges. First per-domain
+//!   module (D0027 §8 step 4).
 //!
-//! The skeleton ships the error facade + the NeverExport gate + the
-//! trait declarations as the testable primitives; the binding
-//! generation is the gated follow-up.
+//! Remaining per-domain modules (each lands as its own increment): the
+//! sync crypto-core `identity` + `recovery` exports; the async I/O
+//! handles `messaging` / `transparency` / `tor` / `storage`
+//! (`#[uniffi::export(async_runtime = "tokio")]` per D0027 §5) — these
+//! carry open decisions (the generic `SimplexAdapter<T>` ⇒ a concrete
+//! transport handle; the `TorStream` handle; `Storage` `Send + Sync`).
+//! The `fuzz_uniffi_boundary` harness (D0018 §5.2) is a follow-up.
 
 pub mod error;
 pub mod hardware;
 pub mod never_export_gate;
+pub mod trust_graph;
 
 pub use error::CairnFfiError;
 pub use hardware::{AttestationCertificate, HardwareKeySigner, HardwarePublicKey, KeyGenSpec};
+pub use trust_graph::{QuarantineStatusFfi, trust_graph_verify_and_classify};
 
 // UniFFI scaffolding entrypoint per D0027 §5 / D0020 §3.1. Generates
 // the FFI scaffolding the Kotlin bindings bind against. Gated on the

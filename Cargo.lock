@@ -631,12 +631,14 @@ name = "cairn-uniffi"
 version = "0.1.0-dev"
 dependencies = [
  "cairn-crypto",
+ "cairn-identity",
  "cairn-sigstore-verify",
  "cairn-sigsum-client",
  "cairn-simplex-adapter",
  "cairn-storage",
  "cairn-tor-transport",
  "cairn-trust-graph",
+ "rand_core 0.6.4",
  "thiserror 1.0.63",
  "uniffi",
 ]

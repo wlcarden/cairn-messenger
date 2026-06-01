@@ -225,21 +225,34 @@ impl From<StorageError> for CairnFfiError {
 impl From<TrustGraphError> for CairnFfiError {
     fn from(e: TrustGraphError) -> Self {
         match e {
-            TrustGraphError::SignatureVerifyFailed | TrustGraphError::DeviceTokenMismatch => {
-                Self::SignatureVerifyFailed
-            }
+            // A capability-token verification failure is an authenticity
+            // failure of the contact's authorization — the device-key sig,
+            // the token issuer, or the token structure did not validate.
+            // It MUST surface as a verification failure (NOT UnmappedInternal),
+            // so the shell renders "invalid authorization", not a generic
+            // internal error. The wrapped IdentityError sub-reason is
+            // collapsed per the no-error-oracle discipline (D0027 §3.2).
+            TrustGraphError::SignatureVerifyFailed
+            | TrustGraphError::DeviceTokenMismatch
+            | TrustGraphError::CapabilityTokenVerify(_) => Self::SignatureVerifyFailed,
             TrustGraphError::CapabilityNotAuthorized { .. } => Self::CapabilityNotAuthorized,
             TrustGraphError::ChainGenesisNotEmpty { .. }
             | TrustGraphError::ChainPriorHashMismatch { .. }
             | TrustGraphError::ChainPairMismatch { .. }
             | TrustGraphError::ChainTimestampRegression { .. }
             | TrustGraphError::ChainEmpty => Self::ChainInvalid,
+            // A canonical-encode fault is a serialization failure; collapse
+            // it to the malformed-data bucket alongside the decode faults
+            // (the encode/decode direction is internal detail to hide).
             TrustGraphError::MalformedPayload
+            | TrustGraphError::CanonicalEncode(_)
             | TrustGraphError::InvalidPubkeyLength { .. }
             | TrustGraphError::InvalidPubkey
             | TrustGraphError::UnknownOpType { .. }
             | TrustGraphError::MissingRequiredField { .. }
             | TrustGraphError::IntegerOutOfRange => Self::MalformedData,
+            // Forward-compat only: a future #[non_exhaustive] variant this
+            // build does not yet map. All CURRENT variants are explicit above.
             _ => Self::UnmappedInternal,
         }
     }
@@ -429,6 +442,21 @@ mod tests {
         assert_eq!(
             CairnFfiError::from(TrustGraphError::ChainPriorHashMismatch { index: 2 }),
             CairnFfiError::ChainInvalid
+        );
+    }
+
+    #[test]
+    fn trust_graph_capability_token_verify_maps_to_signature_failed() {
+        // Regression: a capability-token verification failure must NOT
+        // degrade to UnmappedInternal (it did before — the shell would
+        // have rendered an invalid contact authorization as a generic
+        // internal error). It is an authenticity failure → collapses to
+        // SignatureVerifyFailed, sub-reason hidden per D0027 §3.2.
+        assert_eq!(
+            CairnFfiError::from(TrustGraphError::CapabilityTokenVerify(
+                cairn_identity::IdentityError::IssuerMismatch
+            )),
+            CairnFfiError::SignatureVerifyFailed
         );
     }
 

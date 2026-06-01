@@ -59,3 +59,13 @@ uniffi = { workspace = true, optional = true }
 # The uniffi-bindgen entrypoint (src/bin/uniffi-bindgen.rs) generates
 # the Kotlin bindings from the compiled library; it is gated on the
 # same feature.
+
+[dev-dependencies]
+# The per-domain export tests construct REAL signed inputs (a
+# capability token + a signed trust-graph op) to exercise the
+# verify+marshal path the Kotlin shell will drive — mirroring
+# cairn-trust-graph's own signed-op test fixture. cairn-identity is
+# already a transitive dep (via cairn-trust-graph); named here for the
+# CapabilityToken builder. rand_core (OsRng) mints ephemeral test keys.
+cairn-identity = { path = "../cairn-identity" }
+rand_core = { workspace = true }
