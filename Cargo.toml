@@ -196,7 +196,34 @@ thiserror = "=1.0.63"
 
 # === Async (cairn-cli + I/O adapters only; NOT crypto core; D0018 §4.1) ===
 # `time` feature added for cairn-sigsum-client's RetryBudget per D0023 §5.3.
-tokio = { version = "=1.40.0", features = ["rt-multi-thread", "macros", "time"] }
+# `sync` feature added for cairn-simplex-adapter's ws-core transport: the
+# lazily-dialed RawClient + event-queue handle are guarded by tokio::sync
+# primitives ACROSS `.await` (a std::sync::Mutex held across await is the
+# `await_holding_lock` footgun). Also pulled transitively by
+# simploxide-ws-core, so this only makes an already-present feature explicit.
+tokio = { version = "=1.40.0", features = ["rt-multi-thread", "macros", "time", "sync"] }
+
+# === SimpleX raw-WS sidecar client (D0026 §1.3) ===
+# The adapter speaks to the SimpleX Chat CLI sidecar over a loopback
+# WebSocket. Pinned to the LOW-LEVEL `simploxide-ws-core` (a raw
+# command/event WS client), NOT the high-level `simploxide-client` Bot SDK,
+# for three reasons (full rationale + the toolchain×feature probe matrix in
+# D0026 §12):
+#   1. MSRV: ws-core (+ its `simploxide-core` dep) COMPILE on the pinned
+#      rust 1.85; simploxide-client 0.11.0 does NOT (it uses `const
+#      Duration::from_hours`, const-stable only on newer rust) AND its
+#      websocket-only build is upstream-broken (BotBuilder::new sets
+#      cfg("cli")-gated fields unconditionally). ws-core sidesteps both.
+#   2. Architecture: ws-core's `connect("ws://127.0.0.1:{port}")` is exactly
+#      the D0020 §1.1 sidecar-connect model with NO subprocess — its `cli`
+#      feature (tokio/process) is OFF by default.
+#   3. Trust surface: it sheds simploxide-client + simploxide-api-types +
+#      serde-aux + serde-value + ordered-float from the message path, leaving
+#      Cairn to own the narrow command/JSON layer — D0026's "project-owned
+#      SMP client" thesis.
+# tokio stays at the workspace `=1.40.0` pin (cargo selects tokio-util 0.7.17
+# + socket2 0.5.10 to satisfy it); no tokio bump, no MSRV coordination event.
+simploxide-ws-core = "=0.2.0"
 
 # === Testing (D0018 §5) ===
 proptest = { version = "=1.5.0", default-features = false, features = ["std"] }

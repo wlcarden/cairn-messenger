@@ -23,6 +23,16 @@ integration-tests = []
 
 [dev-dependencies]
 rand_core = { workspace = true }
+# `net` (TcpListener) for the hermetic mock SimpleX-sidecar WebSocket server
+# the ws-core transport tests dial — mirrors the mock-SOCKS5 / mock-control-
+# port harnesses in cairn-tor-transport. The server side reuses
+# tokio-tungstenite via ws-core's `tokio_tungstenite` re-export.
+tokio = { workspace = true, features = ["net"] }
+# Stream/Sink extension traits (`.next()` / `.send()`) to drive the mock
+# server's WebSocketStream. Dev-only; already in the lockfile via
+# simploxide-ws-core, so this adds no new crate to the graph. Pinned exact
+# for lockfile determinism per D0018.
+futures = "=0.3.32"
 
 [dependencies]
 # === Foundational primitives ===
@@ -39,10 +49,23 @@ cairn-sigsum-client = { path = "../cairn-sigsum-client" }
 # the sidecar over loopback WebSocket and does not open raw Tor
 # streams for SimpleX traffic.
 
-# === SimplOxide client (the SimpleX integration per D0020 §1) will be
-# pinned when the network body lands per D0026 §12 step 5. The v1
-# skeleton's adapter methods return NetworkUnreached without opening a
-# WebSocket, so the pin is deferred to keep the dep surface minimal. ===
+# === SimpleX raw-WS sidecar client per D0026 §1.3 ===
+# The low-level `simploxide-ws-core` (raw command/event WS client to the
+# SimpleX Chat CLI sidecar), NOT the high-level `simploxide-client` Bot SDK
+# — see the workspace-pin rationale + the D0026 §12 probe matrix.
+# `connect("ws://host:port")` + RawClient::send + the EventQueue back the
+# concrete `SimploxideTransport`; Cairn owns the command/JSON layer.
+simploxide-ws-core = { workspace = true }
+
+# === simplex-chat JSON command/response/event boundary (D0026 §1.3) ===
+# serde_json ONLY at the SimpleX integration boundary — Cairn's own
+# on-the-wire format is canonical CBOR (the envelope, §2). The simplex-chat
+# sidecar speaks JSON command/response/event frames over the loopback WS,
+# which `protocol.rs` constructs + parses (the "Cairn owns the command/JSON
+# layer" cost of the lean ws-core path). Mirrors D0023 §2.3's boundary-only
+# serde use; the trust-path wire format stays canonical CBOR.
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # === SHA-256 for record-ids + prior_envelope_hash per D0026 §2-§3 ===
 sha2 = { workspace = true }
