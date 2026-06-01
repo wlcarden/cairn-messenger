@@ -15,11 +15,20 @@ In-tree `cargo-fuzz` targets per [D0018 §5.2](../docs/decisions/D0018-engineeri
 
 ## Targets deferred
 
-| Target                  | Reason                                                                                                                                 | Owning surface               |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
-| `fuzz_envelope_decrypt` | AEAD round-trip needs a structure-aware harness with a paired key + nonce input shape; deferred for separate audit-target task         | `cairn_crypto::aead`         |
-| `fuzz_cose_header`      | Header-only decode is currently a sub-path of `CoseSign1::from_bytes`; would need a separate exposed entry point to fuzz independently | `cairn_envelope::cose_sign1` |
-| `fuzz_uniffi_boundary`  | Requires `cairn-uniffi` crate which doesn't exist yet                                                                                  | TBD                          |
+| Target                  | Reason                                                                                                                                                                         | Owning surface               |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------- |
+| `fuzz_envelope_decrypt` | AEAD round-trip needs a structure-aware harness with a paired key + nonce input shape; deferred for separate audit-target task                                                 | `cairn_crypto::aead`         |
+| `fuzz_cose_header`      | Header-only decode is currently a sub-path of `CoseSign1::from_bytes`; would need a separate exposed entry point to fuzz independently                                         | `cairn_envelope::cose_sign1` |
+| `fuzz_uniffi_boundary`  | **Unblocked 2026-06-01** (cairn-uniffi + its D0027 §2 export surface landed); now gated only on a nightly toolchain (cargo-fuzz needs nightly — see Running). Re-scoped below. | `cairn-uniffi`               |
+
+### Scoping note — `fuzz_uniffi_boundary` (2026-06-01)
+
+The original deferral reason ("cairn-uniffi doesn't exist yet") is **resolved**: `cairn-uniffi` and its full D0027 §2 export surface landed. Re-scoped:
+
+- **Surface**: the no-error-oracle FFI entry points that parse untrusted `Vec<u8>` — `identity::identity_verify_capability_token`, `trust_graph::trust_graph_verify_and_classify`, `recovery::recovery_reconstruct_and_attest` / `recovery_verify_master_attestation`, and the `messaging::SimplexAdapterHandle` recv-verify path. These are plain `pub fn`s (the `#[uniffi::export]` attribute is feature-gated), so a target calls them directly without the UniFFI scaffolding. **Property under test**: any input → a `CairnFfiError`, never a panic (the D0018 §4.2 / D0027 §3 boundary discipline).
+- **Marginal value**: the underlying per-schema decode is already fuzzed (`fuzz_capability_token`, `fuzz_trust_graph_op`, `fuzz_envelope_parse`). This target adds coverage of the FFI _glue_ — `Vec<u8>` → `[u8; 32]` length validation, the flat `CairnFfiError` facade mapping, and the fused verify-then-classify composition — confirming the boundary itself never panics on malformed input.
+- **Cost**: pulls `cairn-uniffi`'s full dependency tree (storage + sigsum + sigstore + tor + reqwest + tokio + uniffi) into the otherwise-lean fuzz crate.
+- **Status**: gated only on a **nightly toolchain** (cargo-fuzz requires nightly; the current environment has stable 1.85 only, and cargo-fuzz is not installed). To be authored + build-verified in a nightly + cargo-fuzz cycle — deliberately NOT added speculatively here, to preserve the "landed targets are build-verified" discipline.
 
 ## Running
 
