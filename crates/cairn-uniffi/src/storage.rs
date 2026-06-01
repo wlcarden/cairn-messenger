@@ -129,12 +129,14 @@ fn validate_category(category: &str) -> Result<&'static str, CairnFfiError> {
         .ok_or(CairnFfiError::MalformedData)
 }
 
-/// An opaque handle to the unlocked encrypted record store (D0027
-/// §2.2). Holds the `cairn_storage::Storage` (an `Arc`-shared
-/// `uniffi::Object`); the DEKs live inside it, Rust-side only.
+/// An opaque handle to the unlocked encrypted record store (D0027 §2.2).
+///
+/// Holds an `Arc<cairn_storage::Storage>` so sibling handles (e.g. the
+/// transparency `SigsumClientHandle`, which needs the same unlocked
+/// store) can share it; the DEKs live inside it, Rust-side only.
 #[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Object))]
 pub struct StorageHandle {
-    storage: Storage,
+    storage: Arc<Storage>,
 }
 
 #[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
@@ -167,7 +169,9 @@ impl StorageHandle {
         let passphrase = Zeroizing::new(passphrase);
         let storage =
             Storage::open(Path::new(&path), &provider, &passphrase).map_err(CairnFfiError::from)?;
-        Ok(Arc::new(Self { storage }))
+        Ok(Arc::new(Self {
+            storage: Arc::new(storage),
+        }))
     }
 
     /// Insert or overwrite an encrypted record in `category`.
@@ -240,6 +244,16 @@ impl StorageHandle {
     }
 }
 
+impl StorageHandle {
+    /// Share the inner `Arc<Storage>` with a sibling handle (e.g. the
+    /// transparency `SigsumClientHandle`, which needs the same unlocked
+    /// store). Not exported — Rust-side only (a separate, non-
+    /// `#[uniffi::export]` impl block).
+    pub(crate) fn storage_arc(&self) -> Arc<Storage> {
+        Arc::clone(&self.storage)
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::indexing_slicing,
@@ -272,7 +286,9 @@ mod tests {
         };
         let passphrase = Zeroizing::new(b"correct horse battery staple".to_vec());
         let storage = Storage::open_in_memory(&provider, &passphrase).unwrap();
-        StorageHandle { storage }
+        StorageHandle {
+            storage: Arc::new(storage),
+        }
     }
 
     #[test]

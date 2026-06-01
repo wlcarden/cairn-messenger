@@ -71,6 +71,11 @@ zeroize = { workspace = true }
 #     production parameters m=64 MiB/t=3/p=1 per D0022 §2.2. ===
 argon2 = { workspace = true }
 
+# === URL parsing for the transparency module's SigsumLogConfig
+#     (log_url crosses as a String, parsed to url::Url Rust-side). Same
+#     pin cairn-sigsum-client uses. ===
+url = { workspace = true }
+
 # === Error Display (Cairn-authored strings only; no source Display
 #     crosses) per D0018 §4.2 ===
 thiserror = { workspace = true }
@@ -92,3 +97,7 @@ uniffi = { workspace = true, optional = true }
 # + cairn-trust-graph (already normal deps); rand_core (OsRng) mints the
 # ephemeral test keys.
 rand_core = { workspace = true }
+# The transparency module's async exports are `#[tokio::test]`-driven
+# (the single tokio runtime the async_runtime="tokio" attribute
+# registers). Same =1.40.0 pin the async I/O crates use.
+tokio = { workspace = true }

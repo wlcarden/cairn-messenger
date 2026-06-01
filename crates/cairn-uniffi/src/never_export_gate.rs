@@ -78,6 +78,12 @@ pub const fn assert_v1_carrier_types_exportable() {
     // master secret), so it correctly crosses; the SEED never does.
     assert_exportable::<crate::recovery::MasterAttestationRecord>();
     assert_exportable::<crate::recovery::ShareRecord>();
+    // transparency (D0027 §2): the Sigsum config + tree-head records
+    // carry only public values (log URL/pubkey/witnesses, tree size +
+    // root hash + timestamp). The StrongBox-signed emit key never
+    // crosses (it stays behind the HardwareKeySigner callback).
+    assert_exportable::<crate::transparency::SigsumLogConfig>();
+    assert_exportable::<crate::transparency::TreeHeadRecord>();
 }
 
 #[cfg(test)]
