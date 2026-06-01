@@ -142,5 +142,10 @@ pub use error::SimplexAdapterError;
 pub use padding::{
     LARGEST_BUCKET, SIZE_BUCKETS, generate_padding, padding_bytes_required, select_bucket,
 };
+/// The Android in-process FFI transport (D0026 §12), re-exported only on
+/// `target_os = "android"` — its `simploxide-ffi-core` dependency is itself
+/// target-gated so the desktop/CI host never builds it.
+#[cfg(target_os = "android")]
+pub use sidecar::FfiSidecarTransport;
 pub use sidecar::{SidecarTransport, SimploxideTransport};
 pub use storage::{RECORD_ID_LEN, message_record_id_for, ratchet_record_id_for};

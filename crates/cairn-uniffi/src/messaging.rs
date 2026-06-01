@@ -30,12 +30,20 @@
 //! Cairn message history (the `MESSAGES` category, D0026 §4) lives in the
 //! same unlocked store as the rest of the app — no second connection.
 //!
-//! ## Transport (ws-core; live, two-party gated on the CLI sidecar)
+//! ## Transport (per-target; live two-party gated on the daemon)
 //!
-//! The concrete `SimploxideTransport` is a real `simploxide-ws-core`
-//! WebSocket client of the SimpleX Chat CLI sidecar (D0026 §1.3 / §12): it
-//! lazily dials `ws://host:port`, issues simplex-chat commands, and drains
-//! events. With no sidecar listening, `create_invitation` /
+//! The concrete transport is selected by target (the `MessagingTransport`
+//! alias, D0026 §12), but the handle's async surface is identical across both:
+//! - **Android:** `FfiSidecarTransport` — the in-process JNI `libsimplex`
+//!   (there is no Android CLI binary). Brought up from `config.db_path` +
+//!   `config.files_dir`. Its `simploxide-ffi-core` dep is target-gated, so the
+//!   desktop/CI host never builds it; on-device link + run is the APK cycle.
+//! - **Desktop / dev / CI:** `SimploxideTransport` — a real
+//!   `simploxide-ws-core` WebSocket client of the SimpleX Chat CLI sidecar
+//!   (`config.host` + `config.port`).
+//!
+//! The ws-core transport lazily dials `ws://host:port`, issues simplex-chat
+//! commands, and drains events. With no sidecar listening, `create_invitation` /
 //! `accept_invitation` / `send` / `recv` surface
 //! [`CairnFfiError::SidecarFailure`] (the facade mapping of the transport's
 //! `SidecarUnavailable`). The handle's construction + the full envelope
@@ -49,24 +57,64 @@ use std::sync::Arc;
 
 use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, SIGNATURE_LEN, VerifyingKey};
 use cairn_simplex_adapter::{
-    ConnectionId, EnvelopeSigner, Invitation, LocalIdentity, RetryBudget, SidecarEndpoint,
-    SimplexAdapter, SimplexAdapterConfig, SimplexAdapterError, SimploxideTransport,
+    ConnectionId, EnvelopeSigner, Invitation, LocalIdentity, RetryBudget, SimplexAdapter,
+    SimplexAdapterConfig, SimplexAdapterError,
 };
+// The concrete transport is selected per target (D0026 §12): the ws-core
+// CLI-sidecar client for desktop/dev/CI, the in-process JNI `libsimplex`
+// transport on Android (whose `simploxide-ffi-core` dep is target-gated, so
+// the desktop/CI host never builds it).
+#[cfg(target_os = "android")]
+use cairn_simplex_adapter::FfiSidecarTransport;
+#[cfg(not(target_os = "android"))]
+use cairn_simplex_adapter::{SidecarEndpoint, SimploxideTransport};
+#[cfg(target_os = "android")]
+use std::path::PathBuf;
 
 use crate::error::CairnFfiError;
 use crate::hardware::HardwareKeySigner;
 use crate::storage::StorageHandle;
 
-/// Endpoint + retry configuration for the SimpleX Chat CLI sidecar
-/// (D0027 §2.2). All public values; the loopback defaults are
-/// `127.0.0.1:5225` per D0020 §1.1. Becomes a `uniffi::Record`.
+// The messaging `SidecarTransport` selected for this build target (D0026 §12):
+// the Android in-process FFI transport on-device, the ws-core CLI-sidecar
+// transport everywhere else. `SimplexAdapterHandle`'s export surface is
+// identical across both — only the bring-up (in-process `init` vs a WebSocket
+// dial) differs.
+#[cfg(target_os = "android")]
+type MessagingTransport = FfiSidecarTransport;
+#[cfg(not(target_os = "android"))]
+type MessagingTransport = SimploxideTransport;
+
+/// Transport + retry configuration for the messaging handle (D0027 §2.2).
+///
+/// All public values; becomes a `uniffi::Record`. The struct carries the
+/// inputs for BOTH transports (D0026 §12); each build
+/// target reads only its relevant subset and ignores the rest (only one
+/// transport is compiled per target):
+/// - **Desktop / dev / CI (ws-core):** `host` + `port` address the SimpleX
+///   Chat CLI sidecar (loopback default `127.0.0.1:5225`, D0020 §1.1); the
+///   external CLI owns its own DB + file staging, so `db_path` / `files_dir`
+///   are ignored.
+/// - **Android (in-process FFI):** `db_path` + `files_dir` are app-private
+///   paths for the in-process `libsimplex` chat DB + `CryptoFile`/XFTP staging
+///   (there is no CLI process, so `host` / `port` are ignored).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
 pub struct SidecarEndpointConfig {
-    /// Loopback host of the CLI sidecar (default `127.0.0.1`).
+    /// ws-core (desktop) transport: loopback host of the CLI sidecar
+    /// (default `127.0.0.1`). Ignored by the Android in-process transport.
     pub host: String,
-    /// Loopback port (default `5225`).
+    /// ws-core (desktop) transport: loopback port (default `5225`).
+    /// Ignored by the Android in-process transport.
     pub port: u16,
+    /// Android (in-process FFI) transport: app-private DB-path PREFIX for the
+    /// in-process `libsimplex` chat DB (D0026 §12). Ignored by the ws-core
+    /// transport (the external CLI owns its DB).
+    pub db_path: String,
+    /// Android (in-process FFI) transport: directory for `CryptoFile`/XFTP
+    /// payload staging (D0026 §2.4). Ignored by the ws-core transport (which
+    /// stages under the OS temp dir).
+    pub files_dir: String,
     /// Maximum send/recv retry attempts (backoff uses the D0023 §5.3
     /// defaults).
     pub max_retries: u8,
@@ -123,11 +171,14 @@ pub struct ReceivedMessageRecord {
     pub received_at_unix: u64,
 }
 
-/// An opaque async handle to the Cairn SimpleX messaging adapter
-/// (D0027 §2.2), over the ws-core `SimploxideTransport` (D0026 §1.3 / §12).
+/// An opaque async handle to the Cairn SimpleX messaging adapter (D0027 §2.2).
+///
+/// Built over the per-target `MessagingTransport` (D0026 §12): the in-process
+/// FFI transport on Android, the ws-core CLI-sidecar transport elsewhere. The
+/// async export surface is identical across both.
 #[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Object))]
 pub struct SimplexAdapterHandle {
-    adapter: SimplexAdapter<SimploxideTransport>,
+    adapter: SimplexAdapter<MessagingTransport>,
 }
 
 #[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
@@ -178,10 +229,19 @@ impl SimplexAdapterHandle {
                 ..RetryBudget::default()
             },
         };
+        // Per-target transport (D0026 §12): in-process `libsimplex` on
+        // Android (app-private DB + staging dir), the ws-core CLI-sidecar
+        // client elsewhere (loopback host:port).
+        #[cfg(not(target_os = "android"))]
         let transport = SimploxideTransport::new(SidecarEndpoint {
             host: config.host,
             port: config.port,
         });
+        #[cfg(target_os = "android")]
+        let transport = FfiSidecarTransport::new(
+            PathBuf::from(config.db_path),
+            PathBuf::from(config.files_dir),
+        );
         let adapter =
             SimplexAdapter::new(transport, adapter_config).map_err(CairnFfiError::from)?;
         Ok(Arc::new(Self { adapter }))
