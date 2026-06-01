@@ -5,42 +5,58 @@
 //! D0020 §2: the Rust-side SOCKS5 + control-port client of the C-Tor
 //! `ForegroundService`).
 //!
-//! ## v1 skeleton status
+//! ## Implementation status
 //!
-//! The struct + method signatures are defined per the D0025 §1.1 API.
-//! The network-bound bodies ([`TorTransport::connect`],
-//! [`TorTransport::host_onion_service`]) return their typed deferral
-//! errors pending the SOCKS5 + control-port client body landing per
-//! D0025 §10.
+//! [`TorTransport::connect`] is **implemented**: it opens a real SOCKS5
+//! CONNECT tunnel through the C-Tor proxy (hand-rolled client in
+//! `crate::socks5`, D0025 §2 / §10), setting the `IsolateSOCKSAuth`
+//! username/password = `hex(SHA-256(conversation_id))` per D0020 §2.6 and
+//! sending the target as a SOCKS5 domain (resolved over Tor, never
+//! locally). The returned [`TorStream`] is `AsyncRead + AsyncWrite` over
+//! the tunnel. Only the loopback proxy connect is retried within the
+//! budget; SOCKS reply codes map to the typed surface (host-unreachable →
+//! [`TorTransportError::HostResolutionFailed`], refused →
+//! [`TorTransportError::ConnectionRefused`], other/auth/framing →
+//! [`TorTransportError::SocksProtocol`]). Validated by
+//! `tests/socks5_connect.rs` against a hermetic mock SOCKS5 server.
 //!
-//! What IS implemented + tested in the skeleton:
+//! Also implemented + tested:
 //!
-//! - [`TorTransport::new`] constructor wiring the bridge manifest +
-//!   the default retry budget.
-//! - [`TorTransport::observe_network_state`] real state tracking per
-//!   D0025 §4.
-//! - [`TorTransport::current_network_state`] + accessor methods.
-//! - [`TorTransport::shutdown`] real (no-op in the skeleton; the body
-//!   closes the SOCKS5 + control-port connections when it lands).
+//! - [`TorTransport::new`] wiring the bridge manifest, the default retry
+//!   budget, and the SOCKS proxy address (default `127.0.0.1:9050`;
+//!   overridable via [`TorTransport::with_socks_proxy_addr`]).
+//! - [`TorTransport::observe_network_state`] +
+//!   [`TorTransport::current_network_state`] state tracking per D0025 §4.
+//! - [`TorTransport::shutdown`] (no-op: a [`TorStream`] owns its tunnel,
+//!   so there is no transport-held connection to close until the
+//!   control-port client lands).
 //!
-//! When the body lands, the [`TorTransport::connect`] flow per
-//! D0025 §1-§2:
+//! Remaining follow-ups (separate from `connect`):
 //!
-//! 1. Assume the C-Tor `ForegroundService` is reachable at
-//!    `127.0.0.1:9050` (SOCKS) + `127.0.0.1:9051` (control). If not,
-//!    surface [`TorTransportError::BootstrapIncomplete`] / `Network`.
-//! 2. Open a SOCKS5 stream to `(target_host, target_port)` with
-//!    `IsolateSOCKSAuth` username = `hash(conversation_id)` per
-//!    D0020 §2.6 (per-conversation circuit isolation).
-//! 3. Return the stream as [`TorStream`] (which gains `AsyncRead +
-//!    AsyncWrite` once the body lands).
+//! - The control-port client (`127.0.0.1:9051`, cookie auth) for
+//!   `SIGNAL NEWNYM` on `Offline → Online` (D0025 §4) + bootstrap-status
+//!   queries (which would let `connect` surface
+//!   [`TorTransportError::BootstrapIncomplete`] precisely rather than as
+//!   a generic SOCKS failure).
+//! - [`TorTransport::host_onion_service`] (`ADD_ONION`), a v1.5 slot per
+//!   D0025 §7 / D0020 §2.8.
 
+use std::io;
+use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Mutex;
+use std::task::{Context, Poll};
 
 use cairn_sigsum_client::RetryBudget;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::TcpStream;
 
 use crate::config::BridgeManifest;
 use crate::error::TorTransportError;
+use crate::socks5::{self, Socks5Error};
+
+/// Default C-Tor SOCKS proxy loopback port per D0020 §2 (`127.0.0.1:9050`).
+const DEFAULT_SOCKS_PROXY_PORT: u16 = 9050;
 
 /// Network connectivity state observed by the Android shell and
 /// signalled to the transport per D0025 §4.
@@ -76,24 +92,53 @@ pub struct TorTransportConfig {
     pub default_retry_budget: RetryBudget,
 }
 
-/// An open stream over Tor per D0025 §1.1 + §5 — the SOCKS5
-/// connection to a target through the C-Tor proxy.
+/// An open stream over Tor per D0025 §1.1 + §5 — the SOCKS5 tunnel to a
+/// target through the C-Tor proxy.
 ///
-/// In v1 skeleton this type has no public constructor; the only path
-/// that constructs a [`TorStream`] is [`TorTransport::connect`], which
-/// returns [`TorTransportError::NetworkUnreached`]. The type exists in
-/// the public surface so consuming code can name the return type
-/// stably across skeleton → implementation transitions.
-///
-/// When the SOCKS5 client body lands per D0025 §10, `TorStream` gains
-/// `AsyncRead + AsyncWrite` impls over the SOCKS5 connection. The
-/// public surface API does not change.
+/// Implements `AsyncRead + AsyncWrite` by delegating to the underlying
+/// SOCKS5-tunneled [`TcpStream`]. No TLS is layered here (D0025 §5.1):
+/// SimpleX carries its own E2EE and the SMP server's TLS is SimplOxide's
+/// concern. The only constructor is [`TorTransport::connect`]; the
+/// private field keeps `TorStream` un-constructable outside the crate.
 #[derive(Debug)]
 pub struct TorStream {
-    /// Private marker so this type cannot be constructed outside the
-    /// crate. The skeleton leaves this empty; the implementation cycle
-    /// replaces it with the SOCKS5 connection handle.
-    _private: (),
+    inner: TcpStream,
+}
+
+impl TorStream {
+    /// Wrap an established SOCKS5-tunneled TCP stream. Crate-private; the
+    /// only public path is [`TorTransport::connect`].
+    pub(crate) const fn new(inner: TcpStream) -> Self {
+        Self { inner }
+    }
+}
+
+impl AsyncRead for TorStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for TorStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }
 
 /// Handle for a C-Tor-hosted onion service per D0025 §7 / D0020 §2.8
@@ -137,6 +182,11 @@ pub struct TorTransport {
     bridge_manifest: BridgeManifest,
     /// Default retry budget per D0025 §5.1 / D0023 §5.3.
     default_retry_budget: RetryBudget,
+    /// Loopback address of the C-Tor SOCKS proxy. Defaults to
+    /// `127.0.0.1:9050` (D0020 §2); overridable via
+    /// [`TorTransport::with_socks_proxy_addr`] (used by tests to point at
+    /// a mock SOCKS5 server).
+    socks_proxy_addr: SocketAddr,
     /// Currently observed network state per D0025 §4.
     ///
     /// `Mutex<NetworkState>` rather than `Cell<NetworkState>` so the
@@ -171,8 +221,20 @@ impl TorTransport {
         Ok(Self {
             bridge_manifest: config.bridge_manifest,
             default_retry_budget: config.default_retry_budget,
+            socks_proxy_addr: SocketAddr::from(([127, 0, 0, 1], DEFAULT_SOCKS_PROXY_PORT)),
             network_state: Mutex::new(NetworkState::Online),
         })
+    }
+
+    /// Override the C-Tor SOCKS proxy address.
+    ///
+    /// Production uses the `127.0.0.1:9050` default per D0020 §2; this
+    /// builder lets tests point `connect` at a mock SOCKS5 server. The
+    /// control-port address is independent (a v1.5 follow-up).
+    #[must_use]
+    pub const fn with_socks_proxy_addr(mut self, addr: SocketAddr) -> Self {
+        self.socks_proxy_addr = addr;
+        self
     }
 
     /// Return the default retry budget.
@@ -228,35 +290,60 @@ impl TorTransport {
     /// Open an outbound SOCKS5 stream to `(target_host, target_port)`
     /// through the C-Tor proxy per D0025 §2.1.
     ///
-    /// `conversation_id` is hashed into the SOCKS5 username with
-    /// `IsolateSOCKSAuth` enabled per D0020 §2.6, so different
-    /// conversations do not share Tor circuits at the network layer.
-    /// `target_host` is the SMP queue server's hostname / `.onion`
-    /// address (resolved through Tor).
+    /// `conversation_id` is hashed into the SOCKS5 username/password
+    /// (`hex(SHA-256(conversation_id))`) with `IsolateSOCKSAuth` per
+    /// D0020 §2.6, so different conversations do not share Tor circuits at
+    /// the network layer. `target_host` is the SMP queue server's
+    /// hostname / `.onion` address — sent as a SOCKS5 domain target so it
+    /// resolves THROUGH Tor, never locally.
     ///
-    /// v1 skeleton: returns [`TorTransportError::NetworkUnreached`]
-    /// pending the SOCKS5 client body.
+    /// Only the loopback connect to the C-Tor proxy is retried within
+    /// `retry_budget`; a completed-but-rejected SOCKS handshake is
+    /// terminal (retrying would not change the outcome).
     ///
     /// # Errors
     ///
-    /// - [`TorTransportError::NetworkUnreached`] (skeleton only;
-    ///   replaced by the layered failure modes once the body lands —
-    ///   [`TorTransportError::BootstrapIncomplete`],
-    ///   [`TorTransportError::HostResolutionFailed`],
-    ///   [`TorTransportError::ConnectionRefused`],
-    ///   [`TorTransportError::Network`])
-    #[allow(
-        clippy::unused_async,
-        reason = "v1 skeleton; SOCKS5 client body lands per D0025 §10"
-    )]
+    /// - [`TorTransportError::Network`] — the loopback connect to the
+    ///   C-Tor proxy (or a mid-handshake read/write) failed after the
+    ///   retry budget; `retry_budget_used` names the retries consumed.
+    /// - [`TorTransportError::HostResolutionFailed`] — the target did not
+    ///   resolve / route over Tor (SOCKS reply `0x04`), or the host
+    ///   exceeds the 255-byte SOCKS domain field.
+    /// - [`TorTransportError::ConnectionRefused`] — the target refused the
+    ///   connection (SOCKS reply `0x05`).
+    /// - [`TorTransportError::SocksProtocol`] — the proxy rejected
+    ///   username/password auth, failed RFC 1929 auth, returned another
+    ///   CONNECT reply code, or sent malformed framing.
     pub async fn connect(
         &self,
-        _conversation_id: &[u8],
-        _target_host: &str,
-        _target_port: u16,
-        _retry_budget: RetryBudget,
+        conversation_id: &[u8],
+        target_host: &str,
+        target_port: u16,
+        retry_budget: RetryBudget,
     ) -> Result<TorStream, TorTransportError> {
-        Err(TorTransportError::NetworkUnreached)
+        let credential = socks5::isolation_credential(conversation_id);
+        let mut delay = retry_budget.initial_delay;
+        let mut attempt: u8 = 0;
+        loop {
+            match socks5::connect_through_proxy(
+                self.socks_proxy_addr,
+                &credential,
+                target_host,
+                target_port,
+            )
+            .await
+            {
+                Ok(stream) => return Ok(TorStream::new(stream)),
+                // Only a loopback transport failure is retryable; a
+                // completed SOCKS handshake that rejected the request is
+                // terminal.
+                Err(Socks5Error::Transport) if attempt < retry_budget.max_retries => {}
+                Err(e) => return Err(map_socks5_error(&e, attempt)),
+            }
+            tokio::time::sleep(delay).await;
+            delay = delay.saturating_mul(2).min(retry_budget.max_delay);
+            attempt = attempt.saturating_add(1);
+        }
     }
 
     /// Host an onion service per D0025 §7 / D0020 §2.8 (v1.5
@@ -305,6 +392,26 @@ impl TorTransport {
     )]
     pub async fn shutdown(&self) -> Result<(), TorTransportError> {
         Ok(())
+    }
+}
+
+/// Map an internal [`Socks5Error`] onto the public typed error surface
+/// per D0025 §6. `attempt` is the retry count consumed (only meaningful
+/// for the transport-failure case).
+const fn map_socks5_error(err: &Socks5Error, attempt: u8) -> TorTransportError {
+    match err {
+        Socks5Error::Transport => TorTransportError::Network {
+            retry_budget_used: attempt,
+        },
+        // Host-unreachable means the target did not resolve/route over
+        // Tor; an over-long host cannot be addressed at all.
+        Socks5Error::HostUnreachable | Socks5Error::TargetHostTooLong => {
+            TorTransportError::HostResolutionFailed
+        }
+        Socks5Error::ConnectionRefused => TorTransportError::ConnectionRefused,
+        Socks5Error::AuthMethodRejected | Socks5Error::AuthFailed | Socks5Error::Protocol => {
+            TorTransportError::SocksProtocol
+        }
     }
 }
 
@@ -405,31 +512,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connect_returns_network_unreached_in_skeleton() {
-        let transport = make_transport_with_bridges(0);
+    async fn connect_to_unreachable_proxy_surfaces_network() {
+        // No C-Tor proxy at 127.0.0.1:1; with a zero-retry budget the
+        // single loopback connect attempt fails fast →
+        // Network{retry_budget_used: 0}. The happy path + SOCKS reply-code
+        // mapping are covered in tests/socks5_connect.rs against a mock
+        // SOCKS5 server.
+        let transport = make_transport_with_bridges(0)
+            .with_socks_proxy_addr(SocketAddr::from(([127, 0, 0, 1], 1)));
+        let budget = RetryBudget {
+            max_retries: 0,
+            initial_delay: std::time::Duration::from_millis(1),
+            max_delay: std::time::Duration::from_millis(1),
+        };
         let result = transport
-            .connect(
-                b"conversation-1",
-                "example.org",
-                443,
-                RetryBudget::default(),
-            )
+            .connect(b"conversation-1", "example.org", 443, budget)
             .await;
-        assert!(matches!(result, Err(TorTransportError::NetworkUnreached)));
-    }
-
-    #[tokio::test]
-    async fn connect_returns_network_unreached_even_with_onion_target() {
-        let transport = make_transport_with_bridges(0);
-        let result = transport
-            .connect(
-                b"conversation-2",
-                "abcdefghijklmnop1234567890.onion",
-                443,
-                RetryBudget::default(),
-            )
-            .await;
-        assert!(matches!(result, Err(TorTransportError::NetworkUnreached)));
+        assert!(
+            matches!(
+                result,
+                Err(TorTransportError::Network {
+                    retry_budget_used: 0
+                })
+            ),
+            "got {result:?}"
+        );
     }
 
     #[tokio::test]

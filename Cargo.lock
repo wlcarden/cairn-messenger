@@ -600,6 +600,7 @@ version = "0.1.0-dev"
 dependencies = [
  "cairn-sigsum-client",
  "serde",
+ "sha2",
  "thiserror 1.0.63",
  "tokio",
  "toml",

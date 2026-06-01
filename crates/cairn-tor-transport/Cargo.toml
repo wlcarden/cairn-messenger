@@ -4,7 +4,7 @@
 [package]
 name = "cairn-tor-transport"
 version = "0.1.0-dev"
-description = "Cairn Tor transport: Arti-embedded client + pluggable-transports architecture per D0025"
+description = "Cairn Tor transport: Rust-side SOCKS5 + control-port client of the C-Tor ForegroundService per D0025 / D0020 §2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -28,21 +28,32 @@ integration-tests = []
 cairn-sigsum-client = { path = "../cairn-sigsum-client" }
 
 # === Async runtime (D0025 §5) ===
-tokio = { workspace = true }
+# `net` (TcpStream) + `io-util` (AsyncReadExt/AsyncWriteExt) are added on
+# top of the workspace tokio features for the hand-rolled SOCKS5 client
+# per D0025 §2 / §10.
+tokio = { workspace = true, features = ["net", "io-util"] }
 
 # === Serde + TOML for the bridge manifest (D0025 §3 / D0020 §2.4) ===
 serde = { workspace = true }
 toml = { workspace = true }
 
+# === SHA-256 for the per-conversation IsolateSOCKSAuth credential ===
+# username/password = hex(SHA-256(conversation_id)) per D0020 §2.6, so the
+# (possibly sensitive) conversation_id never reaches the proxy SOCKS-auth
+# log. Reuses the existing workspace pin — NOT a new pin/coordination
+# event per D0018 §1.
+sha2 = { workspace = true }
+
 # === Error handling (D0018 §4.2) ===
 thiserror = { workspace = true }
 
-# The SOCKS5 client + control-port protocol client will be added when
-# the C-Tor integration body lands per D0025 §10 (re-anchored under
-# D0020 §2: this crate is the Rust-side SOCKS5 + control-port client
-# of the C-Tor ForegroundService, NOT an embedded Tor implementation).
-# The v1 skeleton's transport methods return
-# TorTransportError::NetworkUnreached without opening any connection,
-# so the pin is deferred to keep the skeleton's dep surface minimal.
+# SOCKS5 client: HAND-ROLLED in src/socks5.rs (RFC 1928 CONNECT + RFC 1929
+# username/password auth), NOT a third-party crate. D0025 §10's "it pins a
+# SOCKS5 client" is revised 2026-05-31: the protocol is small +
+# pure-safe-Rust, we need explicit username/password control for
+# IsolateSOCKSAuth, and hand-rolling is hermetically testable via a mock
+# SOCKS5 server with no new dependency-pin/audit event. The control-port
+# protocol client (cookie auth + SIGNAL NEWNYM + bootstrap-status) is the
+# remaining follow-up.
 # Note: this crate does NOT pin arti-client (the original D0025 error);
 # arti is deferred per D0020 §2.7's gating events.

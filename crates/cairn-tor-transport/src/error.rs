@@ -81,6 +81,19 @@ pub enum TorTransportError {
     #[error("tor-transport: control-port protocol error")]
     ControlPortProtocol,
 
+    /// The SOCKS5 proxy handshake failed in a way that indicates a
+    /// protocol or proxy-configuration problem rather than a target
+    /// failure: the proxy rejected username/password auth, returned a
+    /// non-zero RFC 1929 auth status, sent malformed/short framing, or
+    /// returned a CONNECT reply code other than the recognized
+    /// host-unreachable (→ [`Self::HostResolutionFailed`]) / connection-
+    /// refused (→ [`Self::ConnectionRefused`]) ones. Distinct from
+    /// [`Self::Network`] (a loopback transport failure) and
+    /// [`Self::BootstrapIncomplete`] (which the control-port bootstrap-
+    /// status query reports precisely; the SOCKS layer cannot).
+    #[error("tor-transport: SOCKS5 proxy handshake/protocol error")]
+    SocksProtocol,
+
     /// The supplied `target_host` did not resolve over Tor.
     #[error("tor-transport: target host did not resolve over Tor")]
     HostResolutionFailed,
