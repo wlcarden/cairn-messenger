@@ -65,8 +65,13 @@ edition = "2024"
 # Bumped 1.85 -> 1.88 (2026-06-01 coordination event, D0018 §7.4): the SimpleX
 # Android FFI transport (simploxide-sxcrt-sys `let`-chains), simploxide-client
 # (`const from_hours`), and the `time` RUSTSEC-2026-0009 fix all require 1.88.
-# Workspace re-validated on 1.88 (all four CI gates). See rust-toolchain.toml.
-rust-version = "1.88"
+# Then 1.88 -> 1.91 (2026-06-01, SECOND rotation): shipping the Android FFI
+# transport needs 1.91 — `simploxide-sxcrt-sys 0.2.0`'s lib uses
+# `Duration::from_mins` (stable 1.91), ABOVE 1.88; the earlier "FFI needs 1.88"
+# undercounted (a 1.94.1 probe masked it). 1.91 is the verified minimal floor.
+# Workspace re-validated on 1.91 (all four host gates + the android FFI check on
+# the PINNED toolchain). See rust-toolchain.toml.
+rust-version = "1.91"
 license = "AGPL-3.0-only"
 authors = ["Cairn maintainers and contributors"]
 repository = "https://github.com/cairn-project/cairn"
@@ -251,13 +256,12 @@ simploxide-ws-core = "=0.2.0"
 # `libsimplex` bundle). The per-ABI link happens at the Android APK/cdylib
 # stage.
 #
-# MSRV (CORRECTED 2026-06-01): `sxcrt-sys 0.2.0`'s LIB uses
-# `Duration::from_mins` (stable since rust 1.91 — `duration_constructors`), so
-# the Android build needs rust >= ~1.91 — ABOVE the workspace's current 1.88
-# pin. The earlier "needs >= 1.88 (build.rs let-chains)" claim undercounted (a
-# probe on the default 1.94.1 toolchain masked it). Host builds are unaffected
-# (target-gated off); the Android APK build requires a FURTHER MSRV bump (a
-# tracked D0018 §7.4 follow-on, see D0026 §12). Needs no tokio bump.
+# MSRV: `sxcrt-sys 0.2.0`'s LIB uses `Duration::from_mins` (stable since rust
+# 1.91 — `duration_constructors`), so the Android FFI build needs rust >= 1.91.
+# The earlier "needs >= 1.88 (build.rs let-chains)" claim undercounted (a probe
+# on the default 1.94.1 toolchain masked it). The workspace was bumped 1.88 ->
+# 1.91 to clear this (D0018 §7.4, the second rotation); the FFI transport now
+# compiles for aarch64-linux-android on the pinned toolchain. Needs no tokio bump.
 simploxide-ffi-core = "=0.2.0"
 
 # === Testing (D0018 §5) ===

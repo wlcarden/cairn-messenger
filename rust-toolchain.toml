@@ -14,9 +14,20 @@
 # nursery `format_push_string` (a tracked style follow-up). 1.85 was the prior
 # pin; the byte-stability discipline (D0018 §9.1) is unaffected (exact crate
 # pins unchanged; this is a compiler-toolchain bump, re-validated).
+#
+# Bumped 1.88.0 -> 1.91.0 (2026-06-01, the SECOND deliberate rotation). Single
+# driver: shipping the Android FFI transport (D0026 §12). `simploxide-sxcrt-sys
+# 0.2.0`'s LIB uses `Duration::from_mins` (stable since 1.91, `duration_
+# constructors`) — the 1.88 bump's "FFI needs >=1.88 (build.rs let-chains)" was
+# necessary but INSUFFICIENT (a probe on the default 1.94.1 had masked it). 1.91
+# is the verified minimal floor: `sxcrt-sys` + the `cfg(target_os="android")`
+# `FfiSidecarTransport` compile on EXACTLY 1.91 (aarch64-linux-android check on
+# the pinned toolchain). Re-validation: all four host gates pass on 1.91; the
+# Android FFI target now type-checks on the pinned toolchain (it did NOT on
+# 1.88). Byte-stability (D0018 §9.1) unaffected (exact crate pins unchanged).
 
 [toolchain]
-channel = "1.88.0"
+channel = "1.91.0"
 targets = [
     "aarch64-linux-android",  # primary v1 target (Pixel-on-GrapheneOS)
     "x86_64-linux-android",   # secondary v1 target (Chromebook + emulator + audit testing)

@@ -892,7 +892,9 @@ fn hex_encode(bytes: &[u8]) -> String {
     // large slices that pubkey / signature byte arrays never reach.
     let mut s = String::with_capacity(bytes.len().saturating_mul(2));
     for b in bytes {
-        write!(&mut s, "{b:02x}").expect("writing to String cannot fail");
+        // write! to a String is infallible; ignore the Result (expect_used
+        // is denied workspace-wide, and clippy 1.91 flags write!(..).expect()).
+        let _ = write!(&mut s, "{b:02x}");
     }
     s
 }
@@ -975,14 +977,14 @@ fn cmd_verify_message(
         .map_err(|e| anyhow!("message signature verification failed: {e}"))?;
 
     // === Scope check (optional) ===
-    if let Some(cap) = required_capability {
-        if !cap_token.has_capability(cap) {
-            bail!(
-                "token does not authorize the required capability: {} (token scope: {:?})",
-                cap,
-                cap_token.scope
-            );
-        }
+    if let Some(cap) = required_capability
+        && !cap_token.has_capability(cap)
+    {
+        bail!(
+            "token does not authorize the required capability: {} (token scope: {:?})",
+            cap,
+            cap_token.scope
+        );
     }
 
     println!("VERIFIED");

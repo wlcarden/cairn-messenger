@@ -170,10 +170,10 @@ fn san_has_email(
         return Ok(false);
     };
     for name in &san.value.general_names {
-        if let GeneralName::RFC822Name(email) = name {
-            if *email == expected_email {
-                return Ok(true);
-            }
+        if let GeneralName::RFC822Name(email) = name
+            && *email == expected_email
+        {
+            return Ok(true);
         }
     }
     Ok(false)

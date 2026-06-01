@@ -290,10 +290,10 @@ impl SigstoreVerifier {
         verify_rekor_inclusion(&bundle.rekor_bundle, &self.rekor_pubkey_pem)?;
 
         // (5) Rollback resistance (D0024 §4.2).
-        if let Some(expected) = expected_predecessor_hash {
-            if manifest.prior_release_hash.as_slice() != expected.as_slice() {
-                return Err(SigstoreVerifyError::ManifestPriorHashMismatch);
-            }
+        if let Some(expected) = expected_predecessor_hash
+            && manifest.prior_release_hash.as_slice() != expected.as_slice()
+        {
+            return Err(SigstoreVerifyError::ManifestPriorHashMismatch);
         }
 
         // (6) Sigsum-anchored release log (D0024 §5): bind the bundled,

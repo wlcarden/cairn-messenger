@@ -113,10 +113,10 @@ pub fn verify_chain_links<'a>(
 
         // Timestamp non-decreasing (defends against clock-rewind reuse
         // and reordering attacks).
-        if let Some(prev_ts) = last_timestamp {
-            if op.timestamp < prev_ts {
-                return Err(TrustGraphError::ChainTimestampRegression { index });
-            }
+        if let Some(prev_ts) = last_timestamp
+            && op.timestamp < prev_ts
+        {
+            return Err(TrustGraphError::ChainTimestampRegression { index });
         }
         last_timestamp = Some(op.timestamp);
 
