@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-05-29
+**Revised:** 2026-06-01 — corrected the SimplOxide cargo feature name in §1.1 (`websocket`, not `ws`); see the §1.1 revision note.
 
 ## Context
 
@@ -39,7 +40,9 @@ Each topic specifies the integration mechanism, the rationale, alternatives cons
 
 ### 1.1 Decision
 
-**Use SimplOxide (`simploxide-client` with `ws` feature) against a SimpleX Chat CLI sidecar process bundled into the Android app as a ForegroundService.** The Rust core's `cairn-simplex-adapter` crate consumes the SimplOxide typed API; the SimpleX Chat CLI binary is bundled as a per-ABI native asset from `simplex-chat-libs` releases and runs as a separate process; the Rust core communicates with it via local WebSocket on `127.0.0.1:5225`.
+**Use SimplOxide (`simploxide-client` with the `websocket` feature) against a SimpleX Chat CLI sidecar process bundled into the Android app as a ForegroundService.** The Rust core's `cairn-simplex-adapter` crate consumes the SimplOxide typed API; the SimpleX Chat CLI binary is bundled as a per-ABI native asset from `simplex-chat-libs` releases and runs as a separate process; the Rust core communicates with it via local WebSocket on `127.0.0.1:5225`.
+
+> **Revision 2026-06-01 — feature-name correction.** The original wrote the `ws` feature; the published `simploxide-client` v0.11.0 exposes the WebSocket transport under the **`websocket`** feature, with `cli` default-on. The decision is unchanged — SimplOxide over a loopback WebSocket to the CLI sidecar — only the cargo feature name is corrected. The exact `=0.11.0` pin remains a D0018 §1 coordination event deferred to the implementation cycle (D0026 §12); D0026's 2026-06-01 revision note records the full published coordinates.
 
 ### 1.2 Architecture
 
