@@ -149,7 +149,15 @@ impl Sign1Builder {
         self
     }
 
-    /// Finalize the envelope by signing it with `signing_key`.
+    /// Finalize the envelope by signing it in-process with `signing_key`.
+    ///
+    /// For hardware-backed signers where the private key never enters the
+    /// process (Android `StrongBox` per D0020 §3.4), use
+    /// [`Self::signing_input`] + [`Self::finalize_with_signature`] instead.
+    /// This method is exactly those two composed with an in-process Ed25519
+    /// sign, so all three produce byte-identical envelopes for the same key
+    /// and builder state (the equivalence is regression-tested by the
+    /// test `external_signer_path_matches_finalize`).
     ///
     /// # Errors
     ///
@@ -161,33 +169,81 @@ impl Sign1Builder {
     ///   are populated; possible if a caller-injected variant adds
     ///   duplicate keys).
     pub fn finalize(self, signing_key: &SigningKey) -> Result<CoseSign1, EnvelopeError> {
-        // Per RFC 9052 §4.4 + §3: empty protected-header map MUST encode
-        // as a zero-length bstr (NOT as `0xa0` for an empty map). Cairn
-        // always inserts `alg`, so this branch is currently unreachable —
-        // kept for forward-compat if callers ever construct builders
-        // without `alg`.
-        let protected_bytes = if self.protected_headers.is_empty() {
-            Vec::new()
-        } else {
-            Value::Map(self.protected_headers.clone()).encode()?
-        };
-
-        // Build the Sig_structure and sign its canonical encoding.
-        let tbs = build_sig_structure(
-            &protected_bytes,
-            &self.external_aad,
-            self.payload.as_deref().unwrap_or(&[]),
-        )?;
+        let tbs = self.signing_input()?;
         let signature = signing_key
             .sign(&tbs)
             .map_err(|_| EnvelopeError::CoseSign1SignFailed)?;
+        self.finalize_with_signature(&signature.to_bytes())
+    }
 
+    /// Compute the `COSE_Sign1` signing input — the canonical-CBOR
+    /// `Sig_structure` bytes per RFC 9052 §4.4 — for the builder's current
+    /// payload + external AAD + protected headers, WITHOUT signing.
+    ///
+    /// These are the bytes an external signer (e.g. an Android `StrongBox`
+    /// `HardwareKeySigner` per D0020 §3.4) signs with the device key; pair
+    /// the returned signature with [`Self::finalize_with_signature`] to
+    /// assemble the envelope. The builder MUST NOT be mutated between the
+    /// two calls, or the signature will not match the assembled envelope.
+    ///
+    /// # Errors
+    ///
+    /// [`EnvelopeError::CanonicalCborDuplicateMapKey`] (or another canonical
+    /// encoder error) from encoding the protected headers / `Sig_structure`
+    /// — unreachable for builders using only the defaults + at most one
+    /// `kid`.
+    pub fn signing_input(&self) -> Result<Vec<u8>, EnvelopeError> {
+        let protected_bytes = self.protected_bytes()?;
+        build_sig_structure(
+            &protected_bytes,
+            &self.external_aad,
+            self.payload.as_deref().unwrap_or(&[]),
+        )
+    }
+
+    /// Assemble the finalized envelope from an externally-produced Ed25519
+    /// `signature` over [`Self::signing_input`].
+    ///
+    /// `signature` MUST be over the exact bytes [`Self::signing_input`]
+    /// returned for this builder's state. This is the hardware-signer
+    /// counterpart to [`Self::finalize`]: the device key signs the signing
+    /// input out-of-process (`StrongBox` per D0020 §3.4) and only the 64-byte
+    /// signature crosses back into the process — the key itself never does.
+    ///
+    /// # Errors
+    ///
+    /// - [`EnvelopeError::CoseSign1InvalidSignatureLength`] if `signature`
+    ///   is not exactly [`SIGNATURE_LEN`] (64) bytes.
+    /// - [`EnvelopeError::CanonicalCborDuplicateMapKey`] from re-encoding
+    ///   the protected headers (unreachable for default builders).
+    pub fn finalize_with_signature(self, signature: &[u8]) -> Result<CoseSign1, EnvelopeError> {
+        if signature.len() != SIGNATURE_LEN {
+            return Err(EnvelopeError::CoseSign1InvalidSignatureLength {
+                got_bytes: signature.len(),
+                expected_bytes: SIGNATURE_LEN,
+            });
+        }
+        let protected_bytes = self.protected_bytes()?;
         Ok(CoseSign1 {
             protected_bytes,
             unprotected_headers: self.unprotected_headers,
             payload: self.payload,
-            signature: signature.to_bytes().to_vec(),
+            signature: signature.to_vec(),
         })
+    }
+
+    /// Canonical-CBOR-encode the protected headers.
+    ///
+    /// Per RFC 9052 §4.4 + §3: an empty protected-header map MUST encode as
+    /// a zero-length bstr (NOT `0xa0` for an empty map). Cairn always
+    /// inserts `alg`, so the empty branch is currently unreachable — kept
+    /// for forward-compat if callers ever construct builders without `alg`.
+    fn protected_bytes(&self) -> Result<Vec<u8>, EnvelopeError> {
+        if self.protected_headers.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Value::Map(self.protected_headers.clone()).encode()
+        }
     }
 }
 
@@ -501,6 +557,65 @@ mod tests {
         envelope
             .verify(&vk, b"")
             .expect("verify should succeed with empty external AAD");
+    }
+
+    #[test]
+    fn external_signer_path_matches_finalize() {
+        // The external-signer path (signing_input + finalize_with_signature)
+        // must produce a byte-identical envelope to the in-process
+        // finalize(&key) for the same key + builder state. Ed25519 is
+        // deterministic (RFC 8032), so the signatures — and thus the whole
+        // encoded envelopes — are equal. This is the guarantee that lets a
+        // `StrongBox` HardwareKeySigner (D0020 §3.4) substitute for an
+        // in-process key without changing the wire bytes.
+        let sk = fresh_key();
+        let vk = sk.verifying_key();
+        let payload = b"external signer parity".to_vec();
+        let aad = b"cairn-v1-message-envelope".to_vec();
+
+        let direct = Sign1Builder::new()
+            .with_payload(payload.clone())
+            .with_external_aad(aad.clone())
+            .finalize(&sk)
+            .unwrap();
+
+        // The external path: get the signing input, sign it out-of-band
+        // (here with the same key, standing in for the hardware signer),
+        // then inject the resulting signature.
+        let builder = Sign1Builder::new()
+            .with_payload(payload)
+            .with_external_aad(aad.clone());
+        let signing_input = builder.signing_input().unwrap();
+        let signature = sk.sign(&signing_input).unwrap();
+        let external = builder
+            .finalize_with_signature(&signature.to_bytes())
+            .unwrap();
+
+        assert_eq!(
+            direct.encode(true).unwrap(),
+            external.encode(true).unwrap(),
+            "external-signer path must be byte-identical to finalize(&key)"
+        );
+        external
+            .verify(&vk, &aad)
+            .expect("externally-signed envelope must verify");
+    }
+
+    #[test]
+    fn finalize_with_signature_rejects_wrong_length() {
+        // A signature that is not exactly 64 bytes is rejected at assembly
+        // (the same length guard verify() applies), so a malformed
+        // hardware-signer return cannot yield a structurally-invalid
+        // envelope.
+        let builder = Sign1Builder::new().with_payload(b"x".to_vec());
+        let result = builder.finalize_with_signature(&[0u8; 32]);
+        assert!(matches!(
+            result,
+            Err(EnvelopeError::CoseSign1InvalidSignatureLength {
+                got_bytes: 32,
+                expected_bytes: 64
+            })
+        ));
     }
 
     #[test]
