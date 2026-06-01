@@ -76,7 +76,7 @@ pub struct MasterAttestationRecord {
 /// new operational identity (D0027 §2.2).
 ///
 /// Returns the encoded signed master attestation (public; to be stored
-/// + distributed as the rotated identity's hop-#3 credential). The
+/// and distributed as the rotated identity's hop-#3 credential). The
 /// master seed is reconstructed in `Zeroizing` and wiped inside Rust;
 /// it never crosses to Kotlin.
 ///
