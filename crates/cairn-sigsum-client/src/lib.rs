@@ -96,8 +96,8 @@ pub use client::{RetryBudget, SigsumClient, SigsumClientConfig};
 pub use emit::{EmissionStatus, EmitOutcome, sigsum_emit};
 pub use error::SigsumError;
 pub use leaf::{
-    LEAF_HASH_LEN, LeafHash, TREE_LEAF_NAMESPACE, TreeLeaf, build_tree_leaf, leaf_hash_for,
-    leaf_hash_for_cose_sign1_bytes,
+    LEAF_HASH_LEN, LeafHash, TREE_LEAF_NAMESPACE, TreeLeaf, TreeLeafSigner, build_tree_leaf,
+    build_tree_leaf_with_signer, leaf_hash_for, leaf_hash_for_cose_sign1_bytes,
 };
 pub use verify::{VerifyChainWithSigsumError, verify_chain_links_with_sigsum};
 pub use witness::{

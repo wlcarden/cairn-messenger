@@ -90,6 +90,55 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
     arr
 }
 
+/// Abstraction over the submitter's tree-leaf signing operation per
+/// D0023 §3.
+///
+/// The operational-identity key that signs the tree-leaf may live in
+/// hardware (StrongBox per D0020 §3.4), where the raw key cannot cross
+/// into this crate. This trait lets the FFI boundary
+/// ([`crate::SigsumClient::emit_leaf_with_signer`]) delegate the
+/// signature to a hardware callback while keeping the
+/// `TREE_LEAF_NAMESPACE ‖ 0x00 ‖ checksum` signing-input construction
+/// (the security-critical part) here. The software path
+/// ([`build_tree_leaf`] / [`crate::SigsumClient::emit_leaf`]) is the same trait
+/// over a local `SigningKey`.
+///
+/// `Send + Sync` so an `&dyn TreeLeafSigner` held across the `add-leaf`
+/// await keeps [`crate::SigsumClient::emit_leaf_with_signer`]'s future `Send`
+/// (spawnable on a multi-threaded executor).
+pub trait TreeLeafSigner: Send + Sync {
+    /// Sign the Sigsum tree-leaf signing input
+    /// (`TREE_LEAF_NAMESPACE ‖ 0x00 ‖ checksum`) with the submitter's
+    /// operational key, returning the 64-byte Ed25519 signature.
+    ///
+    /// # Errors
+    ///
+    /// [`SigsumError::LeafSignFailed`] if signing fails.
+    fn sign_tree_leaf(&self, signing_input: &[u8]) -> Result<[u8; 64], SigsumError>;
+
+    /// The submitter's Ed25519 public key (32 bytes) — used for
+    /// `key_hash = SHA-256(pubkey)` and the `add-leaf` submission.
+    fn submitter_public_key(&self) -> [u8; 32];
+}
+
+/// Adapter making a local [`SigningKey`] usable as a [`TreeLeafSigner`]
+/// (the software path; the FFI hardware path supplies its own impl).
+pub(crate) struct SoftwareTreeLeafSigner<'a>(pub(crate) &'a SigningKey);
+
+impl TreeLeafSigner for SoftwareTreeLeafSigner<'_> {
+    fn sign_tree_leaf(&self, signing_input: &[u8]) -> Result<[u8; 64], SigsumError> {
+        Ok(self
+            .0
+            .sign(signing_input)
+            .map_err(|_| SigsumError::LeafSignFailed)?
+            .to_bytes())
+    }
+
+    fn submitter_public_key(&self) -> [u8; 32] {
+        self.0.verifying_key().to_bytes()
+    }
+}
+
 /// Build the Sigsum [`TreeLeaf`] for a submitted `message` (Cairn's
 /// [`LeafHash`] bytes), signed by `submitter_sk` (the operational
 /// identity per D0023 §3).
@@ -101,6 +150,24 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
 pub fn build_tree_leaf(
     message: &[u8; LEAF_HASH_LEN],
     submitter_sk: &SigningKey,
+) -> Result<TreeLeaf, SigsumError> {
+    build_tree_leaf_with_signer(message, &SoftwareTreeLeafSigner(submitter_sk))
+}
+
+/// Build the Sigsum [`TreeLeaf`] using a [`TreeLeafSigner`] — the
+/// hardware-callback path (D0023 §3 / D0020 §3.4).
+///
+/// Byte-identical wire output to [`build_tree_leaf`]; only the signing
+/// delegation differs. The signing input
+/// (`TREE_LEAF_NAMESPACE ‖ 0x00 ‖ checksum`) is constructed here so the
+/// caller cannot get the Sigsum submit format wrong.
+///
+/// # Errors
+///
+/// [`SigsumError::LeafSignFailed`] if the signer fails.
+pub fn build_tree_leaf_with_signer(
+    message: &[u8; LEAF_HASH_LEN],
+    signer: &dyn TreeLeafSigner,
 ) -> Result<TreeLeaf, SigsumError> {
     let checksum = sha256(message);
 
@@ -114,14 +181,12 @@ pub fn build_tree_leaf(
     signing_input.push(0x00);
     signing_input.extend_from_slice(&checksum);
 
-    let signature = submitter_sk
-        .sign(&signing_input)
-        .map_err(|_| SigsumError::LeafSignFailed)?;
-    let key_hash = sha256(&submitter_sk.verifying_key().to_bytes());
+    let signature = signer.sign_tree_leaf(&signing_input)?;
+    let key_hash = sha256(&signer.submitter_public_key());
 
     Ok(TreeLeaf {
         checksum,
-        signature: signature.to_bytes(),
+        signature,
         key_hash,
     })
 }
@@ -319,5 +384,39 @@ mod tests {
 
         let sig = Signature::from_bytes(tl.signature);
         assert!(sk.verifying_key().verify(&input, &sig).is_ok());
+    }
+
+    #[test]
+    fn build_tree_leaf_with_signer_uses_callback_signature() {
+        // A custom TreeLeafSigner returns a fixed signature + pubkey;
+        // the TreeLeaf must carry the callback's signature, with
+        // checksum = SHA-256(message) and key_hash = SHA-256(pubkey).
+        struct FixedSigner;
+        impl TreeLeafSigner for FixedSigner {
+            fn sign_tree_leaf(&self, _input: &[u8]) -> Result<[u8; 64], SigsumError> {
+                Ok([0xABu8; 64])
+            }
+            fn submitter_public_key(&self) -> [u8; 32] {
+                [0xCDu8; 32]
+            }
+        }
+        let message = [0x11u8; LEAF_HASH_LEN];
+        let leaf = build_tree_leaf_with_signer(&message, &FixedSigner).unwrap();
+        assert_eq!(leaf.signature, [0xABu8; 64]);
+        assert_eq!(leaf.checksum, sha256(&message));
+        assert_eq!(leaf.key_hash, sha256(&[0xCDu8; 32]));
+    }
+
+    #[test]
+    fn build_tree_leaf_matches_software_signer_path() {
+        // build_tree_leaf (software key) must equal the signer path over
+        // a SoftwareTreeLeafSigner for the same key — the delegation is
+        // faithful (same signing input, same wire output).
+        let sk = SigningKey::generate(&mut OsRng);
+        let message = [0x22u8; LEAF_HASH_LEN];
+        let via_key = build_tree_leaf(&message, &sk).unwrap();
+        let via_signer =
+            build_tree_leaf_with_signer(&message, &SoftwareTreeLeafSigner(&sk)).unwrap();
+        assert_eq!(via_key, via_signer);
     }
 }

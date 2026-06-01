@@ -212,9 +212,36 @@ impl SigsumClient {
         signed_op: &SignedTrustGraphOp,
         submitter_sk: &SigningKey,
     ) -> Result<LeafHash, SigsumError> {
+        self.emit_leaf_with_signer(
+            signed_op,
+            &crate::leaf::SoftwareTreeLeafSigner(submitter_sk),
+        )
+        .await
+    }
+
+    /// Emit `signed_op`'s leaf, signing the tree-leaf via a
+    /// [`crate::leaf::TreeLeafSigner`] rather than a local `SigningKey`.
+    ///
+    /// Identical flow to [`Self::emit_leaf`] (build tree-leaf → POST
+    /// `add-leaf` → cache the `EmittedLeaf`), but the submitter signature
+    /// comes from the `signer` — so the operational key can sign in
+    /// hardware (StrongBox per D0020 §3.4) without the raw key entering
+    /// this crate. The FFI boundary (cairn-uniffi) uses this to bridge a
+    /// `HardwareKeySigner` callback. `emit_leaf` is the software-key
+    /// special case (it wraps a `SigningKey` in the same path).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::emit_leaf`], plus any [`SigsumError::LeafSignFailed`]
+    /// the `signer` returns.
+    pub async fn emit_leaf_with_signer(
+        &self,
+        signed_op: &SignedTrustGraphOp,
+        signer: &dyn crate::leaf::TreeLeafSigner,
+    ) -> Result<LeafHash, SigsumError> {
         let leaf_hash = crate::leaf::leaf_hash_for(signed_op)?;
-        let tree_leaf = crate::leaf::build_tree_leaf(leaf_hash.as_bytes(), submitter_sk)?;
-        let submitter_pubkey = submitter_sk.verifying_key().to_bytes();
+        let tree_leaf = crate::leaf::build_tree_leaf_with_signer(leaf_hash.as_bytes(), signer)?;
+        let submitter_pubkey = signer.submitter_public_key();
 
         self.http_post_add_leaf(
             leaf_hash.as_bytes(),
