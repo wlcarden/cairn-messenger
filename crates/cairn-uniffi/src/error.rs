@@ -39,6 +39,7 @@
 //! the mapping logic + its no-error-oracle discipline are plain Rust
 //! and fully tested without UniFFI.
 
+use cairn_identity::IdentityError;
 use cairn_sigstore_verify::SigstoreVerifyError;
 use cairn_sigsum_client::SigsumError;
 use cairn_simplex_adapter::SimplexAdapterError;
@@ -258,6 +259,28 @@ impl From<TrustGraphError> for CairnFfiError {
     }
 }
 
+impl From<IdentityError> for CairnFfiError {
+    fn from(e: IdentityError) -> Self {
+        match e {
+            // Authenticity failures of the capability token (bad signature
+            // or wrong issuer) collapse to a single verification-failure
+            // tag per the no-error-oracle discipline (D0027 §3.2).
+            IdentityError::SignatureVerifyFailed | IdentityError::IssuerMismatch => {
+                Self::SignatureVerifyFailed
+            }
+            // Data-shape faults (malformed CBOR, bad pubkey, encode fault,
+            // out-of-range expiry) collapse to the malformed-data tag.
+            IdentityError::MalformedPayload
+            | IdentityError::CanonicalEncode(_)
+            | IdentityError::InvalidPubkeyLength { .. }
+            | IdentityError::InvalidPubkey
+            | IdentityError::ExpiryOutOfRange => Self::MalformedData,
+            // Forward-compat only (IdentityError is #[non_exhaustive]).
+            _ => Self::UnmappedInternal,
+        }
+    }
+}
+
 impl From<SimplexAdapterError> for CairnFfiError {
     fn from(e: SimplexAdapterError) -> Self {
         match e {
@@ -457,6 +480,32 @@ mod tests {
                 cairn_identity::IdentityError::IssuerMismatch
             )),
             CairnFfiError::SignatureVerifyFailed
+        );
+    }
+
+    // === IdentityError mapping (direct source per D0027 §2.2 revision) ===
+
+    #[test]
+    fn identity_auth_failures_collapse_to_signature_failed() {
+        assert_eq!(
+            CairnFfiError::from(IdentityError::SignatureVerifyFailed),
+            CairnFfiError::SignatureVerifyFailed
+        );
+        assert_eq!(
+            CairnFfiError::from(IdentityError::IssuerMismatch),
+            CairnFfiError::SignatureVerifyFailed
+        );
+    }
+
+    #[test]
+    fn identity_data_faults_collapse_to_malformed_data() {
+        assert_eq!(
+            CairnFfiError::from(IdentityError::MalformedPayload),
+            CairnFfiError::MalformedData
+        );
+        assert_eq!(
+            CairnFfiError::from(IdentityError::ExpiryOutOfRange),
+            CairnFfiError::MalformedData
         );
     }
 

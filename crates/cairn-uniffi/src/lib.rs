@@ -69,22 +69,31 @@
 //!   [`QuarantineStatusFfi`]: the fused verify-then-classify the
 //!   Android shell drives to render trust badges. First per-domain
 //!   module (D0027 §8 step 4).
+//! - [`identity`] — [`identity_verify_capability_token`] +
+//!   [`CapabilityTokenRecord`]: verify-then-decode of a capability
+//!   token's public metadata. StrongBox-only (D0027 §2.2 revision):
+//!   the op-identity key signs in StrongBox via
+//!   [`hardware::HardwareKeySigner`], so there is NO software signing
+//!   handle — the module is pure verify/decode over public credentials.
 //!
 //! Remaining per-domain modules (each lands as its own increment): the
-//! sync crypto-core `identity` + `recovery` exports; the async I/O
-//! handles `messaging` / `transparency` / `tor` / `storage`
-//! (`#[uniffi::export(async_runtime = "tokio")]` per D0027 §5) — these
-//! carry open decisions (the generic `SimplexAdapter<T>` ⇒ a concrete
-//! transport handle; the `TorStream` handle; `Storage` `Send + Sync`).
-//! The `fuzz_uniffi_boundary` harness (D0018 §5.2) is a follow-up.
+//! sync `recovery` exports (Shamir split/reconstruct + master
+//! attestation); the async I/O handles `messaging` / `transparency` /
+//! `tor` / `storage` (`#[uniffi::export(async_runtime = "tokio")]` per
+//! D0027 §5) — these carry open decisions (the generic
+//! `SimplexAdapter<T>` ⇒ a concrete transport handle; the `TorStream`
+//! handle; `Storage` `Send + Sync`). The `fuzz_uniffi_boundary` harness
+//! (D0018 §5.2) is a follow-up.
 
 pub mod error;
 pub mod hardware;
+pub mod identity;
 pub mod never_export_gate;
 pub mod trust_graph;
 
 pub use error::CairnFfiError;
 pub use hardware::{AttestationCertificate, HardwareKeySigner, HardwarePublicKey, KeyGenSpec};
+pub use identity::{CapabilityTokenRecord, identity_verify_capability_token};
 pub use trust_graph::{QuarantineStatusFfi, trust_graph_verify_and_classify};
 
 // UniFFI scaffolding entrypoint per D0027 §5 / D0020 §3.1. Generates

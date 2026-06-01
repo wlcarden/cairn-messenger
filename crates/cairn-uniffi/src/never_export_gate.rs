@@ -67,6 +67,10 @@ pub const fn assert_v1_carrier_types_exportable() {
     // secret-bearing. trust_graph (D0027 §2): the cascade-status enum
     // carries only PUBLIC pubkey bytes + Unix-seconds.
     assert_exportable::<crate::trust_graph::QuarantineStatusFfi>();
+    // identity (D0027 §2.2): the capability-token record carries only
+    // PUBLIC pubkeys + scope strings + the expiry (no secret; the
+    // op-identity key signs in StrongBox, never crossing as bytes).
+    assert_exportable::<crate::identity::CapabilityTokenRecord>();
 }
 
 #[cfg(test)]

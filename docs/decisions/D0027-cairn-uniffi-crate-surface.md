@@ -107,6 +107,8 @@ The split rule, applied per type:
 - No `RatchetState` — SimpleX owns the ratchet per D0026; there is no Cairn ratchet to export.
 - No raw storage DEK / KEK / per-record nonce — those stay inside `cairn-storage`.
 
+> **Revision (2026-06-01) — StrongBox-only op-identity; the `OpIdentityKeyHandle` is retired.** §2.2 listed an `OpIdentityKeyHandle` wrapping a _software_ `SecretBox<SigningKey>`, which contradicted §2.3 (operational-identity signing keys live in StrongBox via `HardwareKeySigner`; Rust never holds the key). Resolved in favor of the hardware-binding commitment (D0020 §3.4): **there is no software op-identity signing handle at the FFI boundary.** Op-identity signatures are produced in StrongBox via the hardware callback already declared in `hardware.rs`. With no secret to wrap, the `identity` module is pure verify/decode over PUBLIC credentials — it exports `identity_verify_capability_token` → `CapabilityTokenRecord` (a `uniffi::Record` of the token's public issuer / subject-device / scope / expiry; verify-then-decode so Kotlin never receives unverified token data; the opaque `signature_chain_to_master` is not surfaced). This made `cairn-identity`'s `IdentityError` a **seventh** direct facade source (§3), mapped flat to `SignatureVerifyFailed` (auth failures) / `MalformedData` (data faults) and regression-tested in `error.rs`.
+
 ---
 
 ## 3. The FFI error facade
