@@ -71,6 +71,13 @@ pub const fn assert_v1_carrier_types_exportable() {
     // PUBLIC pubkeys + scope strings + the expiry (no secret; the
     // op-identity key signs in StrongBox, never crossing as bytes).
     assert_exportable::<crate::identity::CapabilityTokenRecord>();
+    // recovery (D0027 §2.2): the master-attestation record is all
+    // PUBLIC pubkeys + a timestamp. The share record carries a Shamir
+    // share value — sensitive but transportable-by-design (a single
+    // share is below the reconstruction threshold and is NOT the sealed
+    // master secret), so it correctly crosses; the SEED never does.
+    assert_exportable::<crate::recovery::MasterAttestationRecord>();
+    assert_exportable::<crate::recovery::ShareRecord>();
 }
 
 #[cfg(test)]

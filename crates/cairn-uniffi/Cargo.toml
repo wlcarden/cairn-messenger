@@ -50,6 +50,20 @@ cairn-sigsum-client = { path = "../cairn-sigsum-client" }
 cairn-sigstore-verify = { path = "../cairn-sigstore-verify" }
 cairn-tor-transport = { path = "../cairn-tor-transport" }
 cairn-simplex-adapter = { path = "../cairn-simplex-adapter" }
+# cairn-recovery (RecoveryError) is the EIGHTH facade source, added with
+# the recovery export module (D0027 §2.2). It also supplies
+# reconstruct_and_attest + SignedMasterAttestation.
+cairn-recovery = { path = "../cairn-recovery" }
+
+# === Shamir share/commitment types the recovery module rehydrates from
+#     bytes (Share / Commitment); ShamirError reaches the facade wrapped
+#     in RecoveryError, not directly. ===
+cairn-shamir = { path = "../cairn-shamir" }
+
+# === Memory hygiene (D0018 §1.6): the recovery module wraps incoming
+#     share bytes in Zeroizing before handing them to Share::try_from_parts
+#     so Rust's only copy is wiped on drop. ===
+zeroize = { workspace = true }
 
 # === Error Display (Cairn-authored strings only; no source Display
 #     crosses) per D0018 §4.2 ===

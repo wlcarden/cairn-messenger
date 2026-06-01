@@ -632,6 +632,8 @@ version = "0.1.0-dev"
 dependencies = [
  "cairn-crypto",
  "cairn-identity",
+ "cairn-recovery",
+ "cairn-shamir",
  "cairn-sigstore-verify",
  "cairn-sigsum-client",
  "cairn-simplex-adapter",
@@ -641,6 +643,7 @@ dependencies = [
  "rand_core 0.6.4",
  "thiserror 1.0.63",
  "uniffi",
+ "zeroize",
 ]
 
 [[package]]

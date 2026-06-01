@@ -40,6 +40,7 @@
 //! and fully tested without UniFFI.
 
 use cairn_identity::IdentityError;
+use cairn_recovery::RecoveryError;
 use cairn_sigstore_verify::SigstoreVerifyError;
 use cairn_sigsum_client::SigsumError;
 use cairn_simplex_adapter::SimplexAdapterError;
@@ -170,6 +171,16 @@ pub enum CairnFfiError {
     #[error("cairn: tor connection failed")]
     TorConnectionFailed,
 
+    // === Recovery (Shamir master reconstruction) ===
+    /// A recovery operation failed: the supplied shares did not
+    /// reconstruct to the committed master secret (wrong / insufficient
+    /// shares), or the resulting master attestation could not be
+    /// signed. Distinct from `MalformedData` so the high-stakes
+    /// recovery UI can render "recovery failed — check your shares"
+    /// rather than a generic decode error.
+    #[error("cairn: recovery reconstruction failed")]
+    RecoveryFailed,
+
     // === Catch-all ===
     /// A source-error variant this build does not explicitly map
     /// (absorbs each source's `#[non_exhaustive]` future variants).
@@ -276,6 +287,31 @@ impl From<IdentityError> for CairnFfiError {
             | IdentityError::InvalidPubkey
             | IdentityError::ExpiryOutOfRange => Self::MalformedData,
             // Forward-compat only (IdentityError is #[non_exhaustive]).
+            _ => Self::UnmappedInternal,
+        }
+    }
+}
+
+impl From<RecoveryError> for CairnFfiError {
+    fn from(e: RecoveryError) -> Self {
+        match e {
+            // The recovery operation itself failed: the shares did not
+            // reconstruct to the committed secret, or signing the fresh
+            // master attestation failed. A distinct, high-stakes tag.
+            RecoveryError::ShamirReconstruct(_) | RecoveryError::SignFailed => Self::RecoveryFailed,
+            // The verify path: the attestation signature did not verify
+            // or the master pubkey did not match.
+            RecoveryError::SignatureVerifyFailed | RecoveryError::MasterPubkeyMismatch => {
+                Self::SignatureVerifyFailed
+            }
+            // Data-shape faults (malformed CBOR, bad pubkey, encode
+            // fault, out-of-range timestamp).
+            RecoveryError::MalformedPayload
+            | RecoveryError::CanonicalEncode(_)
+            | RecoveryError::InvalidPubkeyLength { .. }
+            | RecoveryError::InvalidPubkey
+            | RecoveryError::TimestampOutOfRange => Self::MalformedData,
+            // Forward-compat only (RecoveryError is #[non_exhaustive]).
             _ => Self::UnmappedInternal,
         }
     }
@@ -506,6 +542,31 @@ mod tests {
         assert_eq!(
             CairnFfiError::from(IdentityError::ExpiryOutOfRange),
             CairnFfiError::MalformedData
+        );
+    }
+
+    // === RecoveryError mapping (eighth source per D0027 §2.2) ===
+
+    #[test]
+    fn recovery_sign_failure_maps_to_recovery_failed() {
+        // The reconstruction path (ShamirReconstruct -> RecoveryFailed)
+        // is covered end-to-end in recovery.rs; here the sibling
+        // SignFailed source confirms the RecoveryFailed bucket.
+        assert_eq!(
+            CairnFfiError::from(RecoveryError::SignFailed),
+            CairnFfiError::RecoveryFailed
+        );
+    }
+
+    #[test]
+    fn recovery_verify_failures_collapse_to_signature_failed() {
+        assert_eq!(
+            CairnFfiError::from(RecoveryError::SignatureVerifyFailed),
+            CairnFfiError::SignatureVerifyFailed
+        );
+        assert_eq!(
+            CairnFfiError::from(RecoveryError::MasterPubkeyMismatch),
+            CairnFfiError::SignatureVerifyFailed
         );
     }
 
