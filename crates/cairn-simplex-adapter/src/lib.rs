@@ -95,10 +95,10 @@
 //! §12). The `integration-tests` cargo feature flag gates the eventual
 //! tests against a local SimpleX Chat CLI.
 //!
-//! In-memory per-`(sender, recipient)` chain state (the
-//! `prior_envelope_hash` cursor) is a documented v1 simplification;
-//! rehydrating it from the `MESSAGES` history across restarts is a
-//! follow-up.
+//! The per-`(sender, recipient)` chain cursor is cached in memory and
+//! **rehydrated lazily from the `MESSAGES` history** on the first chain
+//! access after a restart (D0026 §3.2), so the `prior_envelope_hash`
+//! chain survives process restarts.
 //!
 //! ## What was removed in the D0020 re-anchor (2026-05-30)
 //!

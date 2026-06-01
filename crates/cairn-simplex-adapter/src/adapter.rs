@@ -35,7 +35,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, SigningKey, VerifyingKey};
 use cairn_sigsum_client::RetryBudget;
-use cairn_storage::{Storage, categories};
+use cairn_storage::{Storage, StorageError, categories};
 
 use crate::envelope::{
     ENVELOPE_SCHEMA_VERSION, MessageEnvelope, next_prior_envelope_hash, verify_envelope,
@@ -135,9 +135,13 @@ pub struct ReceivedMessage {
 
 /// Per-`(sender, recipient)` envelope-chain cursor.
 ///
-/// In-memory for this implementation cycle: the chain state lives for the
-/// adapter's lifetime. Cross-restart persistence (rehydrating the cursor
-/// from the `MESSAGES` history on startup) is a documented follow-up.
+/// The in-memory cache of a per-`(sender, recipient)` chain cursor.
+///
+/// The cache is rebuilt lazily on the first chain access after a restart
+/// by [`rehydrate_chain`] (which walks the `MESSAGES` history), so the
+/// `prior_envelope_hash` chain survives process restarts (D0026 §3.2).
+/// `Default` is the genesis cursor (empty `prior_hash`, message 0).
+#[derive(Default)]
 struct ChainState {
     /// `prior_envelope_hash` the NEXT envelope must commit to (empty until
     /// the first message has flowed).
@@ -351,13 +355,32 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
         &self,
         recipient: &[u8; PUBLIC_KEY_LEN],
     ) -> Result<Vec<u8>, SimplexAdapterError> {
-        let guard = self
+        // Fast path: the cursor is already cached in memory. The guard is
+        // scoped to this block so it drops before the rehydrate path.
+        let cached = {
+            let guard = self
+                .send_chains
+                .lock()
+                .map_err(|_| poisoned_chain_error())?;
+            guard.get(recipient).map(|state| state.prior_hash.clone())
+        };
+        if let Some(prior) = cached {
+            return Ok(prior);
+        }
+        // Miss (first access, e.g. after a restart): rebuild from the
+        // MESSAGES history so the chain continues across restarts. The
+        // send chain's records are keyed (me → recipient).
+        let rehydrated =
+            rehydrate_chain(&self.storage, &self.identity.operational_pubkey, recipient)?;
+        let mut guard = self
             .send_chains
             .lock()
             .map_err(|_| poisoned_chain_error())?;
         let prior = guard
-            .get(recipient)
-            .map_or_else(Vec::new, |c| c.prior_hash.clone());
+            .entry(*recipient)
+            .or_insert_with(|| rehydrated.unwrap_or_default())
+            .prior_hash
+            .clone();
         drop(guard);
         Ok(prior)
     }
@@ -368,14 +391,32 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
         &self,
         sender: &[u8; PUBLIC_KEY_LEN],
     ) -> Result<(Vec<u8>, u64), SimplexAdapterError> {
-        let guard = self
+        // Fast path scoped so the guard drops before the rehydrate path.
+        let cached = {
+            let guard = self
+                .recv_chains
+                .lock()
+                .map_err(|_| poisoned_chain_error())?;
+            guard
+                .get(sender)
+                .map(|state| (state.prior_hash.clone(), state.last_message_number))
+        };
+        if let Some(expectation) = cached {
+            return Ok(expectation);
+        }
+        // Miss: rebuild from MESSAGES. The recv chain's records are keyed
+        // (sender → me).
+        let rehydrated = rehydrate_chain(&self.storage, sender, &self.identity.operational_pubkey)?;
+        let mut guard = self
             .recv_chains
             .lock()
             .map_err(|_| poisoned_chain_error())?;
-        let expectation = guard.get(sender).map_or_else(
-            || (Vec::new(), 0),
-            |c| (c.prior_hash.clone(), c.last_message_number),
-        );
+        let expectation = {
+            let state = guard
+                .entry(*sender)
+                .or_insert_with(|| rehydrated.unwrap_or_default());
+            (state.prior_hash.clone(), state.last_message_number)
+        };
         drop(guard);
         Ok(expectation)
     }
@@ -398,6 +439,52 @@ fn advance_chain(
     );
     drop(guard);
     Ok(())
+}
+
+/// Rebuild a chain cursor for the `(sender, recipient)` pair from the
+/// persisted `MESSAGES` history (D0026 §3.2 / §4) — the lazy cross-restart
+/// rehydration of [`SimplexAdapter`]'s in-memory cursor.
+///
+/// Walks message numbers from 0 until the first gap. Messages are stored
+/// strictly in order (the recv chain-gap check rejects out-of-order
+/// delivery, and send numbers are the transport's contiguous per-pair
+/// counter), so the contiguous prefix IS the full chain; the cursor is
+/// derived from the last envelope's [`next_prior_envelope_hash`]. Returns
+/// `None` if the pair has no stored history (a genesis chain).
+///
+/// `O(N)` in the pair's message count, run once per pair on the first
+/// chain access after a restart. (A per-pair cursor record would make it
+/// `O(1)` at the cost of a write per message — a follow-up if message
+/// volume warrants it.)
+fn rehydrate_chain(
+    storage: &Storage,
+    sender_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
+    recipient_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
+) -> Result<Option<ChainState>, SimplexAdapterError> {
+    let mut message_number = 0u64;
+    let mut last: Option<(Vec<u8>, u64)> = None;
+    loop {
+        let record_id = message_record_id_for(
+            sender_operational_pubkey,
+            recipient_operational_pubkey,
+            message_number,
+        );
+        match storage.get(categories::MESSAGES, &record_id) {
+            Ok(cose) => {
+                last = Some((cose.to_vec(), message_number));
+                message_number = message_number.saturating_add(1);
+            }
+            Err(StorageError::RecordNotFound { .. }) => break,
+            Err(e) => return Err(SimplexAdapterError::from(e)),
+        }
+    }
+    match last {
+        Some((cose, number)) => Ok(Some(ChainState {
+            prior_hash: next_prior_envelope_hash(&cose)?.to_vec(),
+            last_message_number: number,
+        })),
+        None => Ok(None),
+    }
 }
 
 /// A poisoned chain mutex means a prior panic left the handle unusable.
@@ -469,6 +556,108 @@ mod tests {
         let mut seed = [0u8; 32];
         getrandom::getrandom(&mut seed).unwrap();
         make_party_from_seed(seed, transport)
+    }
+
+    /// The `(device_vk, operational_pubkey)` a fixed `seed` derives (the
+    /// same derivation `make_party_from_seed` uses).
+    fn identity_for_seed(seed: [u8; 32]) -> (VerifyingKey, [u8; PUBLIC_KEY_LEN]) {
+        let device_vk = SigningKey::from_seed(&Zeroizing::new(seed)).verifying_key();
+        let mut op_seed = seed;
+        op_seed[0] ^= 0xFF;
+        let operational_pubkey = SigningKey::from_seed(&Zeroizing::new(op_seed))
+            .verifying_key()
+            .to_bytes();
+        (device_vk, operational_pubkey)
+    }
+
+    /// Build an adapter with a FIXED `seed` identity over a SHARED
+    /// `storage` — used to simulate a process restart (same identity +
+    /// same persistent MESSAGES, fresh in-memory chains).
+    fn make_adapter_with_storage(
+        seed: [u8; 32],
+        transport: MockSidecarTransport,
+        storage: Arc<Storage>,
+    ) -> SimplexAdapter<MockSidecarTransport> {
+        let device_signing_key = SigningKey::from_seed(&Zeroizing::new(seed));
+        let (_, operational_pubkey) = identity_for_seed(seed);
+        let config = SimplexAdapterConfig {
+            identity: LocalIdentity {
+                device_signing_key,
+                operational_pubkey,
+            },
+            storage,
+            default_retry_budget: RetryBudget::default(),
+        };
+        SimplexAdapter::new(transport, config).unwrap()
+    }
+
+    #[tokio::test]
+    async fn send_chain_rehydrates_from_messages_after_restart() {
+        // Alice sends msg-1, then "restarts" (a fresh adapter with the
+        // SAME identity + SAME storage but empty in-memory chains) and
+        // sends msg-2. Bob receives both in order: msg-2 verifies only if
+        // its prior_envelope_hash links to msg-1 — i.e. the restarted
+        // adapter rebuilt the send-chain cursor from the MESSAGES history
+        // rather than starting a fresh genesis chain (which would make
+        // Bob's recv of msg-2 raise EnvelopeChainGap).
+        let wire = MockSidecarTransport::new();
+        let storage = make_storage();
+        let conn = ConnectionId("conn-restart".to_string());
+
+        let alice_seed = [7u8; 32];
+        let (alice_vk, alice_op) = identity_for_seed(alice_seed);
+        let bob = make_party(wire.clone());
+
+        let alice1 = make_adapter_with_storage(alice_seed, wire.clone(), storage.clone());
+        alice1
+            .send(&conn, &bob.operational_pubkey, b"msg-1")
+            .await
+            .unwrap();
+        drop(alice1); // simulate process exit: in-memory chains gone.
+
+        let alice2 = make_adapter_with_storage(alice_seed, wire.clone(), storage.clone());
+        alice2
+            .send(&conn, &bob.operational_pubkey, b"msg-2")
+            .await
+            .unwrap();
+
+        let r1 = bob.adapter.recv(&conn, &alice_op, &alice_vk).await.unwrap();
+        assert_eq!(r1.payload, b"msg-1");
+        let r2 = bob.adapter.recv(&conn, &alice_op, &alice_vk).await.unwrap();
+        assert_eq!(r2.payload, b"msg-2");
+    }
+
+    #[tokio::test]
+    async fn recv_chain_rehydrates_from_messages_after_restart() {
+        // Symmetric to the send case: Bob receives msg-1, "restarts", then
+        // receives msg-2. The restarted recv chain must expect msg-2's
+        // prior_envelope_hash (linking to msg-1) — rebuilt from the
+        // MESSAGES history — or it would raise EnvelopeChainGap.
+        let wire = MockSidecarTransport::new();
+        let bob_storage = make_storage();
+        let conn = ConnectionId("conn-restart-recv".to_string());
+
+        let alice = make_party(wire.clone());
+        let bob_seed = [9u8; 32];
+        let (_bob_vk, bob_op) = identity_for_seed(bob_seed);
+
+        alice.adapter.send(&conn, &bob_op, b"msg-1").await.unwrap();
+        alice.adapter.send(&conn, &bob_op, b"msg-2").await.unwrap();
+
+        let bob1 = make_adapter_with_storage(bob_seed, wire.clone(), bob_storage.clone());
+        let r1 = bob1
+            .recv(&conn, &alice.operational_pubkey, &alice.device_vk)
+            .await
+            .unwrap();
+        assert_eq!(r1.payload, b"msg-1");
+        drop(bob1); // restart: recv-chain cursor lost from memory.
+
+        let bob2 = make_adapter_with_storage(bob_seed, wire.clone(), bob_storage.clone());
+        let r2 = bob2
+            .recv(&conn, &alice.operational_pubkey, &alice.device_vk)
+            .await
+            .unwrap();
+        assert_eq!(r2.payload, b"msg-2");
     }
 
     #[tokio::test]
