@@ -178,6 +178,29 @@ pub(crate) fn cmd_set_socks_proxy(addr: &str) -> String {
     format!("/network socks={addr} socks-mode=always host-mode=public")
 }
 
+/// `/_files_folder <path>` — set the folder libsimplex stores RECEIVED files
+/// in (`SetFilesFolder`). REQUIRED on Android: without it the XFTP receive path
+/// (`getXFTPWorkPath`) computes a default via `System.Directory.getHomeDirectory`,
+/// which on Bionic (no passwd DB) faults in `getpwuid`/`unpackUserEntry` — a
+/// SIGSEGV the moment an incoming file is accepted (the D0026 §12 on-device
+/// receive finding). An explicit folder skips the home lookup entirely.
+///
+/// Gated to `any(test, target_os = "android")`: only the Android in-process
+/// transport's bring-up issues it (the ws-core CLI sidecar owns its own
+/// folders), plus the host flow tests.
+#[cfg(any(test, target_os = "android"))]
+pub(crate) fn cmd_set_files_folder(path: &str) -> String {
+    format!("/_files_folder {path}")
+}
+
+/// `/_temp_folder <path>` — set libsimplex's XFTP work/temp folder
+/// (`SetTempFolder`). Same Android `getHomeDirectory`→`getpwuid` SIGSEGV
+/// avoidance as [`cmd_set_files_folder`]; the XFTP download chunks land here.
+#[cfg(any(test, target_os = "android"))]
+pub(crate) fn cmd_set_temp_folder(path: &str) -> String {
+    format!("/_temp_folder {path}")
+}
+
 // ===================================================================
 // Response parsers (defensive field extraction)
 // ===================================================================
@@ -383,6 +406,16 @@ mod tests {
         assert_eq!(
             cmd_set_socks_proxy("127.0.0.1:9050"),
             "/network socks=127.0.0.1:9050 socks-mode=always host-mode=public"
+        );
+        // XFTP files/temp folders (D0026 §12): explicit paths so the Android
+        // receive path skips getHomeDirectory→getpwuid (a Bionic SIGSEGV).
+        assert_eq!(
+            cmd_set_files_folder("/data/app/files"),
+            "/_files_folder /data/app/files"
+        );
+        assert_eq!(
+            cmd_set_temp_folder("/data/app/temp"),
+            "/_temp_folder /data/app/temp"
         );
     }
 

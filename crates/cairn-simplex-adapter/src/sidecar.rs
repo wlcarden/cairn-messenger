@@ -273,6 +273,28 @@ pub(crate) mod flow {
         Ok(())
     }
 
+    /// Set libsimplex's RECEIVED-files folder + XFTP temp/work folder (D0026
+    /// §12). REQUIRED on Android: without explicit folders, the XFTP receive
+    /// path (`getXFTPWorkPath`) computes a default via
+    /// `System.Directory.getHomeDirectory`, which faults in `getpwuid` on
+    /// Bionic (no passwd DB) — a SIGSEGV the moment an incoming file is
+    /// accepted. Issued once at bring-up, before any receive.
+    ///
+    /// Gated to `any(test, target_os = "android")`: only the Android in-process
+    /// transport's bring-up issues it (the ws-core CLI sidecar owns its own
+    /// folders), plus the host flow tests.
+    #[cfg(any(test, target_os = "android"))]
+    pub(crate) async fn configure_folders<C: RawChannel>(
+        chan: &C,
+        files_folder: &str,
+        temp_folder: &str,
+    ) -> Result<(), SimplexAdapterError> {
+        log::info!("cairn-smp: configure_folders files={files_folder} temp={temp_folder}");
+        let _ = command(chan, protocol::cmd_set_files_folder(files_folder)).await?;
+        let _ = command(chan, protocol::cmd_set_temp_folder(temp_folder)).await?;
+        Ok(())
+    }
+
     /// Create an identifier-less queue + return its out-of-band invitation.
     pub(crate) async fn create_invitation<C: RawChannel>(
         chan: &C,
@@ -401,6 +423,7 @@ pub(crate) mod flow {
         chan: &C,
         demux: &AsyncMutex<RecvDemux>,
         conn: &ConnectionId,
+        files_base: &Path,
     ) -> Result<Vec<u8>, SimplexAdapterError> {
         loop {
             // 1. A previously-buffered envelope for this connection? (Bind to a
@@ -463,7 +486,7 @@ pub(crate) mod flow {
             }
 
             if let Some(done) = protocol::parse_rcv_file_complete(&resp) {
-                let bytes = read_completed_file(&done.path)?;
+                let bytes = read_completed_file(files_base, &done.path)?;
                 // Route by the completion's `fileId` (matched against the
                 // accepted offer); untracked → the requesting `conn`.
                 let owner = {
@@ -563,8 +586,19 @@ pub(crate) mod flow {
     }
 
     /// Read a daemon-completed download back as the envelope bytes.
-    fn read_completed_file(path: &str) -> Result<Vec<u8>, SimplexAdapterError> {
-        std::fs::read(path).map_err(|_| SimplexAdapterError::SidecarUnavailable)
+    ///
+    /// With a files folder configured (Android bring-up, D0026 §12), the daemon
+    /// reports the completed file's path RELATIVE to that folder, so it is
+    /// resolved against `files_base`. An absolute path (no files folder — e.g.
+    /// the ws-core CLI sidecar) is read as-is.
+    fn read_completed_file(files_base: &Path, path: &str) -> Result<Vec<u8>, SimplexAdapterError> {
+        let p = Path::new(path);
+        let full = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            files_base.join(p)
+        };
+        std::fs::read(full).map_err(|_| SimplexAdapterError::SidecarUnavailable)
     }
 
     /// Lower-hex encode (no external dep; the bytes are a random file-name
@@ -710,7 +744,10 @@ mod wscore {
 
         async fn recv(&self, conn: &ConnectionId) -> Result<Vec<u8>, SimplexAdapterError> {
             let c = self.conn().await?;
-            flow::recv_envelope(&c.chan, &c.demux, conn).await
+            // Received files land in the configured `sx-files` folder; the
+            // daemon reports their paths relative to it on Android (D0026 §12).
+            // The ws-core CLI path is absolute, so the base is ignored there.
+            flow::recv_envelope(&c.chan, &c.demux, conn, &self.files_dir.join("sx-files")).await
         }
     }
 }
@@ -858,6 +895,20 @@ mod ffi {
                     if let Some(addr) = self.socks_proxy.as_deref() {
                         flow::configure_socks(&chan, addr).await?;
                     }
+                    // Point libsimplex at explicit files + temp folders (subdirs
+                    // of files_dir) so the XFTP RECEIVE path skips
+                    // getHomeDirectory→getpwuid — a Bionic SIGSEGV on Android
+                    // (D0026 §12 on-device receive finding).
+                    let files_folder = self.files_dir.join("sx-files");
+                    let temp_folder = self.files_dir.join("sx-temp");
+                    let _ = std::fs::create_dir_all(&files_folder);
+                    let _ = std::fs::create_dir_all(&temp_folder);
+                    flow::configure_folders(
+                        &chan,
+                        &files_folder.to_string_lossy(),
+                        &temp_folder.to_string_lossy(),
+                    )
+                    .await?;
                     let user_id = flow::query_active_user_id(&chan).await?;
                     Ok(Conn {
                         chan,
@@ -895,7 +946,10 @@ mod ffi {
 
         async fn recv(&self, conn: &ConnectionId) -> Result<Vec<u8>, SimplexAdapterError> {
             let c = self.conn().await?;
-            flow::recv_envelope(&c.chan, &c.demux, conn).await
+            // Received files land in the configured `sx-files` folder; the
+            // daemon reports their paths relative to it on Android (D0026 §12).
+            // The ws-core CLI path is absolute, so the base is ignored there.
+            flow::recv_envelope(&c.chan, &c.demux, conn, &self.files_dir.join("sx-files")).await
         }
     }
 }
@@ -1219,12 +1273,16 @@ mod demux_tests {
 
         // recv(conn-10) drains conn-20's offer+completion (buffering B), then
         // conn-10's offer+completion → returns A.
-        let got_a = flow::recv_envelope(&chan, &demux, &conn_a).await.unwrap();
+        let got_a = flow::recv_envelope(&chan, &demux, &conn_a, &dir)
+            .await
+            .unwrap();
         assert_eq!(got_a, b"envelope-A");
 
         // recv(conn-20) returns the buffered envelope WITHOUT draining (the
         // event queue is now empty; draining would error).
-        let got_b = flow::recv_envelope(&chan, &demux, &conn_b).await.unwrap();
+        let got_b = flow::recv_envelope(&chan, &demux, &conn_b, &dir)
+            .await
+            .unwrap();
         assert_eq!(got_b, b"envelope-B");
 
         // Both offers were accepted (two `/freceive` commands).
@@ -1252,6 +1310,25 @@ mod demux_tests {
         assert_eq!(
             sent.as_slice(),
             ["/network socks=127.0.0.1:9050 socks-mode=always host-mode=public"]
+        );
+    }
+
+    #[tokio::test]
+    async fn configure_folders_issues_files_and_temp_commands() {
+        // flow::configure_folders (D0026 §12) issues `/_files_folder` then
+        // `/_temp_folder` at bring-up so the Android XFTP receive path does not
+        // fall back to getHomeDirectory→getpwuid (a Bionic SIGSEGV).
+        let chan = ScriptChannel {
+            events: AsyncMutex::new(VecDeque::new()),
+            sent: AsyncMutex::new(Vec::new()),
+        };
+        flow::configure_folders(&chan, "/files", "/temp")
+            .await
+            .unwrap();
+        let sent: Vec<String> = chan.sent.lock().await.clone();
+        assert_eq!(
+            sent.as_slice(),
+            ["/_files_folder /files", "/_temp_folder /temp"]
         );
     }
 }
