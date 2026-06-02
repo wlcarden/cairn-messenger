@@ -423,6 +423,33 @@ pub(crate) mod flow {
             // Per-event diagnostic (D0026 §12): the XFTP receive sequence
             // (offer → accept → complete) is silent otherwise.
             log::info!("cairn-smp: recv_envelope event type={}", resp.tag);
+            // Compact per-item summary of a `newChatItems` event (content type
+            // + whether each item carries a file id) so the received-file
+            // offer's location is visible without the giant `chatInfo` blob
+            // (D0026 §12 recv diagnostic — this is how the on-device file offer
+            // was confirmed to arrive as `[0]rcvMsgContent file=Some(_)`).
+            if resp.tag == "newChatItems" {
+                if let Some(items) = resp.body.get("chatItems").and_then(Value::as_array) {
+                    let summary: Vec<String> = items
+                        .iter()
+                        .enumerate()
+                        .map(|(i, it)| {
+                            let ci = it.get("chatItem");
+                            let ctype = ci
+                                .and_then(|c| c.get("content"))
+                                .and_then(|c| c.get("type"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("?");
+                            let file = ci
+                                .and_then(|c| c.get("file"))
+                                .and_then(|f| f.get("fileId"))
+                                .and_then(Value::as_i64);
+                            format!("[{i}]{ctype} file={file:?}")
+                        })
+                        .collect();
+                    log::info!("cairn-smp: recv_envelope items: {}", summary.join(" "));
+                }
+            }
 
             if let Some(offer) = protocol::parse_received_file_offer(&resp) {
                 // Accept so the daemon XFTP-downloads it (no demux lock held

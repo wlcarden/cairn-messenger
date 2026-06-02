@@ -240,21 +240,26 @@ pub(crate) fn parse_received_file_offer(resp: &Resp<'_>) -> Option<ReceivedFileO
     if resp.tag != "newChatItems" {
         return None;
     }
+    // Find the FIRST chat item carrying a file id (the received-file offer). A
+    // `newChatItems` event can batch several items (e.g. the connection-setup
+    // feature items alongside the message), so the file item is not always at
+    // index 0 (D0026 §12 recv last-mile finding).
     let items = resp.body.get("chatItems")?.as_array()?;
-    let first = items.first()?;
-    let chat_item = first.get("chatItem")?;
-    let file_id = chat_item.get("file")?.get("fileId")?.as_i64()?;
-    // The conversation the offer belongs to. Direct-contact shape:
-    // `chatInfo.contact.contactId`. Absent / non-contact → `None` (the recv
-    // loop then treats it as the single active conversation, the v1 default).
-    let contact_id = first
-        .get("chatInfo")
-        .and_then(|ci| ci.get("contact"))
-        .and_then(|c| c.get("contactId"))
-        .and_then(Value::as_i64);
-    Some(ReceivedFileOffer {
-        file_id,
-        contact_id,
+    items.iter().find_map(|item| {
+        let chat_item = item.get("chatItem")?;
+        let file_id = chat_item.get("file")?.get("fileId")?.as_i64()?;
+        // The conversation the offer belongs to. Direct-contact shape:
+        // `chatInfo.contact.contactId`. Absent / non-contact → `None` (the recv
+        // loop then treats it as the single active conversation, the v1 default).
+        let contact_id = item
+            .get("chatInfo")
+            .and_then(|ci| ci.get("contact"))
+            .and_then(|c| c.get("contactId"))
+            .and_then(Value::as_i64);
+        Some(ReceivedFileOffer {
+            file_id,
+            contact_id,
+        })
     })
 }
 
