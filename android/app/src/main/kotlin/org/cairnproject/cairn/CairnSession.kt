@@ -3,13 +3,14 @@
 
 package org.cairnproject.cairn
 
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 import android.util.Log
 import java.io.File
-import java.security.KeyFactory
 import java.security.KeyPairGenerator
+import java.security.KeyStore
 import java.security.PrivateKey
 import java.security.Signature
-import java.security.spec.PKCS8EncodedKeySpec
 import uniffi.cairn_uniffi.AttestationCertificate
 import uniffi.cairn_uniffi.CairnFfiException
 import uniffi.cairn_uniffi.HardwareKeySigner
@@ -35,21 +36,21 @@ import uniffi.cairn_uniffi.StrongBoxKeyMaterial
 private const val ED25519 = "Ed25519"
 const val DEMO_DEVICE_KEY_ALIAS = "cairn-demo-op-key"
 
-/** Ed25519 X.509 SubjectPublicKeyInfo = 12 header bytes + the 32 raw key bytes. */
-private const val SPKI_HEADER_LEN = 12
+/** The trailing bytes of an Ed25519 X.509 SPKI are the 32-byte raw public key. */
 private const val ED25519_RAW_KEY_LEN = 32
 
 /**
- * A persisted SOFTWARE Ed25519 demo identity (generate-once, reload thereafter).
- * Persists the PKCS#8 private encoding + the raw 32-byte public key under the
- * app's private dir.
+ * A Keystore-backed Ed25519 demo identity. The key is generated in the Android
+ * Keystore (TEE-backed) under [DEMO_DEVICE_KEY_ALIAS] and persists there across
+ * launches; the private key never leaves the Keystore (signing routes through
+ * it). The v1 hardening adds StrongBox + key attestation (D0020 §3.4 / D0028).
  */
 class CairnIdentity private constructor(
     private val privateKey: PrivateKey,
     /** Raw 32-byte Ed25519 public key — the envelope operational + device pubkey. */
     val publicKeyRaw: ByteArray,
 ) {
-    /** Ed25519 signature (64 bytes) over [payload] with the demo private key. */
+    /** Ed25519 signature (64 bytes) over [payload] via the Keystore key. */
     fun sign(payload: ByteArray): ByteArray =
         Signature.getInstance(ED25519).run {
             initSign(privateKey)
@@ -58,22 +59,30 @@ class CairnIdentity private constructor(
         }
 
     companion object {
-        fun loadOrCreate(dir: File): CairnIdentity {
-            val privFile = File(dir, "demo-identity.pk8")
-            val pubFile = File(dir, "demo-identity.pub")
-            if (privFile.exists() && pubFile.exists()) {
-                val priv = KeyFactory.getInstance(ED25519)
-                    .generatePrivate(PKCS8EncodedKeySpec(privFile.readBytes()))
-                return CairnIdentity(priv, pubFile.readBytes())
+        private const val KEYSTORE = "AndroidKeyStore"
+
+        /** Load the existing Keystore identity, or generate one under the alias. */
+        fun loadOrCreate(): CairnIdentity {
+            val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+            if (ks.containsAlias(DEMO_DEVICE_KEY_ALIAS)) {
+                val priv = ks.getKey(DEMO_DEVICE_KEY_ALIAS, null) as PrivateKey
+                val pub = ks.getCertificate(DEMO_DEVICE_KEY_ALIAS).publicKey.encoded
+                return CairnIdentity(priv, pub.rawEd25519())
             }
-            val kp = KeyPairGenerator.getInstance(ED25519).generateKeyPair()
-            val spki = kp.public.encoded // X.509 SubjectPublicKeyInfo
-            val raw = spki.copyOfRange(SPKI_HEADER_LEN, SPKI_HEADER_LEN + ED25519_RAW_KEY_LEN)
-            dir.mkdirs()
-            privFile.writeBytes(kp.private.encoded)
-            pubFile.writeBytes(raw)
-            return CairnIdentity(kp.private, raw)
+            val kpg = KeyPairGenerator.getInstance(ED25519, KEYSTORE)
+            kpg.initialize(
+                KeyGenParameterSpec.Builder(
+                    DEMO_DEVICE_KEY_ALIAS,
+                    KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY,
+                ).build(),
+            )
+            val kp = kpg.generateKeyPair()
+            return CairnIdentity(kp.private, kp.public.encoded.rawEd25519())
         }
+
+        /** The trailing 32 bytes of the Ed25519 X.509 SPKI = the raw public key. */
+        private fun ByteArray.rawEd25519(): ByteArray =
+            copyOfRange(size - ED25519_RAW_KEY_LEN, size)
     }
 }
 
@@ -120,7 +129,7 @@ class CairnSession private constructor(
 
         /** Bootstrap the demo session under [filesDir]. */
         fun bootstrap(filesDir: File): CairnSession {
-            val identity = CairnIdentity.loadOrCreate(filesDir)
+            val identity = CairnIdentity.loadOrCreate()
             val signer = DemoSigner(identity)
             val storage = StorageHandle.open(
                 "${filesDir.absolutePath}/store.db",
