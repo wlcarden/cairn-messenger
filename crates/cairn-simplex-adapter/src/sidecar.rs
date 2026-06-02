@@ -153,11 +153,13 @@ pub trait SidecarTransport: Sync {
 )]
 pub(crate) mod flow {
     use serde_json::Value;
+    use tokio::sync::Mutex as AsyncMutex;
 
     use crate::adapter::{ConnectionId, Invitation};
     use crate::error::SimplexAdapterError;
     use crate::protocol::{self, Resp};
 
+    use std::collections::{HashMap, VecDeque};
     use std::future::Future;
     use std::path::Path;
 
@@ -185,11 +187,33 @@ pub(crate) mod flow {
         fn next_event(&self) -> impl Future<Output = Result<String, SimplexAdapterError>> + Send;
     }
 
+    /// Per-connection recv demultiplexing state (D0026 §12). A single daemon
+    /// event stream carries incoming files for ALL conversations; this routes
+    /// each completed file to the connection whose offer it accepted, and
+    /// buffers files that complete while a `recv` is waiting on a *different*
+    /// connection (so they are not lost / mis-delivered).
+    #[derive(Default)]
+    pub(crate) struct RecvDemux {
+        /// `fileId` → the [`ConnectionId`] whose offer we accepted, so a later
+        /// completion for that `fileId` routes to the right connection.
+        pending: HashMap<i64, ConnectionId>,
+        /// Completed envelope bytes that arrived for a connection OTHER than
+        /// the one a given `recv` is waiting on — held until that connection's
+        /// own `recv` drains them.
+        buffered: HashMap<ConnectionId, VecDeque<Vec<u8>>>,
+    }
+
     /// An established channel plus the active `userId` the `/_connect` /
-    /// `/_send` commands require. Both transports cache this lazily.
+    /// `/_send` commands require, and the per-connection recv demux state.
+    /// Both transports cache this lazily.
     pub(crate) struct Conn<C> {
         pub(crate) chan: C,
         pub(crate) user_id: i64,
+        /// Routes incoming files to the right connection across the shared
+        /// event stream (D0026 §12). Locked only briefly for map updates,
+        /// never across the network drain, so concurrent `recv`s on different
+        /// connections don't starve each other.
+        pub(crate) demux: AsyncMutex<RecvDemux>,
     }
 
     /// Issue a command + return the parsed response frame, mapping a
@@ -253,13 +277,18 @@ pub(crate) mod flow {
         await_contact_connected(chan).await
     }
 
-    /// Send `raw` envelope bytes over `conn` as a `CryptoFile`/XFTP payload.
+    /// Send `raw` envelope bytes over `conn` as a `CryptoFile`/XFTP payload,
+    /// **awaiting the XFTP upload completion** before returning.
     ///
     /// The bytes are staged on disk in `files_dir` for the daemon's XFTP
-    /// upload (the uniform `CryptoFile` carrier, D0026 §2.4). The returned
-    /// chat-item id is a SimpleX-layer ACK only; Cairn's per-pair number is
-    /// the adapter's chain position (D0026 §3.2 (c)), so it is parsed solely
-    /// to confirm a well-formed send response.
+    /// upload (the uniform `CryptoFile` carrier, D0026 §2.4). The `/_send`
+    /// response only *queues* the upload; for delivery assurance (D0026 §12)
+    /// this then drains events until the daemon reports `sndFileCompleteXFTP`
+    /// for the sent `fileId` — so `send` returning means the envelope actually
+    /// reached the XFTP relay, not merely that it was enqueued. (Cairn's
+    /// per-pair message number is the adapter's chain position, D0026 §3.2 (c);
+    /// the `fileId` is a SimpleX-layer transfer handle, used only to match the
+    /// completion event.)
     pub(crate) async fn send_envelope<C: RawChannel>(
         chan: &C,
         files_dir: &Path,
@@ -273,41 +302,103 @@ pub(crate) mod flow {
         if resp.is_error() {
             return Err(SimplexAdapterError::SidecarProtocol);
         }
-        Ok(())
+        let file_id =
+            protocol::parse_sent_file_id(&resp).ok_or(SimplexAdapterError::SidecarProtocol)?;
+        await_snd_file_complete(chan, file_id).await
     }
 
-    /// Receive the next `CryptoFile` envelope for `conn`: accept each offered
-    /// file (so the daemon XFTP-downloads it), then read the bytes the daemon
-    /// writes on completion. Other events (text, status, contact lifecycle)
-    /// are skipped.
+    /// Drain events until the daemon reports `sndFileCompleteXFTP` for
+    /// `file_id` (the XFTP upload finished). `sndFileProgressXFTP` + unrelated
+    /// events are skipped.
+    async fn await_snd_file_complete<C: RawChannel>(
+        chan: &C,
+        file_id: i64,
+    ) -> Result<(), SimplexAdapterError> {
+        loop {
+            let frame = next_event_frame(chan).await?;
+            let Some(resp) = Resp::from_frame(&frame) else {
+                continue;
+            };
+            if protocol::parse_snd_file_complete(&resp) == Some(file_id) {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Receive the next `CryptoFile` envelope **for `conn`**, demultiplexing
+    /// the shared daemon event stream by connection (D0026 §12).
     ///
-    /// **Live-validated only** (`integration-tests`, D0026 §12): the
-    /// offer→accept→complete event sequence + the completed-file path shape
-    /// are reference-derived and exercised hermetically against the mock WS
-    /// server, not a live daemon.
+    /// Each offered file is accepted (so the daemon XFTP-downloads it) and its
+    /// `fileId` recorded against the offer's `contactId`; on completion the
+    /// bytes route to the owning connection. A completion for a connection
+    /// OTHER than `conn` is buffered in `demux` (not lost / mis-delivered) and
+    /// returned when that connection's own `recv` runs. Files whose offer had
+    /// no `contactId` (non-direct-contact shapes) attribute to the requesting
+    /// `conn` — the v1 1:1 single-conversation default (D0026 §5).
+    ///
+    /// `demux` is locked only briefly (map reads/writes), never across the
+    /// network drain, so concurrent `recv`s on different connections progress
+    /// independently. The offer→accept→complete sequence + the completed-file
+    /// path shape are reference-derived; their live-daemon fidelity is the
+    /// `integration-tests` gate (D0026 §12), exercised hermetically here.
     pub(crate) async fn recv_envelope<C: RawChannel>(
         chan: &C,
-        _conn: &ConnectionId,
+        demux: &AsyncMutex<RecvDemux>,
+        conn: &ConnectionId,
     ) -> Result<Vec<u8>, SimplexAdapterError> {
-        // `_conn` demultiplexing is live-gated (D0026 §12): the v1 1:1
-        // group-minimization property (D0026 §5) means a single active
-        // conversation, so the loop consumes the next completed file.
-        // Per-connection routing by `contactId` lands with live-CLI
-        // validation.
         loop {
+            // 1. A previously-buffered envelope for this connection? (Bind to a
+            // local so the lock guard drops before the network drain below.)
+            let buffered = demux
+                .lock()
+                .await
+                .buffered
+                .get_mut(conn)
+                .and_then(VecDeque::pop_front);
+            if let Some(bytes) = buffered {
+                return Ok(bytes);
+            }
+
+            // 2. Drain the next event (the channel serializes `next_event`).
             let frame = next_event_frame(chan).await?;
             let Some(resp) = Resp::from_frame(&frame) else {
                 continue; // non-conforming event frame; skip
             };
+
             if let Some(offer) = protocol::parse_received_file_offer(&resp) {
-                // Accept the offered file so the daemon XFTP-downloads it.
+                // Accept so the daemon XFTP-downloads it (no demux lock held
+                // across this command), then record the owning connection.
                 let _ = command(chan, protocol::cmd_receive_file(offer.file_id)).await?;
+                let owner = offer
+                    .contact_id
+                    .map_or_else(|| conn.clone(), |id| ConnectionId(id.to_string()));
+                demux.lock().await.pending.insert(offer.file_id, owner);
                 continue;
             }
-            if let Some(path) = protocol::parse_rcv_file_complete_path(&resp) {
-                return read_completed_file(&path);
+
+            if let Some(done) = protocol::parse_rcv_file_complete(&resp) {
+                let bytes = read_completed_file(&done.path)?;
+                // Route by the completion's `fileId` (matched against the
+                // accepted offer); untracked → the requesting `conn`.
+                let owner = {
+                    let mut state = demux.lock().await;
+                    done.file_id
+                        .and_then(|fid| state.pending.remove(&fid))
+                        .unwrap_or_else(|| conn.clone())
+                };
+                if &owner == conn {
+                    return Ok(bytes);
+                }
+                demux
+                    .lock()
+                    .await
+                    .buffered
+                    .entry(owner)
+                    .or_default()
+                    .push_back(bytes);
             }
-            // Unrelated event — keep draining.
+            // Unrelated event (or a buffered-for-another-conn completion) —
+            // keep draining.
         }
     }
 
@@ -472,7 +563,11 @@ mod wscore {
                         events: AsyncMutex::new(events),
                     };
                     let user_id = flow::query_active_user_id(&chan).await?;
-                    Ok(Conn { chan, user_id })
+                    Ok(Conn {
+                        chan,
+                        user_id,
+                        demux: AsyncMutex::new(flow::RecvDemux::default()),
+                    })
                 })
                 .await
         }
@@ -504,7 +599,7 @@ mod wscore {
 
         async fn recv(&self, conn: &ConnectionId) -> Result<Vec<u8>, SimplexAdapterError> {
             let c = self.conn().await?;
-            flow::recv_envelope(&c.chan, conn).await
+            flow::recv_envelope(&c.chan, &c.demux, conn).await
         }
     }
 }
@@ -625,7 +720,11 @@ mod ffi {
                         events: AsyncMutex::new(events),
                     };
                     let user_id = flow::query_active_user_id(&chan).await?;
-                    Ok(Conn { chan, user_id })
+                    Ok(Conn {
+                        chan,
+                        user_id,
+                        demux: AsyncMutex::new(flow::RecvDemux::default()),
+                    })
                 })
                 .await
         }
@@ -657,7 +756,7 @@ mod ffi {
 
         async fn recv(&self, conn: &ConnectionId) -> Result<Vec<u8>, SimplexAdapterError> {
             let c = self.conn().await?;
-            flow::recv_envelope(&c.chan, conn).await
+            flow::recv_envelope(&c.chan, &c.demux, conn).await
         }
     }
 }
@@ -825,6 +924,16 @@ mod mock_ws_tests {
                     break;
                 }
             }
+            // After a `/_send`, push the async `sndFileCompleteXFTP` the real
+            // daemon emits once the XFTP upload finishes (fileId 1, matching
+            // the send response), so `send_envelope`'s delivery-assurance
+            // await (D0026 §12) resolves.
+            if command.starts_with("/_send ") {
+                let evt = json!({"resp": {"type": "sndFileCompleteXFTP", "chatItem": {"file": {"fileId": 1}}}});
+                if ws.send(Message::text(evt.to_string())).await.is_err() {
+                    break;
+                }
+            }
         }
     }
 
@@ -884,5 +993,107 @@ mod mock_ws_tests {
             .send(&conn, b"cairn-envelope-bytes")
             .await
             .unwrap();
+    }
+}
+
+// ===================================================================
+// Recv-demultiplexing unit tests (D0026 §12)
+// ===================================================================
+//
+// Drive `flow::recv_envelope` directly with a scripted `RawChannel` to prove
+// per-connection routing + the buffer path (a file that completes for one
+// connection while a `recv` waits on another must be buffered, not lost or
+// mis-delivered). No daemon / WS server needed.
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "tests assert on known-shape fixtures; unwrap panics ARE the failure signal"
+)]
+mod demux_tests {
+    use super::flow::{self, RawChannel, RecvDemux};
+    use crate::adapter::ConnectionId;
+    use crate::error::SimplexAdapterError;
+
+    use std::collections::VecDeque;
+    use tokio::sync::Mutex as AsyncMutex;
+
+    /// A `RawChannel` that replays a scripted event sequence + records the
+    /// commands sent (the `/freceive` accepts).
+    struct ScriptChannel {
+        events: AsyncMutex<VecDeque<String>>,
+        sent: AsyncMutex<Vec<String>>,
+    }
+
+    impl RawChannel for ScriptChannel {
+        async fn send(&self, cmd: String) -> Result<String, SimplexAdapterError> {
+            self.sent.lock().await.push(cmd);
+            Ok(r#"{"resp":{"type":"cmdOk"}}"#.to_string())
+        }
+        async fn next_event(&self) -> Result<String, SimplexAdapterError> {
+            self.events
+                .lock()
+                .await
+                .pop_front()
+                .ok_or(SimplexAdapterError::SidecarUnavailable)
+        }
+    }
+
+    fn offer(file_id: i64, contact_id: i64) -> String {
+        format!(
+            r#"{{"resp":{{"type":"newChatItems","chatItems":[{{"chatInfo":{{"contact":{{"contactId":{contact_id}}}}},"chatItem":{{"file":{{"fileId":{file_id}}}}}}}]}}}}"#
+        )
+    }
+    fn complete(file_id: i64, path: &str) -> String {
+        format!(
+            r#"{{"resp":{{"type":"rcvFileComplete","chatItem":{{"chatItem":{{"file":{{"fileId":{file_id},"fileSource":{{"filePath":"{path}"}}}}}}}}}}}}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn recv_demux_routes_and_buffers_by_connection() {
+        // conn-20's file completes FIRST while we recv on conn-10 — it must be
+        // buffered (not mis-delivered) + returned by conn-20's own recv.
+        let dir = std::env::temp_dir().join(format!("cairn-demux-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path_a = dir.join("a.bin");
+        let path_b = dir.join("b.bin");
+        std::fs::write(&path_a, b"envelope-A").unwrap();
+        std::fs::write(&path_b, b"envelope-B").unwrap();
+
+        let events: VecDeque<String> = [
+            offer(2, 20),
+            complete(2, path_b.to_str().unwrap()),
+            offer(1, 10),
+            complete(1, path_a.to_str().unwrap()),
+        ]
+        .into_iter()
+        .collect();
+        let chan = ScriptChannel {
+            events: AsyncMutex::new(events),
+            sent: AsyncMutex::new(Vec::new()),
+        };
+        let demux = AsyncMutex::new(RecvDemux::default());
+        let conn_a = ConnectionId("10".to_string());
+        let conn_b = ConnectionId("20".to_string());
+
+        // recv(conn-10) drains conn-20's offer+completion (buffering B), then
+        // conn-10's offer+completion → returns A.
+        let got_a = flow::recv_envelope(&chan, &demux, &conn_a).await.unwrap();
+        assert_eq!(got_a, b"envelope-A");
+
+        // recv(conn-20) returns the buffered envelope WITHOUT draining (the
+        // event queue is now empty; draining would error).
+        let got_b = flow::recv_envelope(&chan, &demux, &conn_b).await.unwrap();
+        assert_eq!(got_b, b"envelope-B");
+
+        // Both offers were accepted (two `/freceive` commands).
+        let sent = chan.sent.lock().await;
+        assert_eq!(sent.len(), 2);
+        assert!(sent.iter().all(|c| c.starts_with("/freceive ")));
+        drop(sent);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

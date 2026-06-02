@@ -186,21 +186,25 @@ pub(crate) fn parse_contact_connected(resp: &Resp<'_>) -> Option<i64> {
 }
 
 /// A received-file offer parsed from an incoming event: the `fileId` to
-/// accept so the sidecar XFTP-downloads it.
+/// accept so the sidecar XFTP-downloads it, plus the `contactId` of the
+/// conversation it belongs to (for per-connection recv demultiplexing,
+/// D0026 §12).
 pub(crate) struct ReceivedFileOffer {
     /// The simplex-chat file id to pass to [`cmd_receive_file`].
     pub(crate) file_id: i64,
+    /// The `chatInfo.contact.contactId` the offer arrived on, if present —
+    /// the [`crate::adapter::ConnectionId`] the recv path routes by. `None`
+    /// when the offer's `chatInfo` is not a direct contact (e.g. a group, a
+    /// shape Cairn's v1 1:1 model does not use).
+    pub(crate) contact_id: Option<i64>,
 }
 
 /// Detect an incoming-file offer in a `newChatItems` event + pull the
 /// `fileId` to accept. Returns `None` for events that are not a received
 /// file (text messages, status updates, etc.).
 ///
-/// NOTE (live-gated, D0026 §12): per-connection demultiplexing of the offer
-/// (matching it to a specific `ConnectionId`) is deferred — the v1 1:1
-/// group-minimization property (D0026 §5) means a single active conversation,
-/// so the recv loop consumes the next completed file. Multi-conversation
-/// routing by `chatInfo.contact.contactId` lands with live-CLI validation.
+/// The offer's `fileId` + its `chatInfo.contact.contactId` (the recv path
+/// uses the latter to demultiplex by connection, D0026 §12).
 pub(crate) fn parse_received_file_offer(resp: &Resp<'_>) -> Option<ReceivedFileOffer> {
     if resp.tag != "newChatItems" {
         return None;
@@ -209,13 +213,76 @@ pub(crate) fn parse_received_file_offer(resp: &Resp<'_>) -> Option<ReceivedFileO
     let first = items.first()?;
     let chat_item = first.get("chatItem")?;
     let file_id = chat_item.get("file")?.get("fileId")?.as_i64()?;
-    Some(ReceivedFileOffer { file_id })
+    // The conversation the offer belongs to. Direct-contact shape:
+    // `chatInfo.contact.contactId`. Absent / non-contact → `None` (the recv
+    // loop then treats it as the single active conversation, the v1 default).
+    let contact_id = first
+        .get("chatInfo")
+        .and_then(|ci| ci.get("contact"))
+        .and_then(|c| c.get("contactId"))
+        .and_then(Value::as_i64);
+    Some(ReceivedFileOffer {
+        file_id,
+        contact_id,
+    })
 }
 
-/// Detect a received-file *completion* event (`rcvFileComplete`) + pull the
-/// local filesystem path the sidecar wrote the decrypted file to, which
-/// Cairn then reads back as the envelope bytes.
-pub(crate) fn parse_rcv_file_complete_path(resp: &Resp<'_>) -> Option<String> {
+/// The `fileId` the daemon assigned to an OUTGOING file send, parsed from the
+/// `/_send` `newChatItems` response. [`crate::sidecar`] awaits the matching
+/// `sndFileCompleteXFTP` event (below) before reporting the send done —
+/// delivery assurance, not fire-and-forget (D0026 §12).
+pub(crate) fn parse_sent_file_id(resp: &Resp<'_>) -> Option<i64> {
+    if resp.tag != "newChatItems" {
+        return None;
+    }
+    resp.body
+        .get("chatItems")?
+        .as_array()?
+        .first()?
+        .get("chatItem")?
+        .get("file")?
+        .get("fileId")?
+        .as_i64()
+}
+
+/// Detect the send-side XFTP **upload completion** event
+/// (`sndFileCompleteXFTP`) + pull its `fileId`, so the send path can confirm
+/// the envelope actually reached the XFTP relay (vs. merely being queued).
+/// `sndFileProgressXFTP` + unrelated events return `None` (keep waiting).
+pub(crate) fn parse_snd_file_complete(resp: &Resp<'_>) -> Option<i64> {
+    if resp.tag != "sndFileCompleteXFTP" {
+        return None;
+    }
+    // Reference-derived (live-gated, D0026 §12): the fileId surfaces under the
+    // chat item's file record or the transfer meta, depending on shape.
+    resp.body
+        .get("chatItem")
+        .and_then(|ci| ci.get("file"))
+        .and_then(|f| f.get("fileId"))
+        .and_then(Value::as_i64)
+        .or_else(|| {
+            resp.body
+                .get("fileTransferMeta")
+                .and_then(|m| m.get("fileId"))
+                .and_then(Value::as_i64)
+        })
+        .or_else(|| resp.body.get("fileId").and_then(Value::as_i64))
+}
+
+/// A received-file *completion* (`rcvFileComplete`): the local path the
+/// sidecar wrote the decrypted file to (Cairn reads it back as the envelope
+/// bytes), plus the `fileId` so the recv path can route the completion to the
+/// connection whose offer it accepted (D0026 §12).
+pub(crate) struct RcvFileComplete {
+    /// The completed transfer's `fileId`, if present — matched against the
+    /// offer's `fileId` to recover the owning connection.
+    pub(crate) file_id: Option<i64>,
+    /// The local filesystem path of the decrypted file.
+    pub(crate) path: String,
+}
+
+/// Detect a received-file completion event + pull its path + `fileId`.
+pub(crate) fn parse_rcv_file_complete(resp: &Resp<'_>) -> Option<RcvFileComplete> {
     if resp.tag != "rcvFileComplete" {
         return None;
     }
@@ -227,11 +294,14 @@ pub(crate) fn parse_rcv_file_complete_path(resp: &Resp<'_>) -> Option<String> {
         .and_then(|ci| ci.get("chatItem"))
         .and_then(|ci| ci.get("file"))
         .or_else(|| resp.body.get("rcvFileTransfer"))?;
-    file.get("fileSource")
+    let path = file
+        .get("fileSource")
         .and_then(|fs| fs.get("filePath"))
         .or_else(|| file.get("filePath"))
         .and_then(Value::as_str)
-        .map(ToString::to_string)
+        .map(ToString::to_string)?;
+    let file_id = file.get("fileId").and_then(Value::as_i64);
+    Some(RcvFileComplete { file_id, path })
 }
 
 // ===================================================================
@@ -378,14 +448,48 @@ mod tests {
         .unwrap();
         let parsed = parse_received_file_offer(&Resp::from_frame(&offer).unwrap()).unwrap();
         assert_eq!(parsed.file_id, 99);
+        // The offer carries its conversation's contactId for recv demux.
+        assert_eq!(parsed.contact_id, Some(7));
 
         let complete = parse_frame(
-            r#"{"resp":{"type":"rcvFileComplete","chatItem":{"chatItem":{"file":{"fileSource":{"filePath":"/var/cairn/in.bin"}}}}}}"#,
+            r#"{"resp":{"type":"rcvFileComplete","chatItem":{"chatItem":{"file":{"fileId":99,"fileSource":{"filePath":"/var/cairn/in.bin"}}}}}}"#,
+        )
+        .unwrap();
+        let done = parse_rcv_file_complete(&Resp::from_frame(&complete).unwrap()).unwrap();
+        assert_eq!(done.path, "/var/cairn/in.bin");
+        // The completion carries its fileId so recv can route it to the
+        // connection whose offer (fileId 99) it accepted.
+        assert_eq!(done.file_id, Some(99));
+    }
+
+    #[test]
+    fn detects_sent_file_id_and_snd_complete() {
+        // The `/_send` newChatItems response carries the assigned fileId; the
+        // send path awaits the matching sndFileCompleteXFTP (delivery
+        // assurance, D0026 §12).
+        let sent = parse_frame(
+            r#"{"resp":{"type":"newChatItems","chatItems":[{"chatItem":{"file":{"fileId":5}}}]}}"#,
         )
         .unwrap();
         assert_eq!(
-            parse_rcv_file_complete_path(&Resp::from_frame(&complete).unwrap()).as_deref(),
-            Some("/var/cairn/in.bin")
+            parse_sent_file_id(&Resp::from_frame(&sent).unwrap()),
+            Some(5)
+        );
+
+        let done = parse_frame(
+            r#"{"resp":{"type":"sndFileCompleteXFTP","chatItem":{"file":{"fileId":5}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parse_snd_file_complete(&Resp::from_frame(&done).unwrap()),
+            Some(5)
+        );
+        // The progress event is NOT the completion → None (keep waiting).
+        let progress =
+            parse_frame(r#"{"resp":{"type":"sndFileProgressXFTP","sentSize":10}}"#).unwrap();
+        assert_eq!(
+            parse_snd_file_complete(&Resp::from_frame(&progress).unwrap()),
+            None
         );
     }
 
