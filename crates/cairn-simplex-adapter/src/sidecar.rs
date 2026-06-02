@@ -345,17 +345,38 @@ pub(crate) mod flow {
     /// Drain events until the daemon reports `sndFileCompleteXFTP` for
     /// `file_id` (the XFTP upload finished). `sndFileProgressXFTP` + unrelated
     /// events are skipped.
+    /// Upper bound on the XFTP send-complete await. The `CryptoFile` upload to
+    /// an XFTP relay over Tor is several round-trips; bounded so a stalled
+    /// upload fails loudly (logged) instead of hanging the caller forever (the
+    /// same unbounded-await class as `await_contact_connected`, D0026 §12).
+    const XFTP_COMPLETE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
     async fn await_snd_file_complete<C: RawChannel>(
         chan: &C,
         file_id: i64,
     ) -> Result<(), SimplexAdapterError> {
-        loop {
-            let frame = next_event_frame(chan).await?;
-            let Some(resp) = Resp::from_frame(&frame) else {
-                continue;
-            };
-            if protocol::parse_snd_file_complete(&resp) == Some(file_id) {
-                return Ok(());
+        let drain = async {
+            loop {
+                let frame = next_event_frame(chan).await?;
+                let Some(resp) = Resp::from_frame(&frame) else {
+                    continue;
+                };
+                // Per-event diagnostic (D0026 §12): the XFTP upload progress
+                // (sndFileProgressXFTP → sndFileCompleteXFTP) is silent otherwise.
+                log::info!("cairn-smp: await_snd_file_complete event type={}", resp.tag);
+                if protocol::parse_snd_file_complete(&resp) == Some(file_id) {
+                    return Ok::<(), SimplexAdapterError>(());
+                }
+            }
+        };
+        match tokio::time::timeout(XFTP_COMPLETE_TIMEOUT, drain).await {
+            Ok(result) => result,
+            Err(_elapsed) => {
+                log::warn!(
+                    "cairn-smp: await_snd_file_complete TIMEOUT after {}s — XFTP upload did not complete (fileId={file_id})",
+                    XFTP_COMPLETE_TIMEOUT.as_secs()
+                );
+                Err(SimplexAdapterError::SidecarUnavailable)
             }
         }
     }
@@ -399,6 +420,9 @@ pub(crate) mod flow {
             let Some(resp) = Resp::from_frame(&frame) else {
                 continue; // non-conforming event frame; skip
             };
+            // Per-event diagnostic (D0026 §12): the XFTP receive sequence
+            // (offer → accept → complete) is silent otherwise.
+            log::info!("cairn-smp: recv_envelope event type={}", resp.tag);
 
             if let Some(offer) = protocol::parse_received_file_offer(&resp) {
                 // Accept so the daemon XFTP-downloads it (no demux lock held

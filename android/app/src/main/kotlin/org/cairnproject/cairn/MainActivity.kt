@@ -21,6 +21,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.torproject.jni.TorService
 import uniffi.cairn_uniffi.cairnFfiAbiVersion
+import uniffi.cairn_uniffi.messagingFfiTwoPartySelftest
 
 /**
  * The Cairn Android shell entry point (D0027 / D0020 §3). Hosts the Compose
@@ -109,6 +110,30 @@ class MainActivity : ComponentActivity() {
         intent.getStringExtra("send")?.let {
             Log.i(TAG, "driver: send len=${it.length}")
             viewModel.send(it)
+        }
+        // Two-party loopback selftest (D0026 §12): runs BOTH peers in this one
+        // process over the bundled Tor, proving the full envelope round-trip
+        // without a second device. Trigger AFTER Tor is up (the proxy is fixed
+        // at 127.0.0.1:9050). Result lands in logcat as "SELFTEST2: …".
+        intent.getStringExtra("selftest2")?.let {
+            val base = filesDir.absolutePath
+            Log.i(TAG, "driver: two-party selftest starting")
+            lifecycleScope.launch {
+                try {
+                    val result = withContext(Dispatchers.IO) {
+                        messagingFfiTwoPartySelftest(
+                            "$base/st2a/simplex-db",
+                            "$base/st2a/xftp",
+                            "$base/st2b/simplex-db",
+                            "$base/st2b/xftp",
+                            "127.0.0.1:9050",
+                        )
+                    }
+                    Log.i(TAG, "SELFTEST2: $result")
+                } catch (e: Exception) {
+                    Log.e(TAG, "SELFTEST2 exception", e)
+                }
+            }
         }
     }
 

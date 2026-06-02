@@ -70,6 +70,14 @@ use cairn_simplex_adapter::FfiSidecarTransport;
 use cairn_simplex_adapter::{SidecarEndpoint, SimploxideTransport};
 #[cfg(target_os = "android")]
 use std::path::PathBuf;
+// Two-party loopback selftest deps (D0026 §12) — Android only, like the
+// in-process FFI transport they drive.
+#[cfg(target_os = "android")]
+use cairn_crypto::ed25519::SigningKey;
+#[cfg(target_os = "android")]
+use cairn_storage::{Storage, key_provider::testing::InMemoryKeyProvider};
+#[cfg(target_os = "android")]
+use zeroize::Zeroizing;
 
 use crate::error::CairnFfiError;
 use crate::hardware::HardwareKeySigner;
@@ -488,6 +496,160 @@ pub async fn messaging_ffi_selftest(
         let _ = (db_path, files_dir, socks_proxy);
         Err(CairnFfiError::SidecarFailure)
     }
+}
+
+/// On-device TWO-PARTY loopback selftest (D0026 §12): boots TWO in-process
+/// `libsimplex` messaging instances + two SOFTWARE Ed25519 identities in THIS
+/// one process, connects them through a public SMP relay over Tor, then sends a
+/// message EACH WAY and verifies the received plaintext + signature.
+///
+/// This proves the full Cairn envelope round-trip (sign → XFTP `CryptoFile`
+/// send → recv → `COSE_Sign1` verify → sender-binding) end-to-end on-device
+/// using only ONE network path — both peers ride the same phone's bundled Tor,
+/// so the result is independent of any second device's connectivity (the
+/// motivation: validate the software-signer round-trip without depending on a
+/// flaky second-device network, D0026 §12).
+///
+/// Returns a human-readable result (`ROUND-TRIP OK …`); any failure is returned
+/// as `Ok("… FAILED: …")` so the diagnostic always reaches the device log
+/// (mirroring [`messaging_ffi_selftest`]). `db_path_*` / `files_dir_*` are
+/// distinct app-private path prefixes for the two instances' chat DBs +
+/// `CryptoFile`/XFTP staging; `socks_proxy` (`<ip>:<port>`) routes both through
+/// the bundled Tor.
+///
+/// # Errors
+///
+/// [`CairnFfiError::SidecarFailure`] only on the non-Android stub (the
+/// in-process FFI transport is Android-only).
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export(async_runtime = "tokio"))]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+)]
+#[allow(
+    clippy::unused_async,
+    reason = "async is required by the Android branch's .await + the UniFFI async-export contract; the non-Android body has no await"
+)]
+pub async fn messaging_ffi_two_party_selftest(
+    db_path_a: String,
+    files_dir_a: String,
+    db_path_b: String,
+    files_dir_b: String,
+    socks_proxy: Option<String>,
+) -> Result<String, CairnFfiError> {
+    #[cfg(target_os = "android")]
+    {
+        match two_party_roundtrip(&db_path_a, &files_dir_a, &db_path_b, &files_dir_b, socks_proxy)
+            .await
+        {
+            Ok(s) => Ok(s),
+            Err(e) => Ok(format!("two-party selftest FAILED: {e:?}")),
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (db_path_a, files_dir_a, db_path_b, files_dir_b, socks_proxy);
+        Err(CairnFfiError::SidecarFailure)
+    }
+}
+
+/// Build a messaging adapter over a fresh in-memory store + a software Ed25519
+/// identity (device == operational, the 1:1 demo), wired to the in-process FFI
+/// transport at `db_path` / `files_dir` through `socks_proxy`.
+#[cfg(target_os = "android")]
+fn two_party_build_adapter(
+    seed: [u8; 32],
+    db_path: &str,
+    files_dir: &str,
+    socks_proxy: Option<String>,
+) -> Result<SimplexAdapter<FfiSidecarTransport>, SimplexAdapterError> {
+    let provider = InMemoryKeyProvider::new();
+    let passphrase = Zeroizing::new(b"cairn-selftest".to_vec());
+    let storage = Arc::new(Storage::open_in_memory(&provider, &passphrase)?);
+
+    let device_sk = SigningKey::from_seed(&Zeroizing::new(seed));
+    let operational_pubkey = device_sk.verifying_key().to_bytes();
+    let device_signer: Arc<dyn EnvelopeSigner> = Arc::new(device_sk);
+    let config = SimplexAdapterConfig {
+        identity: LocalIdentity {
+            device_signer,
+            operational_pubkey,
+        },
+        storage,
+        default_retry_budget: RetryBudget::default(),
+    };
+
+    if let Some(parent) = std::path::Path::new(db_path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::create_dir_all(files_dir);
+    // Fresh chat DB per run: remove any prior selftest's libsimplex DB so the
+    // agent does not resubscribe to stale connections — those surface as
+    // `chatErrors` and can stall an otherwise-clean connect (D0026 §12).
+    for suffix in ["_agent.db", "_chat.db", "_agent.db-wal", "_chat.db-wal"] {
+        let _ = std::fs::remove_file(format!("{db_path}{suffix}"));
+    }
+    let transport = FfiSidecarTransport::with_socks_proxy(
+        PathBuf::from(db_path),
+        PathBuf::from(files_dir),
+        socks_proxy,
+    );
+    SimplexAdapter::new(transport, config)
+}
+
+/// The (device verifying key, operational pubkey) a `seed` derives. For the
+/// demo the device key IS the operational key, so the peer's recv params are
+/// both this one key.
+#[cfg(target_os = "android")]
+fn two_party_identity(seed: [u8; 32]) -> (VerifyingKey, [u8; PUBLIC_KEY_LEN]) {
+    let vk = SigningKey::from_seed(&Zeroizing::new(seed)).verifying_key();
+    (vk, vk.to_bytes())
+}
+
+/// Drive the full two-party round-trip: A invites, B accepts over Tor, then a
+/// message each way with the software signer — verifying the received text.
+///
+/// The connect is sequential (B accepts, then A's `await_connection` drains its
+/// already-buffered `contactConnected`): each instance's libsimplex agent
+/// processes the handshake on its own background worker, so A need not be
+/// actively awaiting while B connects.
+#[cfg(target_os = "android")]
+async fn two_party_roundtrip(
+    db_path_a: &str,
+    files_dir_a: &str,
+    db_path_b: &str,
+    files_dir_b: &str,
+    socks_proxy: Option<String>,
+) -> Result<String, SimplexAdapterError> {
+    let seed_a = [0x11_u8; 32];
+    let seed_b = [0x22_u8; 32];
+    let (vk_a, op_a) = two_party_identity(seed_a);
+    let (vk_b, op_b) = two_party_identity(seed_b);
+
+    let adapter_a = two_party_build_adapter(seed_a, db_path_a, files_dir_a, socks_proxy.clone())?;
+    let adapter_b = two_party_build_adapter(seed_b, db_path_b, files_dir_b, socks_proxy)?;
+
+    let invitation = adapter_a.create_invitation().await?;
+    let conn_b = adapter_b.accept_invitation(invitation).await?;
+    let conn_a = adapter_a.await_connection().await?;
+
+    let msg_ab: &[u8] = b"ping from A over Tor";
+    let msg_ba: &[u8] = b"pong from B over Tor";
+    adapter_a.send(&conn_a, &op_b, msg_ab).await?;
+    let got_b = adapter_b.recv(&conn_b, &op_a, &vk_a).await?;
+    adapter_b.send(&conn_b, &op_a, msg_ba).await?;
+    let got_a = adapter_a.recv(&conn_a, &op_b, &vk_b).await?;
+
+    let ab_ok = got_b.payload.as_slice() == msg_ab;
+    let ba_ok = got_a.payload.as_slice() == msg_ba;
+    Ok(format!(
+        "ROUND-TRIP {} | B<-A '{}' ({}) | A<-B '{}' ({})",
+        if ab_ok && ba_ok { "OK" } else { "MISMATCH" },
+        String::from_utf8_lossy(&got_b.payload),
+        if ab_ok { "match" } else { "MISMATCH" },
+        String::from_utf8_lossy(&got_a.payload),
+        if ba_ok { "match" } else { "MISMATCH" },
+    ))
 }
 
 #[cfg(test)]
