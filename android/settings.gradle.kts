@@ -20,6 +20,17 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // Guardian Project Maven (gpmaven) — the bundled C-Tor engine
+        // (D0020 §2.2): info.guardianproject:tor-android (libtor.so +
+        // org.torproject.jni.TorService) + jtorctl (Java control-port client).
+        // `content { includeGroup }` pins this repo to ONLY serve the
+        // info.guardianproject group, so it cannot shadow/spoof any other
+        // dependency resolved from google()/mavenCentral() (supply-chain
+        // hygiene, D0024 ethos).
+        maven {
+            url = uri("https://raw.githubusercontent.com/guardianproject/gpmaven/master")
+            content { includeGroup("info.guardianproject") }
+        }
     }
 }
 

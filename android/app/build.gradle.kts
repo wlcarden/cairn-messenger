@@ -156,6 +156,22 @@ tasks.withType<Test>().configureEach {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
+    // === Bundled C-Tor engine (D0020 §2.2) ===
+    // tor-android ships libtor.so per-ABI (abiFilters keeps arm64-v8a) +
+    // org.torproject.jni.TorService; jtorctl is the Java tor control-port
+    // client. Cairn runs its OWN tor in a ForegroundService so the user needs
+    // NO separate Orbot install (the whole point of bundling).
+    //
+    // Pinned to 0.4.8.19 (the latest 0.4.8.x LTS), NOT the D0020 §2.2 "0.4.9.8+"
+    // floor: the 0.4.9.8 AAR sets minCompileSdk=37, which would force AGP
+    // ~8.13+/9.x and break the load-bearing Willir cargo-ndk plugin 0.3.4
+    // (compileSdk 34 / AGP 8.5.1 today). 0.4.8.19's AAR is minCompileSdk=1 and
+    // wraps a current, maintained tor (the 0.4.8.x stable line; Orbot ships
+    // 0.4.8.21) with no client-relevant security delta. Revisit 0.4.9.x when
+    // the cargo-ndk toolchain is modernized. Floor deviation documented in
+    // D0020 §2.2 (revision note).
+    implementation("info.guardianproject:tor-android:0.4.8.19")
+    implementation("info.guardianproject:jtorctl:0.4.5.7")
     // UniFFI Kotlin runtime uses JNA (the @aar variant for Android).
     implementation("net.java.dev.jna:jna:5.14.0@aar")
     // The async exports (D0027 §5) generate suspend funs backed by

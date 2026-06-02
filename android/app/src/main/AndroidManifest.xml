@@ -3,11 +3,14 @@
 <!-- Copyright (c) 2026 Cairn maintainers and contributors -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Cairn needs network for the Tor transport (D0025) + the
-         SimpleX sidecar (D0026); both route through loopback to the
-         C-Tor / CLI sidecar ForegroundServices the Android shell
-         hosts. The pipeline-proof shell declares INTERNET only. -->
+    <!-- Cairn needs network for the in-process SimpleX libsimplex (D0026 §12)
+         + the BUNDLED C-Tor engine (D0020 §2.2): tor-android's TorService runs
+         libtor.so IN-APP (no separate Orbot) and exposes a loopback SOCKS proxy
+         that libsimplex routes through. INTERNET for the sockets; the bundled
+         tor's relay traffic. ACCESS_NETWORK_STATE lets TorService observe
+         connectivity changes (reconnect on network flap). -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
         android:label="Cairn"
