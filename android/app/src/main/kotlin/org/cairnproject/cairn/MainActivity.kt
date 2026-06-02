@@ -42,9 +42,15 @@ class MainActivity : Activity() {
         // main thread) via the async export.
         val dbPath = "${filesDir.absolutePath}/simplex-db"
         val xftpDir = "${filesDir.absolutePath}/xftp"
+        // Tor routing (D0020 §2.2): set to the device SOCKS proxy address
+        // (e.g. Orbot / the C-Tor ForegroundService at "127.0.0.1:9050") to
+        // route /_connect over Tor so the SMP relay's .onion resolves. null =
+        // direct connection — the pre-Tor baseline, where /_connect fails to
+        // reach the .onion relay. Wired but null until a device proxy runs.
+        val socksProxy: String? = null
         CoroutineScope(Dispatchers.Main).launch {
             val status = try {
-                val link = messagingFfiSelftest(dbPath, xftpDir)
+                val link = messagingFfiSelftest(dbPath, xftpDir, socksProxy)
                 Log.i(TAG, "FFI selftest OK — invitation: $link")
                 "FFI selftest OK:\n${link.take(72)}…"
             } catch (e: Exception) {

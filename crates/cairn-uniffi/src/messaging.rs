@@ -115,6 +115,12 @@ pub struct SidecarEndpointConfig {
     /// payload staging (D0026 §2.4). Ignored by the ws-core transport (which
     /// stages under the OS temp dir).
     pub files_dir: String,
+    /// Optional SOCKS5 proxy `<ip>:<port>` for Tor routing (D0020 §2.2).
+    /// **Android (in-process FFI):** issued as a `/network socks=` command at
+    /// bring-up so outbound SMP/XFTP traffic (incl. the `.onion` relays) routes
+    /// over Tor; `None` = direct connections. **Desktop / CI (ws-core):**
+    /// ignored — the external CLI owns its own network config.
+    pub socks_proxy: Option<String>,
     /// Maximum send/recv retry attempts (backoff uses the D0023 §5.3
     /// defaults).
     pub max_retries: u8,
@@ -238,9 +244,10 @@ impl SimplexAdapterHandle {
             port: config.port,
         });
         #[cfg(target_os = "android")]
-        let transport = FfiSidecarTransport::new(
+        let transport = FfiSidecarTransport::with_socks_proxy(
             PathBuf::from(config.db_path),
             PathBuf::from(config.files_dir),
+            config.socks_proxy,
         );
         let adapter =
             SimplexAdapter::new(transport, adapter_config).map_err(CairnFfiError::from)?;
@@ -396,10 +403,15 @@ impl SimplexAdapterHandle {
 ///
 /// `db_path` is an app-private path prefix for the in-process chat DB;
 /// `files_dir` a directory for `CryptoFile` staging (both created if absent).
-/// This is a diagnostic hook, NOT the messaging surface — that is
-/// [`SimplexAdapterHandle`]. The export is present on all targets (so the
-/// host-generated Kotlin bindings include it), but only does real work on
-/// Android, where `MessagingTransport` is the in-process FFI transport.
+/// `socks_proxy` (`<ip>:<port>`, optional) routes the daemon's outbound
+/// traffic through a Tor SOCKS proxy via a `/network socks=` command issued
+/// before `/_connect` (D0020 §2.2); `None` attempts a direct connection —
+/// which fails reaching the SMP relay's `.onion` (the pre-Tor baseline this
+/// diagnostic first surfaced). This is a diagnostic hook, NOT the messaging
+/// surface — that is [`SimplexAdapterHandle`]. The export is present on all
+/// targets (so the host-generated Kotlin bindings include it), but only does
+/// real work on Android, where `MessagingTransport` is the in-process FFI
+/// transport.
 ///
 /// # Errors
 ///
@@ -418,6 +430,7 @@ impl SimplexAdapterHandle {
 pub async fn messaging_ffi_selftest(
     db_path: String,
     files_dir: String,
+    socks_proxy: Option<String>,
 ) -> Result<String, CairnFfiError> {
     #[cfg(target_os = "android")]
     {
@@ -431,20 +444,34 @@ pub async fn messaging_ffi_selftest(
             let _ = std::fs::create_dir_all(parent);
         }
         let _ = std::fs::create_dir_all(&files_dir);
-        match init(DefaultUser::regular("cairn"), DbOpts::unencrypted(&db_path)).await {
-            Err(e) => Ok(format!("init ERR: {e:?}")),
-            Ok((client, _events)) => match client.send("/user".to_string()).await {
-                Err(e) => Ok(format!("init OK; /user ERR: {e:?}")),
-                // init + /user prove the GHC runtime runs; /_connect adds the
-                // SMP-relay network round-trip (a real invitation link).
-                Ok(_user) => match client.send("/_connect 1".to_string()).await {
-                    Err(e) => Ok(format!("init+/user OK; /_connect ERR: {e:?}")),
-                    Ok(inv) => Ok(format!(
-                        "init+/user OK; /_connect -> {}",
-                        inv.chars().take(220).collect::<String>()
-                    )),
-                },
-            },
+        let (client, _events) =
+            match init(DefaultUser::regular("cairn"), DbOpts::unencrypted(&db_path)).await {
+                Err(e) => return Ok(format!("init ERR: {e:?}")),
+                Ok(c) => c,
+            };
+        // init + /user prove the GHC runtime runs (LOCAL, no network).
+        if let Err(e) = client.send("/user".to_string()).await {
+            return Ok(format!("init OK; /user ERR: {e:?}"));
+        }
+        // Route outbound SMP/XFTP through the C-Tor SOCKS proxy (D0020 §2.2)
+        // BEFORE /_connect, when configured. Setting it only configures the
+        // client; a proxy-down condition surfaces at /_connect, not here.
+        if let Some(addr) = socks_proxy.as_deref() {
+            if let Err(e) = client.send(format!("/network socks={addr}")).await {
+                return Ok(format!("init+/user OK; /network socks ERR: {e:?}"));
+            }
+        }
+        let route = socks_proxy
+            .as_deref()
+            .map_or_else(|| "direct".to_string(), |a| format!("socks={a}"));
+        // /_connect adds the SMP-relay network round-trip (a real invitation
+        // link) — over Tor when `route` is a socks proxy, else direct.
+        match client.send("/_connect 1".to_string()).await {
+            Err(e) => Ok(format!("init+/user OK ({route}); /_connect ERR: {e:?}")),
+            Ok(inv) => Ok(format!(
+                "init+/user OK ({route}); /_connect -> {}",
+                inv.chars().take(220).collect::<String>()
+            )),
         }
     }
     #[cfg(not(target_os = "android"))]
@@ -452,7 +479,7 @@ pub async fn messaging_ffi_selftest(
         // The in-process FFI transport is Android-only; desktop/CI uses the
         // ws-core SimplexAdapterHandle. Keep the export present on all targets
         // so the host-generated bindings include it; no-op here.
-        let _ = (db_path, files_dir);
+        let _ = (db_path, files_dir, socks_proxy);
         Err(CairnFfiError::SidecarFailure)
     }
 }

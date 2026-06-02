@@ -240,6 +240,29 @@ pub(crate) mod flow {
         protocol::parse_active_user_id(&resp).ok_or(SimplexAdapterError::SidecarProtocol)
     }
 
+    /// Route the daemon's outbound SMP/XFTP traffic through a SOCKS5 proxy
+    /// (the C-Tor service, D0020 §2.2) via `/network socks=<addr>`. Issued
+    /// once at bring-up, BEFORE any network command (`/_connect` / `/_send`),
+    /// so the `.onion` relay addresses resolve over Tor.
+    ///
+    /// Setting the proxy only configures the client; it does not test
+    /// reachability, so this succeeds even when the proxy is down (the failure
+    /// surfaces at the first connect). A simplex-chat error reply still maps to
+    /// [`SimplexAdapterError::SidecarProtocol`] via [`command`].
+    ///
+    /// Gated to `any(test, target_os = "android")`: only the Android FFI
+    /// transport's bring-up calls this (the ws-core desktop transport defers to
+    /// the external CLI's own network config, D0020 §2.2), plus the host flow
+    /// tests.
+    #[cfg(any(test, target_os = "android"))]
+    pub(crate) async fn configure_socks<C: RawChannel>(
+        chan: &C,
+        addr: &str,
+    ) -> Result<(), SimplexAdapterError> {
+        let _ = command(chan, protocol::cmd_set_socks_proxy(addr)).await?;
+        Ok(())
+    }
+
     /// Create an identifier-less queue + return its out-of-band invitation.
     pub(crate) async fn create_invitation<C: RawChannel>(
         chan: &C,
@@ -677,29 +700,52 @@ mod ffi {
     /// `uniffi::constructor`), so an init failure surfaces on the first
     /// `create_invitation` / `send` / `recv`.
     ///
-    /// **Deferred to the on-device cycle (D0026 §12):** (a) the DB is opened
+    /// **Tor routing (D0020 §2.2):** when `socks_proxy` is `Some`, a
+    /// `/network socks=<addr>` command is issued at bring-up so the daemon's
+    /// outbound SMP/XFTP traffic (incl. the `.onion` relay addresses) routes
+    /// through the C-Tor SOCKS proxy; `None` leaves it on direct connections.
+    /// What remains for an on-device Tor run is a *running* proxy on the
+    /// device (Orbot / the C-Tor `ForegroundService`), not adapter code.
+    ///
+    /// **Still deferred to the on-device cycle (D0026 §12):** the DB is opened
     /// `unencrypted` here — on device it should be `DbOpts::encrypted` with a
-    /// key from the storage/StrongBox layer; (b) routing the in-process
-    /// daemon's outbound traffic through the C-Tor SOCKS proxy (D0020 §2.2)
-    /// is a post-init `/network socks=…` command, wired when the proxy port
-    /// is known.
+    /// key from the storage/StrongBox layer.
     pub struct FfiSidecarTransport {
         /// App-private path prefix for the in-process SimpleX chat DB.
         db_path: PathBuf,
         /// Directory for `CryptoFile`/XFTP staging (same role as the ws-core
         /// transport's `files_dir`, D0026 §2.4).
         files_dir: PathBuf,
+        /// Optional SOCKS5 proxy `<ip>:<port>` (the C-Tor service, D0020 §2.2).
+        /// `Some` → a `/network socks=<addr>` command at bring-up routes
+        /// outbound traffic over Tor; `None` → direct connections.
+        socks_proxy: Option<String>,
         conn: OnceCell<Conn<FfiChannel>>,
     }
 
     impl FfiSidecarTransport {
         /// Construct the (lazily-initialised) in-process transport with an
-        /// app-private DB-path prefix + `CryptoFile`-staging directory.
+        /// app-private DB-path prefix + `CryptoFile`-staging directory, with
+        /// outbound traffic on direct (non-Tor) connections.
         #[must_use]
         pub fn new(db_path: PathBuf, files_dir: PathBuf) -> Self {
+            Self::with_socks_proxy(db_path, files_dir, None)
+        }
+
+        /// As [`Self::new`], but route the daemon's outbound SMP/XFTP traffic
+        /// through the SOCKS5 proxy at `socks_proxy` (`<ip>:<port>`, the C-Tor
+        /// service, D0020 §2.2) via a `/network socks=` command issued at
+        /// bring-up. `None` is equivalent to [`Self::new`].
+        #[must_use]
+        pub fn with_socks_proxy(
+            db_path: PathBuf,
+            files_dir: PathBuf,
+            socks_proxy: Option<String>,
+        ) -> Self {
             Self {
                 db_path,
                 files_dir,
+                socks_proxy,
                 conn: OnceCell::new(),
             }
         }
@@ -719,6 +765,11 @@ mod ffi {
                         client,
                         events: AsyncMutex::new(events),
                     };
+                    // Route outbound SMP/XFTP through the C-Tor SOCKS proxy
+                    // (D0020 §2.2) before any network command, when configured.
+                    if let Some(addr) = self.socks_proxy.as_deref() {
+                        flow::configure_socks(&chan, addr).await?;
+                    }
                     let user_id = flow::query_active_user_id(&chan).await?;
                     Ok(Conn {
                         chan,
@@ -1095,5 +1146,21 @@ mod demux_tests {
         drop(sent);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn configure_socks_issues_network_command() {
+        // flow::configure_socks (D0020 §2.2) issues exactly one
+        // `/network socks=<addr>` command at bring-up + tolerates the cmdOk
+        // reply (it only configures the client; reachability is not tested).
+        let chan = ScriptChannel {
+            events: AsyncMutex::new(VecDeque::new()),
+            sent: AsyncMutex::new(Vec::new()),
+        };
+        flow::configure_socks(&chan, "127.0.0.1:9050")
+            .await
+            .unwrap();
+        let sent: Vec<String> = chan.sent.lock().await.clone();
+        assert_eq!(sent.as_slice(), ["/network socks=127.0.0.1:9050"]);
     }
 }

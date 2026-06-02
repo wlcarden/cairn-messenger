@@ -147,6 +147,22 @@ pub(crate) fn cmd_receive_file(file_id: i64) -> String {
     format!("/freceive {file_id}")
 }
 
+/// `/network socks=<addr>` — route the controller's outbound SMP/XFTP traffic
+/// through a SOCKS5 proxy (the C-Tor service, D0020 §2.2). `addr` is
+/// `<ip>:<port>` (e.g. `127.0.0.1:9050`); simplex-chat then dials every relay
+/// through it, so the `.onion` SMP/XFTP relay addresses resolve over Tor.
+/// Issued once at bring-up, before any network command. Setting it only
+/// configures the client (it does NOT test reachability), so a proxy-down
+/// condition surfaces later at the first connect attempt, not here.
+///
+/// Gated to `any(test, target_os = "android")`: only the Android in-process
+/// transport issues this (the ws-core desktop transport defers to the external
+/// CLI's own network config, D0020 §2.2), plus the host flow tests.
+#[cfg(any(test, target_os = "android"))]
+pub(crate) fn cmd_set_socks_proxy(addr: &str) -> String {
+    format!("/network socks={addr}")
+}
+
 // ===================================================================
 // Response parsers (defensive field extraction)
 // ===================================================================
@@ -342,6 +358,11 @@ mod tests {
             "/_connect 1 simplex:/invitation#abc"
         );
         assert_eq!(cmd_receive_file(42), "/freceive 42");
+        // SOCKS/Tor routing (D0020 §2.2): `/network socks=<ip>:<port>`.
+        assert_eq!(
+            cmd_set_socks_proxy("127.0.0.1:9050"),
+            "/network socks=127.0.0.1:9050"
+        );
     }
 
     #[test]
