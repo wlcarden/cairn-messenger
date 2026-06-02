@@ -650,6 +650,7 @@ dependencies = [
  "cairn-tor-transport",
  "cairn-trust-graph",
  "rand_core 0.6.4",
+ "simploxide-ffi-core",
  "thiserror 1.0.63",
  "tokio",
  "uniffi",

@@ -5,31 +5,57 @@ package org.cairnproject.cairn
 
 import android.app.Activity
 import android.os.Bundle
+import android.util.Log
 import android.widget.TextView
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import uniffi.cairn_uniffi.cairnFfiAbiVersion
+import uniffi.cairn_uniffi.messagingFfiSelftest
 
 /**
  * The Cairn Android shell's pipeline-proof entry point per D0027 / D0020 §3.
  *
- * This minimal Activity calls a representative UniFFI export
- * ([cairnFfiAbiVersion]) to prove the Rust core loaded across the FFI
- * boundary + answers. It establishes that the build pipeline
- * (cargo-ndk cross-compile → UniFFI bindgen → Kotlin → APK) works
- * end-to-end. The full UI is the Android-shell team's surface; this
- * Activity is the load-bearing proof that the boundary is wired.
+ * Two on-device proofs (D0026 §12):
+ *  1. [cairnFfiAbiVersion] — loads the Rust core across the FFI boundary
+ *     (which requires libcairn_uniffi.so + its DT_NEEDED libsimplex.so to map
+ *     on the device). A throw here means the .so failed to load.
+ *  2. [messagingFfiSelftest] — boots the in-process JNI `libsimplex`
+ *     transport + creates an invitation, proving the GHC runtime initialises
+ *     and answers on the real hardened (GrapheneOS) arm64 runtime — the
+ *     on-device equivalent of the host runtime proof. Logged to `CairnFfi`.
  */
 class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Call into the Rust core over the UniFFI boundary. If the
-        // .so did not load or the ABI checksum mismatched, this throws
-        // at startup — which is exactly the fail-fast behavior we want
-        // for a pipeline-proof shell.
+        // Proof 1: the Rust core loaded (+ its libsimplex dependency mapped).
         val coreVersion = cairnFfiAbiVersion()
+        Log.i(TAG, "Cairn core loaded: v$coreVersion")
 
         val view = TextView(this)
-        view.text = "Cairn core loaded: v$coreVersion"
+        view.text = "Cairn core loaded: v$coreVersion\nFFI selftest: running…"
         setContentView(view)
+
+        // Proof 2: boot in-process libsimplex + create an invitation. App-
+        // private paths under filesDir; runs on the tokio runtime (off the
+        // main thread) via the async export.
+        val dbPath = "${filesDir.absolutePath}/simplex-db"
+        val xftpDir = "${filesDir.absolutePath}/xftp"
+        CoroutineScope(Dispatchers.Main).launch {
+            val status = try {
+                val link = messagingFfiSelftest(dbPath, xftpDir)
+                Log.i(TAG, "FFI selftest OK — invitation: $link")
+                "FFI selftest OK:\n${link.take(72)}…"
+            } catch (e: Exception) {
+                Log.e(TAG, "FFI selftest FAILED", e)
+                "FFI selftest FAILED: ${e.message}"
+            }
+            view.text = "Cairn core loaded: v$coreVersion\n$status"
+        }
+    }
+
+    private companion object {
+        const val TAG = "CairnFfi"
     }
 }

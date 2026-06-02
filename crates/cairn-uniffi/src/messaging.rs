@@ -389,6 +389,74 @@ impl SimplexAdapterHandle {
     }
 }
 
+/// On-device FFI self-test (D0026 §12) — boot the in-process `libsimplex`
+/// transport + create an invitation, proving the GHC runtime initialises +
+/// responds **on the device** (the on-device equivalent of the host runtime
+/// proof). Returns the invitation URI on success.
+///
+/// `db_path` is an app-private path prefix for the in-process chat DB;
+/// `files_dir` a directory for `CryptoFile` staging (both created if absent).
+/// This is a diagnostic hook, NOT the messaging surface — that is
+/// [`SimplexAdapterHandle`]. The export is present on all targets (so the
+/// host-generated Kotlin bindings include it), but only does real work on
+/// Android, where `MessagingTransport` is the in-process FFI transport.
+///
+/// # Errors
+///
+/// - [`CairnFfiError::SidecarFailure`] if `libsimplex` cannot init / respond
+///   (or, on non-Android targets, because the in-process FFI transport is
+///   Android-only — desktop/CI uses the ws-core [`SimplexAdapterHandle`]).
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export(async_runtime = "tokio"))]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+)]
+#[allow(
+    clippy::unused_async,
+    reason = "async is required by the Android branch's .await + the UniFFI async-export contract; the non-Android body has no await"
+)]
+pub async fn messaging_ffi_selftest(
+    db_path: String,
+    files_dir: String,
+) -> Result<String, CairnFfiError> {
+    #[cfg(target_os = "android")]
+    {
+        // Call `simploxide-ffi-core` init DIRECTLY (not via the transport's
+        // opaque error map) so the on-device diagnostic surfaces the real
+        // `InitError`, and use `/user` (LOCAL — no network) to isolate "does
+        // the GHC runtime init + respond" from SMP-relay reachability. Always
+        // returns Ok(<diagnostic>) so the result reaches the device log.
+        use simploxide_ffi_core::{DbOpts, DefaultUser, init};
+        if let Some(parent) = std::path::Path::new(&db_path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::create_dir_all(&files_dir);
+        match init(DefaultUser::regular("cairn"), DbOpts::unencrypted(&db_path)).await {
+            Err(e) => Ok(format!("init ERR: {e:?}")),
+            Ok((client, _events)) => match client.send("/user".to_string()).await {
+                Err(e) => Ok(format!("init OK; /user ERR: {e:?}")),
+                // init + /user prove the GHC runtime runs; /_connect adds the
+                // SMP-relay network round-trip (a real invitation link).
+                Ok(_user) => match client.send("/_connect 1".to_string()).await {
+                    Err(e) => Ok(format!("init+/user OK; /_connect ERR: {e:?}")),
+                    Ok(inv) => Ok(format!(
+                        "init+/user OK; /_connect -> {}",
+                        inv.chars().take(220).collect::<String>()
+                    )),
+                },
+            },
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        // The in-process FFI transport is Android-only; desktop/CI uses the
+        // ws-core SimplexAdapterHandle. Keep the export present on all targets
+        // so the host-generated bindings include it; no-op here.
+        let _ = (db_path, files_dir);
+        Err(CairnFfiError::SidecarFailure)
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::indexing_slicing,

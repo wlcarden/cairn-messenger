@@ -89,6 +89,14 @@ uniffi = { workspace = true, optional = true }
 # the Kotlin bindings from the compiled library; it is gated on the
 # same feature.
 
+# === Android on-device FFI self-test (D0026 §12) ===
+# `messaging_ffi_selftest` (messaging.rs) calls `simploxide-ffi-core` init
+# DIRECTLY (not via the transport's opaque error map) so the on-device
+# diagnostic reports the actual `InitError`. ANDROID ONLY + target-gated like
+# the adapter's own dep, so the x86_64 CI host never builds it.
+[target.'cfg(target_os = "android")'.dependencies]
+simploxide-ffi-core = { workspace = true }
+
 [dev-dependencies]
 # The per-domain export tests construct REAL signed inputs (capability
 # tokens + signed trust-graph ops) to exercise the verify+marshal path
