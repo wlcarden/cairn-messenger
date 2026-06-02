@@ -1187,9 +1187,9 @@ mod demux_tests {
 
     #[tokio::test]
     async fn configure_socks_issues_network_command() {
-        // flow::configure_socks (D0020 §2.2) issues exactly one
-        // `/network socks=<addr>` command at bring-up + tolerates the cmdOk
-        // reply (it only configures the client; reachability is not tested).
+        // flow::configure_socks (D0020 §2.2) issues exactly one `/network`
+        // command at bring-up (socks + clearnet-via-Tor host mode) + tolerates
+        // the cmdOk reply (it only configures the client; reachability untested).
         let chan = ScriptChannel {
             events: AsyncMutex::new(VecDeque::new()),
             sent: AsyncMutex::new(Vec::new()),
@@ -1198,6 +1198,9 @@ mod demux_tests {
             .await
             .unwrap();
         let sent: Vec<String> = chan.sent.lock().await.clone();
-        assert_eq!(sent.as_slice(), ["/network socks=127.0.0.1:9050"]);
+        assert_eq!(
+            sent.as_slice(),
+            ["/network socks=127.0.0.1:9050 socks-mode=always host-mode=public"]
+        );
     }
 }
