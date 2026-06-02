@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright (c) 2026 Cairn maintainers and contributors -->
+<resources>
+    <!-- The cairn-icon teal: the adaptive-icon background layer behind the
+         white stacked-cairn foreground (sampled from cairn-icon.png). -->
+    <color name="ic_launcher_background">#19524E</color>
+</resources>
