@@ -22,6 +22,21 @@ val cargoWorkspaceRoot: String = rootProject.projectDir.parentFile.absolutePath
 // Where the generated UniFFI Kotlin bindings land.
 val uniffiGeneratedDir = layout.buildDirectory.dir("generated/uniffi/kotlin")
 
+// === Android libsimplex bundling (D0026 §12) — operator-provided, NOT in git ===
+// The in-process JNI transport (FfiSidecarTransport) needs the official Android
+// `libsimplex.so` (~191 MB, AGPL, GHC-runtime statically baked in). SimpleX
+// publishes NO standalone android-libsimplex artifact + NO x86_64 build, so it
+// is extracted from the official SimpleX APK's `lib/arm64-v8a/` (arm64-v8a
+// ONLY) and provided at build time — never committed (191 MB binary; AGPL
+// upstream). The operator runs:
+//   SXCRT=<dir>/arm64-v8a \
+//     ./gradlew :app:assembleDebug -PcairnSimplexLibsDir=<dir>
+// where <dir> contains `arm64-v8a/libsimplex.so`. SXCRT lets `sxcrt-sys`'s
+// build script link the cdylib against libsimplex; `cairnSimplexLibsDir` adds
+// the .so to the APK's jniLibs so it resolves at load. Absent these, the FFI
+// transport cannot build (sxcrt-sys build script hard-fails) — see D0026 §12.
+val cairnSimplexLibsDir: String? = project.findProperty("cairnSimplexLibsDir") as String?
+
 android {
     namespace = "org.cairnproject.cairn"
     compileSdk = 34
@@ -35,12 +50,15 @@ android {
         versionName = "0.1.0-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Restrict packaged native libs to the v1 target ABIs per
-        // D0018 §7.2 (aarch64 + x86_64; legacy 32-bit dropped). Without
-        // this, JNA's @aar drags libjnidispatch.so for mips/armeabi/x86
-        // into the APK.
+        // Restrict packaged native libs to **arm64-v8a only** (D0026 §12):
+        // the in-process FFI transport needs the official Android libsimplex,
+        // which SimpleX publishes for arm64-v8a + armv7 only — there is NO
+        // x86_64 libsimplex, and Cairn does not cross-build GHC (D0020 §1.8).
+        // (The pre-FFI shell targeted aarch64 + x86_64 per D0018 §7.2; x86_64
+        // is dropped now that the build links libsimplex. An x86_64 emulator
+        // therefore cannot run this build — on-device testing needs arm64.)
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            abiFilters += listOf("arm64-v8a")
         }
     }
 
@@ -55,6 +73,13 @@ android {
     sourceSets {
         getByName("main") {
             java.srcDir(uniffiGeneratedDir)
+            // Bundle the operator-provided Android libsimplex.so (D0026 §12)
+            // into the APK's jniLibs WITHOUT committing the 191 MB binary.
+            // `cairnSimplexLibsDir` is the parent of `arm64-v8a/libsimplex.so`;
+            // AGPL merges it with the cargo-ndk-produced libcairn_uniffi.so so
+            // both ship in the APK and libcairn_uniffi.so's `DT_NEEDED:
+            // libsimplex.so` resolves at load.
+            cairnSimplexLibsDir?.let { jniLibs.srcDir(it) }
         }
     }
 
@@ -71,9 +96,14 @@ android {
 cargoNdk {
     module = ".." // repo root, relative to android/
     librariesNames = arrayListOf("libcairn_uniffi.so")
-    targets = arrayListOf("arm64", "x86_64") // aarch64-linux-android + x86_64
+    // arm64-v8a ONLY (D0026 §12): no x86_64 libsimplex exists to link against.
+    targets = arrayListOf("arm64") // aarch64-linux-android
     extraCargoBuildArguments = arrayListOf("-p", "cairn-uniffi", "--features", "uniffi-bindings")
     apiLevel = 31
+    // The cross-compile links `sxcrt-sys` → libsimplex; its build script reads
+    // `SXCRT` from the environment (set it to `<cairnSimplexLibsDir>/arm64-v8a`
+    // when invoking gradlew). cargo-ndk inherits the gradle process env, so a
+    // fresh daemon (`--no-daemon` or a clean env) carries SXCRT through.
 }
 
 // Build the host cdylib once so uniffi-bindgen can read it. The
