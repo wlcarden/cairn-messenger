@@ -3,16 +3,12 @@
 
 package org.cairnproject.cairn
 
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
 import android.util.Log
 import java.io.File
-import java.security.KeyPairGenerator
-import java.security.KeyStore
-import java.security.PrivateKey
-import java.security.Signature
+import java.security.SecureRandom
 import uniffi.cairn_uniffi.AttestationCertificate
 import uniffi.cairn_uniffi.CairnFfiException
+import uniffi.cairn_uniffi.DemoEd25519Signer
 import uniffi.cairn_uniffi.HardwareKeySigner
 import uniffi.cairn_uniffi.HardwarePublicKey
 import uniffi.cairn_uniffi.KeyGenSpec
@@ -24,65 +20,52 @@ import uniffi.cairn_uniffi.StrongBoxKeyMaterial
 /**
  * DEMO identity + session bootstrap for the chat UI.
  *
- * **NOT the v1 hardened path.** The real identity signs in StrongBox via an
- * `AndroidKeyStoreSigner` (D0020 §3.4 / D0028 — pending); here a SOFTWARE
- * Ed25519 key (Android 13+ platform provider) stands in so the UI + the
- * bundled-Tor transport can be exercised end-to-end. The same key serves as
- * BOTH the device key (it signs the envelope) and the operational key (the
- * envelope's sender field) — a simplification valid for a 1:1 transport/UI
- * demo, where the two peers exchange their pubkeys alongside the invitation.
+ * **NOT the v1 hardened path.** The real device key signs in StrongBox via the
+ * `HardwareKeySigner` callback (D0020 §3.4 / D0028 — pending), where the key
+ * never crosses the FFI. Here a SOFTWARE Ed25519 key stands in so the UI + the
+ * bundled-Tor transport can be exercised end-to-end. Signing routes through
+ * [DemoEd25519Signer] — the SAME `cairn-crypto` ed25519-dalek the envelope
+ * verifier uses — so the COSE_Sign1 signature + the operational pubkey are
+ * byte-compatible with verification. (AndroidKeyStore's Ed25519 is NOT: its
+ * X.509/DER key + signature encodings fail the raw-32-byte `VerifyingKey` and
+ * raw-64-byte signature checks — the on-device two-party finding, D0026 §12.)
+ * The one key serves as BOTH the device key (it signs the envelope) and the
+ * operational key (the envelope sender) — valid for the 1:1 demo, where the two
+ * peers exchange pubkeys alongside the invitation.
  */
-
-private const val ED25519 = "Ed25519"
-const val DEMO_DEVICE_KEY_ALIAS = "cairn-demo-op-key"
-
-/** The trailing bytes of an Ed25519 X.509 SPKI are the 32-byte raw public key. */
-private const val ED25519_RAW_KEY_LEN = 32
 
 /**
- * A Keystore-backed Ed25519 demo identity. The key is generated in the Android
- * Keystore (TEE-backed) under [DEMO_DEVICE_KEY_ALIAS] and persists there across
- * launches; the private key never leaves the Keystore (signing routes through
- * it). The v1 hardening adds StrongBox + key attestation (D0020 §3.4 / D0028).
+ * Label for the device key the FFI signer passes through to the
+ * [HardwareKeySigner]; the demo software signer ignores it (the v1 StrongBox
+ * path keys on it, D0028).
+ */
+const val DEMO_DEVICE_KEY_ALIAS = "cairn-demo-op-key"
+
+/** Ed25519 seed length — matches `cairn_crypto::ed25519::SEED_LEN`. */
+private const val ED25519_SEED_LEN = 32
+
+/**
+ * An ephemeral SOFTWARE Ed25519 demo identity. A fresh 32-byte seed is minted
+ * per launch ([SecureRandom]) and handed to [DemoEd25519Signer] (Rust
+ * `cairn-crypto`); the raw 32-byte pubkey + raw 64-byte signatures it produces
+ * are exactly what `cairn-envelope` verifies. The v1 hardening replaces this
+ * with a StrongBox key + attestation (D0020 §3.4 / D0028).
  */
 class CairnIdentity private constructor(
-    private val privateKey: PrivateKey,
+    private val signer: DemoEd25519Signer,
     /** Raw 32-byte Ed25519 public key — the envelope operational + device pubkey. */
     val publicKeyRaw: ByteArray,
 ) {
-    /** Ed25519 signature (64 bytes) over [payload] via the Keystore key. */
-    fun sign(payload: ByteArray): ByteArray =
-        Signature.getInstance(ED25519).run {
-            initSign(privateKey)
-            update(payload)
-            sign()
-        }
+    /** Ed25519 signature (64 bytes) over [payload] via the demo software key. */
+    fun sign(payload: ByteArray): ByteArray = signer.sign(payload)
 
     companion object {
-        private const val KEYSTORE = "AndroidKeyStore"
-
-        /** Load the existing Keystore identity, or generate one under the alias. */
-        fun loadOrCreate(): CairnIdentity {
-            val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }
-            if (ks.containsAlias(DEMO_DEVICE_KEY_ALIAS)) {
-                val priv = ks.getKey(DEMO_DEVICE_KEY_ALIAS, null) as PrivateKey
-                val pub = ks.getCertificate(DEMO_DEVICE_KEY_ALIAS).publicKey.encoded
-                return CairnIdentity(priv, pub.rawEd25519())
-            }
-            val kpg = KeyPairGenerator.getInstance(ED25519, KEYSTORE)
-            kpg.initialize(
-                KeyGenParameterSpec.Builder(
-                    DEMO_DEVICE_KEY_ALIAS,
-                    KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY,
-                ).build(),
-            )
-            val kp = kpg.generateKeyPair()
-            return CairnIdentity(kp.private, kp.public.encoded.rawEd25519())
+        /** Mint a fresh ephemeral demo identity (a new software key per launch). */
+        fun generate(): CairnIdentity {
+            val seed = ByteArray(ED25519_SEED_LEN).also { SecureRandom().nextBytes(it) }
+            val signer = DemoEd25519Signer.fromSeed(seed)
+            return CairnIdentity(signer, signer.publicKey())
         }
-
-        /** The trailing 32 bytes of the Ed25519 X.509 SPKI = the raw public key. */
-        private fun ByteArray.rawEd25519(): ByteArray =
-            copyOfRange(size - ED25519_RAW_KEY_LEN, size)
     }
 }
 
@@ -129,7 +112,7 @@ class CairnSession private constructor(
 
         /** Bootstrap the demo session under [filesDir]. */
         fun bootstrap(filesDir: File): CairnSession {
-            val identity = CairnIdentity.loadOrCreate()
+            val identity = CairnIdentity.generate()
             val signer = DemoSigner(identity)
             val storage = StorageHandle.open(
                 "${filesDir.absolutePath}/store.db",

@@ -116,6 +116,7 @@
 //! All seven per-domain modules (D0027 §2) have now landed. The
 //! `fuzz_uniffi_boundary` harness (D0018 §5.2) is a follow-up.
 
+pub mod demo_signer;
 pub mod error;
 pub mod hardware;
 pub mod identity;
@@ -133,6 +134,7 @@ pub mod trust_graph;
 #[cfg(target_os = "android")]
 pub mod android_log;
 
+pub use demo_signer::DemoEd25519Signer;
 pub use error::CairnFfiError;
 pub use hardware::{AttestationCertificate, HardwareKeySigner, HardwarePublicKey, KeyGenSpec};
 pub use identity::{CapabilityTokenRecord, identity_verify_capability_token};
