@@ -69,6 +69,13 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    buildFeatures {
+        compose = true
+    }
+    composeOptions {
+        // Kotlin 1.9.24 pairs with Compose Compiler 1.5.14.
+        kotlinCompilerExtensionVersion = "1.5.14"
+    }
 
     sourceSets {
         getByName("main") {
@@ -177,6 +184,19 @@ dependencies {
     // The async exports (D0027 §5) generate suspend funs backed by
     // kotlinx-coroutines.
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
+
+    // === Jetpack Compose UI (the chat surface) ===
+    // The BOM pins a mutually-consistent Compose set; Kotlin 1.9.24 pairs with
+    // Compose Compiler 1.5.14 (composeOptions above). All from google()/central.
+    implementation(platform("androidx.compose:compose-bom:2024.06.00"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.activity:activity-compose:1.9.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
+    // collectAsStateWithLifecycle (StateFlow -> Compose, lifecycle-aware).
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.4")
+    debugImplementation("androidx.compose.ui:ui-tooling")
 
     testImplementation("junit:junit:4.13.2")
     // The host-JVM FfiBoundaryTest (D0027 §8) loads the Rust .so via
