@@ -216,6 +216,12 @@ impl SimplexAdapterHandle {
         operational_pubkey: Vec<u8>,
         config: SidecarEndpointConfig,
     ) -> Result<Arc<Self>, CairnFfiError> {
+        // Install the logcat backend for the `log` facade so the adapter's SMP
+        // command/event flow surfaces on-device under the `CairnRust` tag
+        // (D0026 §12 two-party observability). Idempotent; android-only.
+        #[cfg(target_os = "android")]
+        crate::android_log::init();
+
         let operational_pubkey: [u8; PUBLIC_KEY_LEN] = operational_pubkey
             .as_slice()
             .try_into()

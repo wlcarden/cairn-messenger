@@ -222,9 +222,18 @@ pub(crate) mod flow {
         chan: &C,
         cmd: String,
     ) -> Result<Value, SimplexAdapterError> {
+        // Diagnostic: the leading verb only (avoids logging the full invitation
+        // URI / message body), so logcat shows the command sequence.
+        let verb: String = cmd.chars().take_while(|c| !c.is_whitespace()).collect();
         let raw = chan.send(cmd).await?;
         let frame = protocol::parse_frame(&raw).ok_or(SimplexAdapterError::SidecarProtocol)?;
         if Resp::from_frame(&frame).is_some_and(|r| r.is_error()) {
+            // Previously swallowed silently; surface the error reply so a stalled
+            // handshake / rejected command is visible on-device (D0026 §12).
+            log::warn!(
+                "cairn-smp: cmd '{verb}' -> ERROR reply: {}",
+                raw.chars().take(400).collect::<String>()
+            );
             return Err(SimplexAdapterError::SidecarProtocol);
         }
         Ok(frame)
@@ -259,6 +268,7 @@ pub(crate) mod flow {
         chan: &C,
         addr: &str,
     ) -> Result<(), SimplexAdapterError> {
+        log::info!("cairn-smp: configure_socks -> {addr}");
         let _ = command(chan, protocol::cmd_set_socks_proxy(addr)).await?;
         Ok(())
     }
@@ -272,6 +282,7 @@ pub(crate) mod flow {
         let resp = Resp::from_frame(&frame).ok_or(SimplexAdapterError::SidecarProtocol)?;
         let uri =
             protocol::parse_invitation_link(&resp).ok_or(SimplexAdapterError::SidecarProtocol)?;
+        log::info!("cairn-smp: create_invitation -> link created, awaiting peer");
         Ok(Invitation { uri })
     }
 
@@ -287,6 +298,7 @@ pub(crate) mod flow {
         user_id: i64,
         uri: &str,
     ) -> Result<ConnectionId, SimplexAdapterError> {
+        log::info!("cairn-smp: accept_invitation -> connect sent, awaiting contactConnected");
         let _ = command(chan, protocol::cmd_connect_via_link(user_id, uri)).await?;
         await_contact_connected(chan).await
     }
@@ -431,16 +443,41 @@ pub(crate) mod flow {
     /// usable for `/_send`; the usable id arrives only with this event).
     /// Intermediate establishment events (`contactConnecting`, the peer's
     /// profile `newChatItems`, etc.) are skipped.
+    /// Upper bound on the `contactConnected` await. The SimpleX duplex
+    /// handshake is several SMP round-trips over Tor (each a fresh circuit to a
+    /// `.onion` relay), so this is generous — but bounded, so a stalled
+    /// handshake fails loudly (logged) instead of hanging the caller forever
+    /// (the prior unbounded loop, D0026 §12 two-party on-device finding).
+    const CONTACT_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
     async fn await_contact_connected<C: RawChannel>(
         chan: &C,
     ) -> Result<ConnectionId, SimplexAdapterError> {
-        loop {
-            let frame = next_event_frame(chan).await?;
-            let Some(resp) = Resp::from_frame(&frame) else {
-                continue;
-            };
-            if let Some(contact_id) = protocol::parse_contact_connected(&resp) {
-                return Ok(ConnectionId(contact_id.to_string()));
+        let drain = async {
+            loop {
+                let frame = next_event_frame(chan).await?;
+                let Some(resp) = Resp::from_frame(&frame) else {
+                    continue;
+                };
+                // Per-event diagnostic: the type tag of every event drained
+                // while awaiting establishment, so a stalled handshake shows
+                // exactly which events did (and did not) arrive on-device.
+                log::info!("cairn-smp: await_contact_connected event type={}", resp.tag);
+                if let Some(contact_id) = protocol::parse_contact_connected(&resp) {
+                    return Ok::<ConnectionId, SimplexAdapterError>(ConnectionId(
+                        contact_id.to_string(),
+                    ));
+                }
+            }
+        };
+        match tokio::time::timeout(CONTACT_CONNECT_TIMEOUT, drain).await {
+            Ok(result) => result,
+            Err(_elapsed) => {
+                log::warn!(
+                    "cairn-smp: await_contact_connected TIMEOUT after {}s — no contactConnected event arrived",
+                    CONTACT_CONNECT_TIMEOUT.as_secs()
+                );
+                Err(SimplexAdapterError::SidecarUnavailable)
             }
         }
     }

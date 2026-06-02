@@ -72,6 +72,44 @@ class MainActivity : ComponentActivity() {
                 viewModel.onTorReady()
             }
         }
+
+        handleDriverExtras(intent)
+    }
+
+    /** Warm re-foreground (launchMode=singleTop): pick up new driver extras. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleDriverExtras(intent)
+    }
+
+    /**
+     * Demo-automation hook for adb-driven two-device tests. Reads optional
+     * string extras and dispatches them to the [MessagingViewModel] — the
+     * SimpleX invitation URI is percent-encoded and resists `adb input text`,
+     * so a harness injects it as an `am start --es invite "<blob>"` extra
+     * instead. Not part of the user flow: the Compose TextFields drive the same
+     * ViewModel entry points. The ViewModel ignores ops issued before the
+     * session/Tor are ready (it gates internally), so drive these only once the
+     * app has reached Ready.
+     *
+     *   --es peer   "<peerKeyHex>"    → createInvitation (logs INVITE_BLOB)
+     *   --es invite "<uri>|<peerHex>" → acceptInvitation
+     *   --es send   "<text>"          → send to the connected peer
+     */
+    private fun handleDriverExtras(intent: Intent) {
+        intent.getStringExtra("peer")?.let {
+            Log.i(TAG, "driver: createInvitation peer=$it")
+            viewModel.createInvitation(it)
+        }
+        intent.getStringExtra("invite")?.let {
+            Log.i(TAG, "driver: acceptInvitation")
+            viewModel.acceptInvitation(it)
+        }
+        intent.getStringExtra("send")?.let {
+            Log.i(TAG, "driver: send len=${it.length}")
+            viewModel.send(it)
+        }
     }
 
     /**
@@ -115,7 +153,11 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         const val TAG = "CairnFfi"
-        const val BOOTSTRAP_TIMEOUT_MS = 180_000L
+        // A COLD bundled-Tor bootstrap (fresh data dir, e.g. after a clear, or
+        // on a VPN-constrained path) fetches the full consensus + builds its
+        // first circuit, which can exceed the warm ~10s by minutes. Generous so
+        // the app doesn't give up before Tor is ready (D0026 §12 on-device).
+        const val BOOTSTRAP_TIMEOUT_MS = 600_000L
         const val POLL_INTERVAL_MS = 1_000L
     }
 }

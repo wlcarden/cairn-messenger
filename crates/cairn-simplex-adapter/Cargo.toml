@@ -92,6 +92,13 @@ zeroize = { workspace = true }
 # === Error handling (D0018 §4.2) ===
 thiserror = { workspace = true }
 
+# === Diagnostic logging facade (D0026 §12 on-device observability) ===
+# The `log` facade is a no-op without an installed backend, so the host /
+# ws-core paths + unit tests stay silent; on Android the cairn-uniffi shell
+# installs a logcat backend (a minimal `log::Log` over `__android_log_write`,
+# no new crate) so the SMP command/event flow is visible in logcat.
+log = { workspace = true }
+
 # === Android in-process FFI transport per D0026 §12 (ANDROID ONLY) ===
 # `simploxide-ffi-core` exposes the SAME raw command/response/event String API
 # as `simploxide-ws-core`, so the `FfiSidecarTransport` (sidecar.rs, gated

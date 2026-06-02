@@ -29,6 +29,9 @@ sealed interface UiState {
     /** I created an invitation; share [inviteToShare] + paste the peer's key. */
     data class Inviting(val myKeyHex: String, val inviteToShare: String) : UiState
 
+    /** Accepting a peer's invitation; the SMP handshake is in flight over Tor. */
+    data class Connecting(val myKeyHex: String) : UiState
+
     /** Conversation established; chat is live. */
     data class Connected(val myKeyHex: String, val peerKeyHex: String) : UiState
 
@@ -67,7 +70,9 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                     CairnSession.bootstrap(getApplication<Application>().filesDir)
                 }
                 session = s
-                _ui.value = UiState.Ready(s.identity.publicKeyRaw.toHex())
+                val myHex = s.identity.publicKeyRaw.toHex()
+                Log.i(TAG, "MY_PUBKEY=$myHex")
+                _ui.value = UiState.Ready(myHex)
             } catch (e: Exception) {
                 Log.e(TAG, "session bootstrap failed", e)
                 _ui.value = UiState.Failed("session: ${e.message}")
@@ -94,7 +99,9 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
             if (!awaitTor()) return@launch
             try {
                 val uri = s.handle.createInvitation()
-                _ui.value = UiState.Inviting(myHex, "$uri|$myHex")
+                val blob = "$uri|$myHex"
+                Log.i(TAG, "INVITE_BLOB=$blob")
+                _ui.value = UiState.Inviting(myHex, blob)
                 val connId = s.handle.awaitConnection()
                 onConnected(connId, myHex)
             } catch (e: Exception) {
@@ -116,6 +123,9 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         peerKeyRaw = runCatching { parts[1].fromHex() }.getOrNull()
         viewModelScope.launch {
             if (!awaitTor()) return@launch
+            // Show a visible in-flight state: the SMP duplex handshake is
+            // several Tor round-trips, so without this the UI looks idle.
+            _ui.value = UiState.Connecting(myHex)
             try {
                 val connId = s.handle.acceptInvitation(parts[0])
                 onConnected(connId, myHex)
@@ -135,6 +145,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 s.handle.send(connId, peer, text.toByteArray())
+                Log.i(TAG, "SENT len=${text.length}: $text")
                 _messages.update { it + ChatMessage(mine = true, text = text) }
             } catch (e: Exception) {
                 Log.e(TAG, "send failed", e)
@@ -146,6 +157,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     private fun onConnected(connId: String, myHex: String) {
         connectionId = connId
         val peer = peerKeyRaw
+        Log.i(TAG, "CONNECTED connId=$connId peer=${peer?.toHex() ?: "(unset)"}")
         _ui.value = UiState.Connected(myHex, peer?.toHex() ?: "(peer key unset)")
         if (peer != null) startRecvLoop(connId, peer)
     }
@@ -158,7 +170,9 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 try {
                     // op == device key in the demo, so peer is both.
                     val r = s.handle.recv(connId, peer, peer)
-                    _messages.update { it + ChatMessage(mine = false, text = String(r.payload)) }
+                    val text = String(r.payload)
+                    Log.i(TAG, "RECV len=${text.length}: $text")
+                    _messages.update { it + ChatMessage(mine = false, text = text) }
                 } catch (e: Exception) {
                     Log.e(TAG, "recv loop ended", e)
                     break

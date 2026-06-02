@@ -49,6 +49,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "android_log-sys"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84521a3cf562bc62942e294181d9eef17eb38ceb8c68677bc49f144e4c3d4f8d"
+
+[[package]]
+name = "android_logger"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05b07e8e73d720a1f2e4b6014766e6039fd2e96a4fa44e2a78d0e1fa2ff49826"
+dependencies = [
+ "android_log-sys",
+ "env_filter",
+ "log",
+]
+
+[[package]]
 name = "ansi_term"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -572,6 +589,7 @@ dependencies = [
  "ciborium",
  "futures",
  "getrandom 0.2.15",
+ "log",
  "rand_core 0.6.4",
  "serde",
  "serde_json",
@@ -638,6 +656,7 @@ dependencies = [
 name = "cairn-uniffi"
 version = "0.1.0-dev"
 dependencies = [
+ "android_logger",
  "argon2",
  "cairn-crypto",
  "cairn-identity",
@@ -649,6 +668,7 @@ dependencies = [
  "cairn-storage",
  "cairn-tor-transport",
  "cairn-trust-graph",
+ "log",
  "rand_core 0.6.4",
  "simploxide-ffi-core",
  "thiserror 1.0.63",
@@ -1143,6 +1163,15 @@ dependencies = [
  "multiexp",
  "serde",
  "zeroize",
+]
+
+[[package]]
+name = "env_filter"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bf3c259d255ca70051b30e2e95b5446cdb8949ac4cd22c0d7fd634d89f568e2"
+dependencies = [
+ "log",
 ]
 
 [[package]]
@@ -1794,9 +1823,9 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "log"
-version = "0.4.30"
+version = "0.4.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "616ec5685824bcc94416c6d4a7a446eea774a31efd7062c8480ba6fd06d7a6e5"
+checksum = "a7a70ba024b9dc04c27ea2f0c0548feb474ec5c54bba33a7f72f873a39d07b24"
 
 [[package]]
 name = "lru-slab"

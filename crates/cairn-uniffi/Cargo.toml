@@ -80,6 +80,12 @@ url = { workspace = true }
 #     crosses) per D0018 §4.2 ===
 thiserror = { workspace = true }
 
+# === Diagnostic logging facade (D0026 §12 on-device observability) ===
+# The Android shell installs `android_logger` (below, android-only) as the
+# backend for the `log` facade so the cairn-simplex-adapter SMP command/event
+# flow surfaces in logcat (tag CairnRust) during the two-party handshake.
+log = { workspace = true }
+
 # === UniFFI boundary surface per D0020 §3 + D0027, behind the
 #     uniffi-bindings feature. Optional so the default build stays
 #     uniffi-free; the workspace --all-features gate exercises it. ===
@@ -96,6 +102,11 @@ uniffi = { workspace = true, optional = true }
 # the adapter's own dep, so the x86_64 CI host never builds it.
 [target.'cfg(target_os = "android")'.dependencies]
 simploxide-ffi-core = { workspace = true }
+# logcat backend for the `log` facade (src/android_log.rs). Confines the
+# unavoidable liblog FFI to a vetted crate (the workspace forbids first-party
+# `unsafe`). default-features = false drops the regex/env-filter tree, leaving
+# just android_log-sys + log. ANDROID ONLY — never built on the x86_64 host/CI.
+android_logger = { workspace = true }
 
 [dev-dependencies]
 # The per-domain export tests construct REAL signed inputs (capability

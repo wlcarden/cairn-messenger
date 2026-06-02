@@ -264,6 +264,16 @@ simploxide-ws-core = "=0.2.0"
 # compiles for aarch64-linux-android on the pinned toolchain. Needs no tokio bump.
 simploxide-ffi-core = "=0.2.0"
 
+# logcat backend for the `log` facade on Android (cairn-uniffi's
+# src/android_log.rs), D0026 §12 on-device observability. The workspace forbids
+# first-party `unsafe`, so the liblog FFI is confined to this vetted,
+# android-target-only crate. `default-features = false` drops its regex/
+# env-filter tree (we use only the static tag + max-level), leaving a minimal
+# `android_log-sys` + `log` surface. Referenced ONLY under cairn-uniffi's
+# `[target.'cfg(target_os = "android")'.dependencies]`, so the x86_64 host/CI
+# never builds it.
+android_logger = { version = "=0.14.1", default-features = false }
+
 # === Testing (D0018 §5) ===
 proptest = { version = "=1.5.0", default-features = false, features = ["std"] }
 arbitrary = { version = "=1.3.2", features = ["derive"] }

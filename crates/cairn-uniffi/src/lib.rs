@@ -127,6 +127,12 @@ pub mod tor;
 pub mod transparency;
 pub mod trust_graph;
 
+// Android-only logcat backend for the `log` facade (D0026 §12 on-device
+// observability of the SMP command/event flow). Absent on host builds, where
+// the `log` facade stays a no-op.
+#[cfg(target_os = "android")]
+pub mod android_log;
+
 pub use error::CairnFfiError;
 pub use hardware::{AttestationCertificate, HardwareKeySigner, HardwarePublicKey, KeyGenSpec};
 pub use identity::{CapabilityTokenRecord, identity_verify_capability_token};

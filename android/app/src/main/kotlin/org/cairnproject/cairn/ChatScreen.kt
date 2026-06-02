@@ -72,6 +72,21 @@ fun ChatScreen(vm: MessagingViewModel) {
                     CircularProgressIndicator(Modifier.padding(top = 8.dp))
                 }
 
+                is UiState.Connecting -> Centered {
+                    CircularProgressIndicator()
+                    Text(
+                        "Connecting over Tor…",
+                        Modifier.padding(top = 12.dp),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        "Establishing the encrypted SMP channel — this can take a minute.",
+                        Modifier.padding(top = 4.dp),
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+
                 is UiState.Connected -> ChatView(state, vm)
 
                 is UiState.Failed -> Centered {
