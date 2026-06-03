@@ -3,16 +3,20 @@
 
 package org.cairnproject.cairn
 
+import android.Manifest
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -30,8 +34,9 @@ import uniffi.cairn_uniffi.messagingFfiTwoPartySelftest
  * D0020 §2.2): on a built circuit it signals the ViewModel so messaging ops can
  * route through Tor's loopback SOCKS proxy.
  *
- * The production lifecycle wraps Tor in a `remoteMessaging` ForegroundService
- * (D0020 §2.5) — deferred; here the visible Activity hosts the bound service.
+ * A [CairnForegroundService] (started in [onCreate]) pins the process at
+ * foreground-service priority (D0026 §12) so the bundled Tor + the recv loop
+ * survive backgrounding — without it the process is reaped within minutes.
  */
 class MainActivity : ComponentActivity() {
 
@@ -62,6 +67,21 @@ class MainActivity : ComponentActivity() {
         val torIntent = Intent(this, TorService::class.java)
         startService(torIntent)
         bindService(torIntent, torConnection, Context.BIND_AUTO_CREATE)
+
+        // Pin the whole process (Tor + libsimplex + the recv loop) at
+        // foreground-service priority so messaging survives backgrounding
+        // (D0026 §12). The service runs regardless of POST_NOTIFICATIONS; the
+        // runtime grant only makes its ongoing notification visible (API 33+).
+        ContextCompat.startForegroundService(
+            this,
+            Intent(this, CairnForegroundService::class.java),
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFICATIONS)
+        }
 
         lifecycleScope.launch {
             val socksPort = withContext(Dispatchers.IO) { awaitTorBootstrap(BOOTSTRAP_TIMEOUT_MS) }
@@ -184,5 +204,8 @@ class MainActivity : ComponentActivity() {
         // the app doesn't give up before Tor is ready (D0026 §12 on-device).
         const val BOOTSTRAP_TIMEOUT_MS = 600_000L
         const val POLL_INTERVAL_MS = 1_000L
+
+        /** Request code for the POST_NOTIFICATIONS runtime grant (API 33+). */
+        const val REQ_NOTIFICATIONS = 1
     }
 }

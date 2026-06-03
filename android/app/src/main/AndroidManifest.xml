@@ -12,6 +12,17 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- Foreground service (D0026 §12): pin the single process (bundled Tor +
+         in-process libsimplex + the recv loop) at foreground-service priority so
+         messaging survives the user leaving the screen — without this the
+         process is reaped within minutes (verified on-device). `specialUse` is
+         the honest Android-14 type for "maintain a Tor messaging connection";
+         POST_NOTIFICATIONS only governs the ongoing notification's visibility,
+         not whether the service runs. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:label="Cairn"
         android:icon="@mipmap/ic_launcher"
@@ -27,6 +38,18 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Keeps the process (Tor + libsimplex + recv loop) alive in the
+             background. `specialUse` subtype declares the legitimate use; Cairn
+             ships sideloaded (not Play), so no Play review applies. -->
+        <service
+            android:name=".CairnForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Maintains the bundled Tor connection and the SimpleX message queue so end-to-end encrypted messages are delivered while the app is backgrounded." />
+        </service>
     </application>
 
 </manifest>
