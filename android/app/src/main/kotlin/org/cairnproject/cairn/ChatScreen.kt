@@ -20,7 +20,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -39,6 +40,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -58,6 +60,9 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * The Cairn chat surface (D0003 Kotlin UI). Renders the [MessagingViewModel]
@@ -513,14 +518,25 @@ private fun ChatView(state: UiState.Conversation, vm: MessagingViewModel) {
                 dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } },
             )
         }
+        val listState = rememberLazyListState()
+        LaunchedEffect(messages.size) {
+            if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+        }
         LazyColumn(
-            Modifier
+            state = listState,
+            modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
                 .padding(vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            items(messages) { msg -> MessageBubble(msg) }
+            itemsIndexed(messages) { i, msg ->
+                val prev = messages.getOrNull(i - 1)
+                if (prev == null || dayKey(prev.tsUnix) != dayKey(msg.tsUnix)) {
+                    DateSeparator(msg.tsUnix)
+                }
+                MessageBubble(msg, onRetry = { vm.resend(it.text) })
+            }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
@@ -703,23 +719,88 @@ private fun RenameDialog(current: String, onConfirm: (String) -> Unit, onDismiss
 }
 
 @Composable
-private fun MessageBubble(msg: ChatMessage) {
+private fun MessageBubble(msg: ChatMessage, onRetry: (ChatMessage) -> Unit) {
+    val container = if (msg.mine) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant
+    }
+    val onColor = if (msg.mine) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (msg.mine) Arrangement.End else Arrangement.Start,
     ) {
-        Card {
-            Text(
-                msg.text,
-                Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                color = if (msg.mine) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onSurface
-                },
-            )
+        val cardMod = if (msg.status == SendStatus.FAILED) {
+            Modifier.clickable { onRetry(msg) }
+        } else {
+            Modifier
+        }
+        Card(modifier = cardMod, colors = CardDefaults.cardColors(containerColor = container)) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                Text(msg.text, color = onColor)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        formatTime(msg.tsUnix),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = onColor.copy(alpha = 0.7f),
+                    )
+                    statusLabel(msg.status)?.let { label ->
+                        Spacer(Modifier.size(6.dp))
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (msg.status == SendStatus.FAILED) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                onColor.copy(alpha = 0.7f)
+                            },
+                        )
+                    }
+                }
+            }
         }
     }
+}
+
+/** A centered "Today / Yesterday / date" divider between messages on a new day. */
+@Composable
+private fun DateSeparator(tsUnix: Long) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+        Text(
+            formatDay(tsUnix),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(vertical = 4.dp),
+        )
+    }
+}
+
+private val timeFmt = SimpleDateFormat("HH:mm", Locale.getDefault())
+private val dayKeyFmt = SimpleDateFormat("yyyyMMdd", Locale.getDefault())
+private val dayLabelFmt = SimpleDateFormat("EEE, MMM d", Locale.getDefault())
+
+private fun formatTime(tsUnix: Long): String = timeFmt.format(Date(tsUnix * 1000))
+
+private fun dayKey(tsUnix: Long): String = dayKeyFmt.format(Date(tsUnix * 1000))
+
+private fun formatDay(tsUnix: Long): String {
+    val nowSec = System.currentTimeMillis() / 1000
+    return when (dayKey(tsUnix)) {
+        dayKey(nowSec) -> "Today"
+        dayKey(nowSec - 86_400) -> "Yesterday"
+        else -> dayLabelFmt.format(Date(tsUnix * 1000))
+    }
+}
+
+private fun statusLabel(status: SendStatus): String? = when (status) {
+    SendStatus.SENDING -> "sending…"
+    SendStatus.SENT -> "sent"
+    SendStatus.FAILED -> "failed — tap to retry"
+    SendStatus.NONE -> null
 }
 
 @Composable

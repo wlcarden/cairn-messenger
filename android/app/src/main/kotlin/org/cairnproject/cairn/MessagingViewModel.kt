@@ -7,6 +7,7 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,8 +17,20 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.cairn_uniffi.CairnFfiException
 
-/** A single chat line. */
-data class ChatMessage(val mine: Boolean, val text: String)
+/** Delivery state of an outgoing message (received messages are [SendStatus.NONE]). */
+enum class SendStatus { NONE, SENDING, SENT, FAILED }
+
+/**
+ * A single chat line. [tsUnix] is the message wall-clock time; [id] is a local
+ * identity so an optimistic send can be updated in place to its [status].
+ */
+data class ChatMessage(
+    val id: Long,
+    val mine: Boolean,
+    val text: String,
+    val tsUnix: Long,
+    val status: SendStatus = SendStatus.NONE,
+)
 
 /**
  * A contact's verification state for the conversation header (D0006 §70).
@@ -110,6 +123,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val recvJobs = mutableMapOf<String, Job>()
     private var myHex: String = ""
+    private val msgIdSeq = AtomicLong(0)
 
     init {
         // Gate everything behind an unlock passphrase: the at-rest encryption
@@ -259,7 +273,15 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
             val hist = withContext(Dispatchers.IO) {
                 runCatching { s.handle.loadMessageHistory(peer) }.getOrDefault(emptyList())
             }
-            _messages.value = hist.map { ChatMessage(it.mine, String(it.payload)) }
+            _messages.value = hist.map {
+                ChatMessage(
+                    id = msgIdSeq.getAndIncrement(),
+                    mine = it.mine,
+                    text = String(it.payload),
+                    tsUnix = it.timestampUnix.toLong(),
+                    status = if (it.mine) SendStatus.SENT else SendStatus.NONE,
+                )
+            }
             Log.i(TAG, "opened ${contact.displayName}: ${hist.size} history msgs")
             Log.i(TAG, "contact trust=${contact.trust()}")
             _ui.value = UiState.Conversation(
@@ -297,22 +319,38 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         showContacts()
     }
 
-    /** Send [text] to the connected peer. */
+    /**
+     * Send [text]: optimistically show it as SENDING, then SENT once the
+     * transport accepts it (the FFI send blocks until upload-complete) or FAILED
+     * on error — the bubble updates in place, with no fake "[send failed]" line.
+     */
     fun send(text: String) {
         val s = session ?: return
         val connId = connectionId ?: return
         val peer = peerKeyRaw ?: return
         if (text.isBlank()) return
+        val id = msgIdSeq.getAndIncrement()
+        val now = System.currentTimeMillis() / 1000
+        _messages.update {
+            it + ChatMessage(id, mine = true, text = text, tsUnix = now, status = SendStatus.SENDING)
+        }
         viewModelScope.launch {
             try {
                 s.handle.send(connId, peer, text.toByteArray())
-                Log.i(TAG, "SENT len=${text.length}: $text")
-                _messages.update { it + ChatMessage(mine = true, text = text) }
+                Log.i(TAG, "SENT len=${text.length}")
+                updateStatus(id, SendStatus.SENT)
             } catch (e: Exception) {
                 Log.e(TAG, "send failed", e)
-                _messages.update { it + ChatMessage(mine = true, text = "[send failed: ${e.message}]") }
+                updateStatus(id, SendStatus.FAILED)
             }
         }
+    }
+
+    /** Re-send a failed message's text (tap-to-retry on a FAILED bubble). */
+    fun resend(text: String) = send(text)
+
+    private fun updateStatus(id: Long, status: SendStatus) {
+        _messages.update { list -> list.map { if (it.id == id) it.copy(status = status) else it } }
     }
 
     /**
@@ -338,7 +376,9 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         }
         _messages.value = emptyList()
         if (firstInbound != null && firstInbound.isNotEmpty()) {
-            _messages.value = listOf(ChatMessage(mine = false, text = String(firstInbound)))
+            val now = System.currentTimeMillis() / 1000
+            _messages.value =
+                listOf(ChatMessage(msgIdSeq.getAndIncrement(), false, String(firstInbound), now))
         }
         // A freshly-paired contact is TOFU-unverified until the user confirms
         // the safety number out of band (D0006 §70).
@@ -461,7 +501,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 if (r.payload.isEmpty()) continue // hello/key-exchange marker
                 val text = String(r.payload)
                 Log.i(TAG, "RECV len=${text.length} from ${contact.peerKeyHex.take(12)}")
-                routeIncoming(contact, text)
+                routeIncoming(contact, text, r.receivedAtUnix.toLong())
             } catch (e: CairnFfiException.EnvelopeVerifyFailed) {
                 // The envelope did not verify against the pinned peer key — a key
                 // change or active interception (D0006 §70).
@@ -481,10 +521,10 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Append to the live view if the conversation is visible, else notify (C2). */
-    private fun routeIncoming(contact: Contact, text: String) {
+    private fun routeIncoming(contact: Contact, text: String, tsUnix: Long) {
         val cur = _ui.value as? UiState.Conversation
         if (appForeground && cur?.peerKeyHex == contact.peerKeyHex) {
-            _messages.update { it + ChatMessage(mine = false, text = text) }
+            _messages.update { it + ChatMessage(msgIdSeq.getAndIncrement(), false, text, tsUnix) }
         } else {
             Log.i(TAG, "notify: new message from ${contact.peerKeyHex.take(12)}")
             Notifications.postNewMessage(getApplication<Application>(), contact.peerKeyHex)
