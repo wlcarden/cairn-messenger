@@ -26,6 +26,13 @@ data class Contact(
      * §70 in-person / channel-verified). `false` = paired but TOFU-unverified.
      */
     val verified: Boolean = false,
+    /**
+     * The exact peer key the user verified, lowercase hex — binds [verified] to
+     * the key it attests (D0006 §70). The green badge shows only while this
+     * still equals [peerKeyHex]; a recv verify-failure (a key change /
+     * interception) downgrades [verified]. Null = never verified.
+     */
+    val verifiedKeyHex: String? = null,
 )
 
 /**
@@ -55,6 +62,7 @@ class ContactStore(private val storage: StorageHandle) {
             .put("name", contact.displayName)
             .put("at", contact.pairedAtUnix)
             .put("v", contact.verified)
+            .apply { contact.verifiedKeyHex?.let { put("vk", it) } }
             .toString()
             .toByteArray()
         runCatching { storage.put(CATEGORY, contact.peerKeyHex.fromHex(), payload) }
@@ -75,12 +83,18 @@ class ContactStore(private val storage: StorageHandle) {
         if (bytes == null) return null
         return runCatching {
             val o = JSONObject(String(bytes))
+            val verified = o.optBoolean("v", false)
+            // Migration: records written before key-binding carry no "vk"; a
+            // legacy verified record was keyed by the verified key, so backfill
+            // verifiedKeyHex = peerKeyHex to preserve its green badge.
+            val verifiedKey = o.optString("vk", "").ifEmpty { if (verified) peerKeyHex else null }
             Contact(
                 peerKeyHex = peerKeyHex,
                 connId = o.getString("conn"),
                 displayName = o.optString("name", peerKeyHex.take(8)),
                 pairedAtUnix = o.optLong("at", 0),
-                verified = o.optBoolean("v", false),
+                verified = verified,
+                verifiedKeyHex = verifiedKey,
             )
         }.getOrNull()
     }

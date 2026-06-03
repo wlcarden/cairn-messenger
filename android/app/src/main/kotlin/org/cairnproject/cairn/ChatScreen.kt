@@ -27,6 +27,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -46,6 +47,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
@@ -227,7 +230,7 @@ private fun ContactListView(state: UiState.ContactList, vm: MessagingViewModel) 
                             "peer ${contact.peerKeyHex.take(16)}…",
                             style = MaterialTheme.typography.bodySmall,
                         )
-                        TrustBadge(contact.verified)
+                        TrustBadge(contact.trust())
                     }
                 }
             }
@@ -305,6 +308,32 @@ private fun ChatView(state: UiState.Conversation, vm: MessagingViewModel) {
     var menuOpen by remember { mutableStateOf(false) }
     var showRename by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
+    var verifyScanError by remember { mutableStateOf<String?>(null) }
+
+    // Scan the peer's key QR and confirm it equals the pinned key (D0006 §70).
+    // CaptureActivity handles the camera-permission prompt itself.
+    val verifyScanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val scanned = result.contents
+        if (!scanned.isNullOrBlank()) {
+            if (vm.confirmVerificationByScan(scanned)) {
+                showVerify = false
+                verifyScanError = null
+            } else {
+                verifyScanError =
+                    "Scanned key does NOT match this contact — possible interception. Not verified."
+            }
+        }
+    }
+    val onVerifyScan = {
+        verifyScanLauncher.launch(
+            ScanOptions().apply {
+                setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                setPrompt("Scan your contact's key code")
+                setBeepEnabled(false)
+                setOrientationLocked(false)
+            },
+        )
+    }
     Column(Modifier.fillMaxSize()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = { vm.backToContacts() }) { Text("‹ Contacts") }
@@ -313,9 +342,9 @@ private fun ChatView(state: UiState.Conversation, vm: MessagingViewModel) {
                     "${state.displayName} · ${state.peerKeyHex.take(12)}…",
                     style = MaterialTheme.typography.labelMedium,
                 )
-                TrustBadge(state.verified)
+                TrustBadge(state.trust)
             }
-            if (!state.verified) {
+            if (state.trust != Trust.VERIFIED) {
                 TextButton(onClick = { showVerify = true }) { Text("Verify") }
             }
             Box {
@@ -338,14 +367,22 @@ private fun ChatView(state: UiState.Conversation, vm: MessagingViewModel) {
                 }
             }
         }
+        if (state.trust == Trust.KEY_CHANGED) {
+            KeyChangedBanner(onReverify = { showVerify = true })
+        }
         if (showVerify) {
             VerifyDialog(
                 state,
-                onConfirm = {
+                scanError = verifyScanError,
+                onScan = onVerifyScan,
+                onConfirmManual = {
                     vm.markCurrentVerified()
                     showVerify = false
                 },
-                onDismiss = { showVerify = false },
+                onDismiss = {
+                    showVerify = false
+                    verifyScanError = null
+                },
             )
         }
         if (showRename) {
@@ -407,57 +444,142 @@ private fun ChatView(state: UiState.Conversation, vm: MessagingViewModel) {
 
 /**
  * Trust badge for a contact (D0006 §70). Green ✓ = the user confirmed the
- * safety number out of band; amber = TOFU-paired but not yet verified. (The
- * automated transitive-trust classification from cairn-trust-graph is a
- * follow-on, once contacts carry attestations.)
+ * peer's key out of band (scan or safety number); amber = TOFU-paired, the key
+ * is NOT yet authenticated; red = the key changed since it was verified
+ * (possible interception). A `contentDescription` carries the state for screen
+ * readers, so the signal is never color-only. (The automated transitive-trust
+ * classification from cairn-trust-graph is a follow-on, once contacts carry
+ * attestations.)
  */
 @Composable
-private fun TrustBadge(verified: Boolean) {
-    val (label, color) = if (verified) {
-        "✓ Verified" to Color(0xFF2E7D32)
-    } else {
-        "• Unverified (first contact)" to Color(0xFFB26A00)
+private fun TrustBadge(trust: Trust) {
+    val (label, color, desc) = when (trust) {
+        Trust.VERIFIED -> Triple(
+            "✓ Verified",
+            Color(0xFF2E7D32),
+            "Security status: verified — you confirmed this contact's key.",
+        )
+        Trust.UNVERIFIED -> Triple(
+            "⚠ Unverified — key not authenticated",
+            Color(0xFFB26A00),
+            "Security status: unverified. This contact's key is not authenticated; " +
+                "verify it before sending anything sensitive.",
+        )
+        Trust.KEY_CHANGED -> Triple(
+            "⛔ Key changed — re-verify",
+            Color(0xFFC62828),
+            "Security status: the key changed since you verified it; possible " +
+                "interception. Re-verify before trusting.",
+        )
     }
-    Text(label, color = color, style = MaterialTheme.typography.labelMedium)
+    Text(
+        label,
+        color = color,
+        style = MaterialTheme.typography.labelMedium,
+        modifier = Modifier.semantics { contentDescription = desc },
+    )
 }
 
 /**
- * Safety-number comparison dialog: the user compares the shared number with
- * their contact out of band and, if it matches, marks the contact verified.
+ * Verification dialog (D0006 §70). The reliable path is the QR scan: each device
+ * shows its own key QR, the user scans the peer's, and the app checks the key
+ * bytes match — no human transcription, so a MITM key can't slip past a glance.
+ * The numeric safety number is the out-of-band fallback (read aloud on a call).
  */
 @Composable
 private fun VerifyDialog(
     state: UiState.Conversation,
-    onConfirm: () -> Unit,
+    scanError: String?,
+    onScan: () -> Unit,
+    onConfirmManual: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Verify ${state.displayName}") },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(
-                    "Compare this safety number with your contact — read it aloud, " +
-                        "or hold your screens side by side. It is the same on both " +
-                        "devices only if no one is intercepting your keys.",
+                    "Scan to verify (most reliable). Show your code to your contact " +
+                        "and scan theirs — in person, or on a video call you trust.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Spacer(Modifier.height(12.dp))
+                QrImage(
+                    state.myKeyHex,
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .size(180.dp),
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(onClick = onScan, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                    Text("Scan their code")
+                }
+                if (scanError != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        scanError,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                HorizontalDivider(Modifier.padding(vertical = 12.dp))
+                Text(
+                    "Or compare this number out loud — it is identical on both " +
+                        "devices only if no one is intercepting your keys:",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(8.dp))
                 Text(
                     Verification.safetyNumber(state.myKeyHex, state.peerKeyHex),
                     style = MaterialTheme.typography.titleMedium,
                 )
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(8.dp))
                 Text(
-                    "If the numbers differ, a different key is in use — do not mark verified.",
+                    "If it differs, a different key is in use — do not mark verified.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
             }
         },
-        confirmButton = { TextButton(onClick = onConfirm) { Text("It matches — mark verified") } },
+        confirmButton = {
+            TextButton(onClick = onConfirmManual) { Text("I compared it — mark verified") }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+}
+
+/**
+ * Blocking banner shown when a verified contact's channel presents a different
+ * key (D0006 §70) — driven by the recv signature verify-failure. Loud and
+ * red; the user re-verifies (or leaves) rather than silently trusting on.
+ */
+@Composable
+private fun KeyChangedBanner(onReverify: () -> Unit) {
+    Card(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFC62828)),
+    ) {
+        Column(Modifier.padding(12.dp)) {
+            Text(
+                "This contact's key no longer matches the one you verified.",
+                color = Color.White,
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "They may have re-paired on a new device — or someone may be " +
+                    "intercepting your messages. Do not trust this conversation " +
+                    "until you re-verify.",
+                color = Color.White,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onReverify) { Text("Re-verify") }
+        }
+    }
 }
 
 @Composable

@@ -14,9 +14,31 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import uniffi.cairn_uniffi.CairnFfiException
 
 /** A single chat line. */
 data class ChatMessage(val mine: Boolean, val text: String)
+
+/**
+ * A contact's verification state for the conversation header (D0006 §70).
+ * [KEY_CHANGED] = a previously-verified contact whose channel presented a key
+ * that no longer matches the one verified — surfaced from a recv signature
+ * verify-failure ([CairnFfiException.EnvelopeVerifyFailed]).
+ */
+enum class Trust { UNVERIFIED, VERIFIED, KEY_CHANGED }
+
+/**
+ * The persisted trust of a contact for its badge. KEY_CHANGED only arises when a
+ * `verified` record's [Contact.verifiedKeyHex] no longer equals its key; a
+ * downgrade after a recv verify-failure leaves the record UNVERIFIED (a record
+ * is keyed by its peer key and can't store a conflicting one), so on the contact
+ * list this resolves to VERIFIED or UNVERIFIED.
+ */
+fun Contact.trust(): Trust = when {
+    verified && (verifiedKeyHex == null || verifiedKeyHex == peerKeyHex) -> Trust.VERIFIED
+    verified -> Trust.KEY_CHANGED
+    else -> Trust.UNVERIFIED
+}
 
 /** Top-level UI phase. */
 sealed interface UiState {
@@ -40,8 +62,8 @@ sealed interface UiState {
         val myKeyHex: String,
         val peerKeyHex: String,
         val displayName: String,
-        /** Whether the user has confirmed the safety number out of band. */
-        val verified: Boolean,
+        /** Verification state of the peer key, surfaced as the trust badge. */
+        val trust: Trust,
     ) : UiState
 
     /** A fatal bootstrap/transport error. */
@@ -209,11 +231,12 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
             }
             _messages.value = hist.map { ChatMessage(it.mine, String(it.payload)) }
             Log.i(TAG, "opened ${contact.displayName}: ${hist.size} history msgs")
+            Log.i(TAG, "contact trust=${contact.trust()}")
             _ui.value = UiState.Conversation(
                 myHex,
                 contact.peerKeyHex,
                 contact.displayName,
-                verified = contact.verified,
+                trust = contact.trust(),
             )
             if (awaitTor()) startRecvLoop(contact.connId, peer)
         }
@@ -289,23 +312,69 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         }
         // A freshly-paired contact is TOFU-unverified until the user confirms
         // the safety number out of band (D0006 §70).
-        _ui.value = UiState.Conversation(myHex, peerHex, peerHex.take(8), verified = false)
+        _ui.value = UiState.Conversation(myHex, peerHex, peerHex.take(8), Trust.UNVERIFIED)
         startRecvLoop(connId, peer)
     }
 
     /**
-     * Mark the open conversation's contact as verified — the user asserts they
-     * compared the safety number out of band and it matched (D0006 §70). Local
-     * trust, persisted in the encrypted CONTACTS record.
+     * Mark the open contact verified via the MANUAL safety-number compare path
+     * (the user read the number out of band and asserts it matched, D0006 §70).
+     * Prefer [confirmVerificationByScan], which checks the key cryptographically.
      */
     fun markCurrentVerified() {
         val peerHex = peerKeyRaw?.toHex() ?: return
-        val store = contacts ?: return
-        val existing = runCatching { store.get(peerHex) }.getOrNull() ?: return
-        runCatching { store.save(existing.copy(verified = true)) }
-        Log.i(TAG, "contact $peerHex marked VERIFIED")
-        (_ui.value as? UiState.Conversation)?.let { _ui.value = it.copy(verified = true) }
+        if (persistVerified(peerHex)) Log.i(TAG, "contact $peerHex VERIFIED (manual compare)")
     }
+
+    /**
+     * Verify by SCANNING the peer's key QR: succeeds only if the scanned key
+     * equals the key pinned for this conversation (D0006 §70). This is the
+     * reliable path — it checks the key bytes, not a human-compared number.
+     * Returns false (and does not verify) on any mismatch.
+     */
+    fun confirmVerificationByScan(scannedKeyHex: String): Boolean {
+        val peerHex = peerKeyRaw?.toHex() ?: return false
+        val scanned = scannedKeyHex.trim().lowercase()
+        if (scanned != peerHex) {
+            Log.w(TAG, "verify scan MISMATCH on ${peerHex.take(12)}")
+            return false
+        }
+        val ok = persistVerified(peerHex)
+        if (ok) Log.i(TAG, "contact $peerHex VERIFIED by QR scan")
+        return ok
+    }
+
+    /** Persist verified=true bound to [peerHex] + flip the live badge to green. */
+    private fun persistVerified(peerHex: String): Boolean {
+        val store = contacts ?: return false
+        val existing = runCatching { store.get(peerHex) }.getOrNull() ?: return false
+        val updated = existing.copy(verified = true, verifiedKeyHex = peerHex)
+        if (runCatching { store.save(updated) }.isFailure) return false
+        (_ui.value as? UiState.Conversation)?.let { _ui.value = it.copy(trust = Trust.VERIFIED) }
+        return true
+    }
+
+    /**
+     * A recv signature verify-failure means the channel is presenting a key that
+     * no longer matches the one we pinned/verified — a re-pair or an active
+     * interception (D0006 §70). Security-conservative response: downgrade the
+     * persisted verification and surface the blocking KEY_CHANGED banner. (The
+     * downgrade persists as plain unverified across a restart, since a contact
+     * record is keyed by its peer key and can't hold a conflicting one.)
+     */
+    private fun onPeerKeyMismatch() {
+        val peerHex = peerKeyRaw?.toHex() ?: return
+        contacts?.let { store ->
+            runCatching { store.get(peerHex) }.getOrNull()?.let { c ->
+                runCatching { store.save(c.copy(verified = false)) }
+            }
+        }
+        Log.w(TAG, "PEER KEY MISMATCH on $peerHex — downgraded; surfacing KEY_CHANGED")
+        (_ui.value as? UiState.Conversation)?.let { _ui.value = it.copy(trust = Trust.KEY_CHANGED) }
+    }
+
+    /** Driver/testing hook: exercise the key-mismatch handler without a live MITM. */
+    fun simulateKeyMismatch() = onPeerKeyMismatch()
 
     /** Rename the open conversation's contact (persisted in the CONTACTS store). */
     fun renameCurrentContact(name: String) {
@@ -341,6 +410,12 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                     val text = String(r.payload)
                     Log.i(TAG, "RECV len=${text.length}: $text")
                     _messages.update { it + ChatMessage(mine = false, text = text) }
+                } catch (e: CairnFfiException.EnvelopeVerifyFailed) {
+                    // The next envelope did not verify against the pinned peer
+                    // key — a key change or active interception (D0006 §70).
+                    Log.e(TAG, "recv: ENVELOPE VERIFY FAILED — possible key change/interception", e)
+                    onPeerKeyMismatch()
+                    break
                 } catch (e: Exception) {
                     Log.w(TAG, "recv loop ended (recv threw): ${e.message}", e)
                     break
