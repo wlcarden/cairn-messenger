@@ -38,5 +38,9 @@ pub fn init() {
     } else {
         LevelFilter::Info
     };
-    android_logger::init_once(Config::default().with_max_level(max_level).with_tag("CairnRust"));
+    android_logger::init_once(
+        Config::default()
+            .with_max_level(max_level)
+            .with_tag("CairnRust"),
+    );
 }

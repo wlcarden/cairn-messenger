@@ -45,6 +45,10 @@ impl DemoEd25519Signer {
     /// [`CairnFfiError::MalformedData`] if `seed` is not exactly [`SEED_LEN`]
     /// (32) bytes.
     #[cfg_attr(feature = "uniffi-bindings", uniffi::constructor)]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "UniFFI constructors take owned arguments by value; the FFI layer owns the lowered buffers"
+    )]
     pub fn from_seed(seed: Vec<u8>) -> Result<Arc<Self>, CairnFfiError> {
         let seed: [u8; SEED_LEN] = seed
             .as_slice()
@@ -56,6 +60,7 @@ impl DemoEd25519Signer {
 
     /// The raw 32-byte Ed25519 public key — the demo's operational + device
     /// pubkey (the two coincide for the 1:1 demo).
+    #[must_use]
     pub fn public_key(&self) -> Vec<u8> {
         self.key.verifying_key().to_bytes().to_vec()
     }
@@ -67,6 +72,10 @@ impl DemoEd25519Signer {
     ///
     /// [`CairnFfiError::MalformedData`] if signing fails (not expected for a
     /// well-formed key + payload).
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+    )]
     pub fn sign(&self, payload: Vec<u8>) -> Result<Vec<u8>, CairnFfiError> {
         self.key
             .sign(&payload)

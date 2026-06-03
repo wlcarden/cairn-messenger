@@ -741,10 +741,9 @@ mod tests {
             Some(CommandErrorClass::TransientRelay)
         );
         // A different agent/store error is fatal (must NOT be retried).
-        let fatal = parse_frame(
-            r#"{"error":{"type":"errorStore","storeError":{"type":"duplicateName"}}}"#,
-        )
-        .unwrap();
+        let fatal =
+            parse_frame(r#"{"error":{"type":"errorStore","storeError":{"type":"duplicateName"}}}"#)
+                .unwrap();
         assert_eq!(
             classify_command_error(&fatal),
             Some(CommandErrorClass::Fatal)
