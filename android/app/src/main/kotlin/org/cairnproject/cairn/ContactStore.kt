@@ -61,6 +61,16 @@ class ContactStore(private val storage: StorageHandle) {
             .onFailure { Log.w(TAG, "contact save failed: ${it.message}") }
     }
 
+    /**
+     * Remove a contact so it no longer lists. The conversation's message
+     * history records (in the MESSAGES category) are left in place — a deeper
+     * purge (history + the libsimplex connection) is a follow-on.
+     */
+    fun delete(peerKeyHex: String) {
+        runCatching { storage.delete(CATEGORY, peerKeyHex.fromHex()) }
+            .onFailure { Log.w(TAG, "contact delete failed: ${it.message}") }
+    }
+
     private fun decode(peerKeyHex: String, bytes: ByteArray?): Contact? {
         if (bytes == null) return null
         return runCatching {

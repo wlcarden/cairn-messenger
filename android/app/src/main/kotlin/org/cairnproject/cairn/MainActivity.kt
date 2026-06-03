@@ -120,6 +120,8 @@ class MainActivity : ComponentActivity() {
      *   --es send   "<text>"          → send to the connected peer
      *   --es open   "1"               → openFirstContact (resume saved contact)
      *   --es verify "1"               → mark the open contact verified
+     *   --es rename "<name>"          → rename the open contact
+     *   --es delete "1"               → delete the open contact
      *
      * One-link pairing (D0026 §12): the inviter no longer needs the peer's key
      * up front — it learns the peer from the first envelope (TOFU) — so `create`
@@ -149,6 +151,14 @@ class MainActivity : ComponentActivity() {
         intent.getStringExtra("verify")?.let {
             Log.i(TAG, "driver: markCurrentVerified")
             viewModel.markCurrentVerified()
+        }
+        intent.getStringExtra("rename")?.let {
+            Log.i(TAG, "driver: renameCurrentContact")
+            viewModel.renameCurrentContact(it)
+        }
+        intent.getStringExtra("delete")?.let {
+            Log.i(TAG, "driver: deleteCurrentContact")
+            viewModel.deleteCurrentContact()
         }
         // Two-party loopback selftest (D0026 §12): runs BOTH peers in this one
         // process over the bundled Tor, proving the full envelope round-trip

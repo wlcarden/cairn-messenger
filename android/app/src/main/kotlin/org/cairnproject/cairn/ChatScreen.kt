@@ -10,6 +10,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -27,6 +28,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -299,6 +302,9 @@ private fun ChatView(state: UiState.Conversation, vm: MessagingViewModel) {
     val messages by vm.messages.collectAsStateWithLifecycle()
     var draft by remember { mutableStateOf("") }
     var showVerify by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var showRename by remember { mutableStateOf(false) }
+    var showDelete by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = { vm.backToContacts() }) { Text("‹ Contacts") }
@@ -312,6 +318,25 @@ private fun ChatView(state: UiState.Conversation, vm: MessagingViewModel) {
             if (!state.verified) {
                 TextButton(onClick = { showVerify = true }) { Text("Verify") }
             }
+            Box {
+                TextButton(onClick = { menuOpen = true }) { Text("⋮") }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Rename") },
+                        onClick = {
+                            menuOpen = false
+                            showRename = true
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Delete contact") },
+                        onClick = {
+                            menuOpen = false
+                            showDelete = true
+                        },
+                    )
+                }
+            }
         }
         if (showVerify) {
             VerifyDialog(
@@ -321,6 +346,35 @@ private fun ChatView(state: UiState.Conversation, vm: MessagingViewModel) {
                     showVerify = false
                 },
                 onDismiss = { showVerify = false },
+            )
+        }
+        if (showRename) {
+            RenameDialog(
+                current = state.displayName,
+                onConfirm = {
+                    vm.renameCurrentContact(it)
+                    showRename = false
+                },
+                onDismiss = { showRename = false },
+            )
+        }
+        if (showDelete) {
+            AlertDialog(
+                onDismissRequest = { showDelete = false },
+                title = { Text("Delete ${state.displayName}?") },
+                text = {
+                    Text(
+                        "This removes the contact from your list. Your message " +
+                            "history records are not purged.",
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        vm.deleteCurrentContact()
+                        showDelete = false
+                    }) { Text("Delete") }
+                },
+                dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } },
             )
         }
         LazyColumn(
@@ -402,6 +456,27 @@ private fun VerifyDialog(
             }
         },
         confirmButton = { TextButton(onClick = onConfirm) { Text("It matches — mark verified") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun RenameDialog(current: String, onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
+    var name by remember { mutableStateOf(current) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rename contact") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Name") },
+                singleLine = true,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(name) }, enabled = name.isNotBlank()) { Text("Save") }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }

@@ -307,6 +307,26 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         (_ui.value as? UiState.Conversation)?.let { _ui.value = it.copy(verified = true) }
     }
 
+    /** Rename the open conversation's contact (persisted in the CONTACTS store). */
+    fun renameCurrentContact(name: String) {
+        val clean = name.trim()
+        val peerHex = peerKeyRaw?.toHex() ?: return
+        if (clean.isEmpty()) return
+        val store = contacts ?: return
+        val existing = runCatching { store.get(peerHex) }.getOrNull() ?: return
+        runCatching { store.save(existing.copy(displayName = clean)) }
+        Log.i(TAG, "contact $peerHex renamed -> $clean")
+        (_ui.value as? UiState.Conversation)?.let { _ui.value = it.copy(displayName = clean) }
+    }
+
+    /** Delete the open conversation's contact, then return to the contact list. */
+    fun deleteCurrentContact() {
+        val peerHex = peerKeyRaw?.toHex() ?: return
+        runCatching { contacts?.delete(peerHex) }
+        Log.i(TAG, "contact $peerHex deleted")
+        backToContacts()
+    }
+
     /** Continuously receive + append messages from the peer (cancellable). */
     private fun startRecvLoop(connId: String, peer: ByteArray) {
         val s = session ?: return
