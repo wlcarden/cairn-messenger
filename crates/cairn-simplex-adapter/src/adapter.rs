@@ -38,7 +38,7 @@ use cairn_storage::{Storage, StorageError, categories};
 
 use crate::envelope::{
     ENVELOPE_SCHEMA_VERSION, EnvelopeSigner, MessageEnvelope, next_prior_envelope_hash,
-    verify_envelope,
+    verify_envelope, verify_envelope_learning_sender,
 };
 use crate::error::SimplexAdapterError;
 use crate::padding::{generate_padding, padding_bytes_required};
@@ -344,10 +344,54 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             return Err(SimplexAdapterError::EnvelopeSignatureVerifyFailed);
         }
 
+        self.finish_recv(expected_sender_operational_pubkey, &envelope, &cose)
+    }
+
+    /// Receive + verify the next message on `conn` **without a pre-known
+    /// sender**, learning the sender's operational identity from the envelope
+    /// itself (TOFU on first contact, D0026 §12).
+    ///
+    /// The inviter-side counterpart to [`Self::recv`]: after sharing a one-time
+    /// invitation, the inviter cannot know the acceptor's key until the first
+    /// envelope arrives. This verifies the `COSE_Sign1` against the key embedded
+    /// in the envelope (the 1:1-demo operational==device key, D0028 — see
+    /// [`verify_envelope_learning_sender`] for the security posture + the
+    /// op≠device safety argument), then runs the same chain-check / persist /
+    /// advance tail keyed on the **learned** sender.
+    ///
+    /// # Errors
+    ///
+    /// - the transport's error on `recv`.
+    /// - [`SimplexAdapterError::EnvelopeSignatureVerifyFailed`] — bad
+    ///   signature/AAD, or (always) an op≠device envelope.
+    /// - [`SimplexAdapterError::EnvelopeChainGap`] — the
+    ///   `prior_envelope_hash` did not link to this sender's recv chain.
+    /// - [`SimplexAdapterError::Storage`] — persisting failed, or a chain
+    ///   mutex was poisoned.
+    pub async fn recv_learning_sender(
+        &self,
+        conn: &ConnectionId,
+    ) -> Result<ReceivedMessage, SimplexAdapterError> {
+        let cose = self.transport.recv(conn).await?;
+        let envelope = verify_envelope_learning_sender(&cose)?;
+        let learned_sender = envelope.sender_operational_pubkey;
+        self.finish_recv(&learned_sender, &envelope, &cose)
+    }
+
+    /// Shared recv tail (D0026 §3.2): check the `prior_envelope_hash` against
+    /// `sender`'s recv chain, strip padding, persist under the
+    /// `(sender, me, message_number)` record id, and advance the chain. `sender`
+    /// is the expected peer in [`Self::recv`] and the learned peer in
+    /// [`Self::recv_learning_sender`]; the envelope is already verified.
+    fn finish_recv(
+        &self,
+        sender: &[u8; PUBLIC_KEY_LEN],
+        envelope: &MessageEnvelope,
+        cose: &[u8],
+    ) -> Result<ReceivedMessage, SimplexAdapterError> {
         // The message number is Cairn's recv-chain position (D0026 §3.2 (c)),
         // not transport-supplied.
-        let (expected_prior, message_number) =
-            self.recv_chain_state(expected_sender_operational_pubkey)?;
+        let (expected_prior, message_number) = self.recv_chain_state(sender)?;
         if envelope.prior_envelope_hash != expected_prior {
             return Err(SimplexAdapterError::EnvelopeChainGap {
                 last_observed_message_number: message_number.saturating_sub(1),
@@ -359,23 +403,15 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
         // payload field is already clean.
         let payload = envelope.payload.clone();
 
-        let record_id = message_record_id_for(
-            expected_sender_operational_pubkey,
-            &self.identity.operational_pubkey,
-            message_number,
-        );
-        self.storage.put(categories::MESSAGES, &record_id, &cose)?;
+        let record_id =
+            message_record_id_for(sender, &self.identity.operational_pubkey, message_number);
+        self.storage.put(categories::MESSAGES, &record_id, cose)?;
 
-        let next_hash = next_prior_envelope_hash(&cose)?;
-        advance_chain(
-            &self.recv_chains,
-            *expected_sender_operational_pubkey,
-            next_hash,
-            message_number,
-        )?;
+        let next_hash = next_prior_envelope_hash(cose)?;
+        advance_chain(&self.recv_chains, *sender, next_hash, message_number)?;
 
         Ok(ReceivedMessage {
-            sender_operational_pubkey: envelope.sender_operational_pubkey,
+            sender_operational_pubkey: *sender,
             payload,
             received_at_unix: now_unix(),
         })
@@ -594,6 +630,28 @@ mod tests {
         make_party_from_seed(seed, transport)
     }
 
+    /// A 1:1-identity party (operational pubkey == device signing key, the
+    /// D0028 demo model). This is the only model `recv_learning_sender` /
+    /// `verify_envelope_learning_sender` can verify, because the embedded
+    /// operational key doubles as the COSE verification key.
+    fn make_party_1to1(seed: [u8; 32], transport: MockSidecarTransport) -> Party {
+        let device_sk = SigningKey::from_seed(&Zeroizing::new(seed));
+        let device_vk = device_sk.verifying_key();
+        let config = SimplexAdapterConfig {
+            identity: LocalIdentity {
+                device_signer: Arc::new(device_sk),
+                operational_pubkey: device_vk.to_bytes(),
+            },
+            storage: make_storage(),
+            default_retry_budget: RetryBudget::default(),
+        };
+        Party {
+            device_vk,
+            operational_pubkey: device_vk.to_bytes(),
+            adapter: SimplexAdapter::new(transport, config).unwrap(),
+        }
+    }
+
     /// The `(device_vk, operational_pubkey)` a fixed `seed` derives (the
     /// same derivation `make_party_from_seed` uses).
     fn identity_for_seed(seed: [u8; 32]) -> (VerifyingKey, [u8; PUBLIC_KEY_LEN]) {
@@ -797,6 +855,50 @@ mod tests {
             .recv(&conn, &wrong_sender, &alice.device_vk)
             .await
             .unwrap_err();
+        assert!(
+            matches!(err, SimplexAdapterError::EnvelopeSignatureVerifyFailed),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn recv_learning_sender_learns_sender_on_first_contact() {
+        // TOFU (D0026 §12): bob receives WITHOUT pre-knowing alice's key,
+        // learning it from the envelope. Requires the 1:1 identity model
+        // (op == device) so the embedded operational key verifies the COSE.
+        let wire = MockSidecarTransport::new();
+        let alice = make_party_1to1([7u8; 32], wire.clone());
+        let bob = make_party_1to1([9u8; 32], wire.clone());
+        let conn = ConnectionId("conn-1".to_string());
+
+        alice
+            .adapter
+            .send(&conn, &bob.operational_pubkey, b"hello bob")
+            .await
+            .unwrap();
+
+        let received = bob.adapter.recv_learning_sender(&conn).await.unwrap();
+        assert_eq!(received.payload, b"hello bob");
+        assert_eq!(received.sender_operational_pubkey, alice.operational_pubkey);
+    }
+
+    #[tokio::test]
+    async fn recv_learning_sender_rejects_op_ne_device_envelope() {
+        // Safety-by-construction: under op≠device the envelope is signed by the
+        // device key but carries the (different) operational key, so verifying
+        // the signature against the embedded operational key FAILS — no sender
+        // is wrongly learned. `make_party` is deliberately op≠device.
+        let wire = MockSidecarTransport::new();
+        let alice = make_party(wire.clone());
+        let bob = make_party(wire.clone());
+        let conn = ConnectionId("conn-1".to_string());
+
+        alice
+            .adapter
+            .send(&conn, &bob.operational_pubkey, b"hi")
+            .await
+            .unwrap();
+        let err = bob.adapter.recv_learning_sender(&conn).await.unwrap_err();
         assert!(
             matches!(err, SimplexAdapterError::EnvelopeSignatureVerifyFailed),
             "got {err:?}"

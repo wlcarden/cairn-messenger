@@ -318,6 +318,56 @@ pub fn verify_envelope(
     MessageEnvelope::from_canonical_cbor(payload)
 }
 
+/// Verify an envelope **learning the sender from the envelope itself** — no
+/// pre-known device key (TOFU on first contact).
+///
+/// Used by the inviter-side pairing bootstrap (D0026 §12): the inviter shares a
+/// one-time invitation and cannot know the acceptor's key until the acceptor's
+/// first envelope arrives. This parses the `COSE_Sign1` payload **unverified**
+/// to read the embedded `sender_operational_pubkey`, then verifies the
+/// signature against THAT key.
+///
+/// **Assumes the v1 1:1 identity model (operational pubkey == device signing
+/// key, D0028).** In that model a valid signature against the embedded
+/// operational key proves the envelope is self-consistent and yields the
+/// sender's operational identity. The binding of that learned key to a
+/// real-world identity is the D0006 trust graph (a v1.x layer); this is no
+/// weaker than the demo's prior out-of-band key exchange, which was equally
+/// unauthenticated.
+///
+/// **Safe by construction under op≠device.** When the operational and device
+/// keys differ (the general model; capability tokens bind device→op per D0006
+/// §9), the signature was made by the device key, so verifying it against the
+/// embedded operational key simply **fails** — no envelope is wrongly accepted.
+/// A future op≠device pairing path must verify the embedded device key + its
+/// capability token, not assume op==device.
+///
+/// # Errors
+///
+/// - [`SimplexAdapterError::EnvelopeDecodeFailed`] if the `COSE_Sign1` bytes or
+///   the inner payload don't parse.
+/// - [`SimplexAdapterError::EnvelopeSignatureVerifyFailed`] if the embedded
+///   operational pubkey is not a valid Ed25519 key, or the signature does not
+///   verify against it (incl. every op≠device envelope).
+pub fn verify_envelope_learning_sender(
+    envelope_bytes: &[u8],
+) -> Result<MessageEnvelope, SimplexAdapterError> {
+    let cose = CoseSign1::from_bytes(envelope_bytes)
+        .map_err(|_| SimplexAdapterError::EnvelopeDecodeFailed)?;
+    let payload = cose
+        .payload()
+        .ok_or(SimplexAdapterError::EnvelopeDecodeFailed)?;
+    let envelope = MessageEnvelope::from_canonical_cbor(payload)?;
+    // 1:1 demo identity: the operational pubkey IS the device signing key, so
+    // it doubles as the COSE verification key. A bad key or a signature made by
+    // a DIFFERENT device key (op≠device) fails here.
+    let device_vk = VerifyingKey::from_bytes(&envelope.sender_operational_pubkey)
+        .map_err(|_| SimplexAdapterError::EnvelopeSignatureVerifyFailed)?;
+    cose.verify(&device_vk, DOMAIN_TAG)
+        .map_err(|_| SimplexAdapterError::EnvelopeSignatureVerifyFailed)?;
+    Ok(envelope)
+}
+
 /// Compute the `prior_envelope_hash` that the NEXT envelope between
 /// the same `(sender, recipient)` pair must commit to.
 ///

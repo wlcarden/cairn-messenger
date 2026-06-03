@@ -418,6 +418,45 @@ impl SimplexAdapterHandle {
             received_at_unix: received.received_at_unix,
         })
     }
+
+    /// Receive + verify the next message on `connection_id` **without a
+    /// pre-known sender**, learning the sender's operational pubkey from the
+    /// envelope (TOFU on first contact, D0026 §12). The inviter-side bootstrap:
+    /// after sharing a one-time invitation, the inviter cannot know the
+    /// acceptor's key until the first envelope arrives. Returns the verified
+    /// message (padding stripped) with the **learned** sender pubkey.
+    ///
+    /// Assumes the v1 1:1 identity model (operational pubkey == device signing
+    /// key); an op≠device envelope verifies to a different key and is rejected
+    /// (see `cairn_simplex_adapter::verify_envelope_learning_sender`). The
+    /// binding of the learned key to a real-world identity is the D0006 trust
+    /// graph (a v1.x layer).
+    ///
+    /// # Errors
+    ///
+    /// The facade mapping of any `SimplexAdapterError`:
+    /// [`CairnFfiError::SidecarFailure`] when the sidecar is unreachable,
+    /// [`CairnFfiError::EnvelopeVerifyFailed`] on a bad signature / op≠device
+    /// envelope, or [`CairnFfiError::EnvelopeChainGap`] on a gap.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+    )]
+    pub async fn recv_learning_sender(
+        &self,
+        connection_id: String,
+    ) -> Result<ReceivedMessageRecord, CairnFfiError> {
+        let received = self
+            .adapter
+            .recv_learning_sender(&ConnectionId(connection_id))
+            .await
+            .map_err(CairnFfiError::from)?;
+        Ok(ReceivedMessageRecord {
+            sender_operational_pubkey: received.sender_operational_pubkey.to_vec(),
+            payload: received.payload,
+            received_at_unix: received.received_at_unix,
+        })
+    }
 }
 
 /// On-device FFI self-test (D0026 §12) — boot the in-process `libsimplex`

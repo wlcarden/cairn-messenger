@@ -23,6 +23,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- In-app pairing (D0026 §12): scan a contact's invitation QR with the
+         camera. `required=false` so the app still installs on a camera-less
+         device — pairing then falls back to pasting the invitation link. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
     <application
         android:label="Cairn"
         android:icon="@mipmap/ic_launcher"

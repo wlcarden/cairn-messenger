@@ -136,7 +136,7 @@ pub use adapter::{
 };
 pub use envelope::{
     DOMAIN_TAG, ENVELOPE_SCHEMA_VERSION, EnvelopeSigner, MessageEnvelope, next_prior_envelope_hash,
-    verify_envelope,
+    verify_envelope, verify_envelope_learning_sender,
 };
 pub use error::SimplexAdapterError;
 pub use padding::{

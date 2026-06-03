@@ -198,6 +198,14 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.4")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
+    // === QR pairing (D0026 §12 in-app pairing) — ZXing, GOOGLE-PLAY-FREE ===
+    // GrapheneOS ships no Google Play Services, so ML Kit is out. `zxing:core`
+    // is pure-JVM QR ENCODE (invitation -> QR bitmap); `zxing-android-embedded`
+    // is a GMS-free CameraX scanner exposing the `ScanContract` ActivityResult
+    // API (its CaptureActivity manifest entry is merged automatically).
+    implementation("com.google.zxing:core:3.5.3")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+
     testImplementation("junit:junit:4.13.2")
     // The host-JVM FfiBoundaryTest (D0027 §8) loads the Rust .so via
     // JNA on the desktop JVM. The `@aar` JNA above packages

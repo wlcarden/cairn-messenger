@@ -90,11 +90,15 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         _torStatus.value = "Bundled Tor: $message"
     }
 
-    /** Create an invitation to share; then await the peer connecting. */
-    fun createInvitation(peerKeyHex: String) {
+    /**
+     * Create an invitation to share (inviter side). The peer's operational key
+     * is **learned from its first envelope** (TOFU, D0026 §12) — no need to
+     * exchange it beforehand, so the user shares one QR/link and is done.
+     */
+    fun createInvitation() {
         val s = session ?: return
         val myHex = (ui.value as? UiState.Ready)?.myKeyHex ?: s.publicKeyRaw.toHex()
-        peerKeyRaw = runCatching { peerKeyHex.trim().fromHex() }.getOrNull()
+        peerKeyRaw = null
         viewModelScope.launch {
             if (!awaitTor()) return@launch
             try {
@@ -103,7 +107,14 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 Log.i(TAG, "INVITE_BLOB=$blob")
                 _ui.value = UiState.Inviting(myHex, blob)
                 val connId = s.handle.awaitConnection()
-                onConnected(connId, myHex)
+                connectionId = connId
+                // The inviter does not yet know the peer. Learn it from the
+                // peer's first (0-length hello) envelope via TOFU, then go live.
+                _ui.value = UiState.Connecting(myHex)
+                val first = s.handle.recvLearningSender(connId)
+                val learned = first.senderOperationalPubkey
+                Log.i(TAG, "LEARNED peer=${learned.toHex()}")
+                goLive(connId, myHex, learned, firstInbound = first.payload)
             } catch (e: Exception) {
                 Log.e(TAG, "createInvitation failed", e)
                 _ui.value = UiState.Failed("invite: ${e.message}")
@@ -111,7 +122,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Accept a peer's `"<uri>|<peerKeyHex>"` invitation. */
+    /** Accept a peer's `"<uri>|<peerKeyHex>"` invitation (acceptor side). */
     fun acceptInvitation(blob: String) {
         val s = session ?: return
         val myHex = (ui.value as? UiState.Ready)?.myKeyHex ?: s.publicKeyRaw.toHex()
@@ -120,7 +131,11 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
             _ui.value = UiState.Failed("invite must be <uri>|<peerKeyHex>")
             return
         }
-        peerKeyRaw = runCatching { parts[1].fromHex() }.getOrNull()
+        val peer = runCatching { parts[1].fromHex() }.getOrNull()
+        if (peer == null) {
+            _ui.value = UiState.Failed("invite has a malformed peer key")
+            return
+        }
         viewModelScope.launch {
             if (!awaitTor()) return@launch
             // Show a visible in-flight state: the SMP duplex handshake is
@@ -128,7 +143,13 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
             _ui.value = UiState.Connecting(myHex)
             try {
                 val connId = s.handle.acceptInvitation(parts[0])
-                onConnected(connId, myHex)
+                connectionId = connId
+                // Tell the inviter who we are: a 0-length hello so its
+                // recvLearningSender learns our operational key (the inviter
+                // could not know it before this). Then go live.
+                s.handle.send(connId, peer, ByteArray(0))
+                Log.i(TAG, "sent hello so the inviter learns our key")
+                goLive(connId, myHex, peer, firstInbound = null)
             } catch (e: Exception) {
                 Log.e(TAG, "acceptInvitation failed", e)
                 _ui.value = UiState.Failed("accept: ${e.message}")
@@ -154,12 +175,21 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun onConnected(connId: String, myHex: String) {
+    /**
+     * Both sides converge here once the peer key is known: pin it, go
+     * Connected, surface any **real** first message, and start the steady-state
+     * recv loop. `firstInbound` is the inviter's already-consumed TOFU envelope
+     * (a 0-length hello is the key-exchange marker, not a chat line — skip it).
+     */
+    private fun goLive(connId: String, myHex: String, peer: ByteArray, firstInbound: ByteArray?) {
         connectionId = connId
-        val peer = peerKeyRaw
-        Log.i(TAG, "CONNECTED connId=$connId peer=${peer?.toHex() ?: "(unset)"}")
-        _ui.value = UiState.Connected(myHex, peer?.toHex() ?: "(peer key unset)")
-        if (peer != null) startRecvLoop(connId, peer)
+        peerKeyRaw = peer
+        Log.i(TAG, "CONNECTED connId=$connId peer=${peer.toHex()}")
+        _ui.value = UiState.Connected(myHex, peer.toHex())
+        if (firstInbound != null && firstInbound.isNotEmpty()) {
+            _messages.update { it + ChatMessage(mine = false, text = String(firstInbound)) }
+        }
+        startRecvLoop(connId, peer)
     }
 
     /** Continuously receive + append messages from the peer. */
@@ -170,6 +200,8 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 try {
                     // op == device key in the demo, so peer is both.
                     val r = s.handle.recv(connId, peer, peer)
+                    // 0-length payloads are hello/key-exchange markers, not chat.
+                    if (r.payload.isEmpty()) continue
                     val text = String(r.payload)
                     Log.i(TAG, "RECV len=${text.length}: $text")
                     _messages.update { it + ChatMessage(mine = false, text = text) }
