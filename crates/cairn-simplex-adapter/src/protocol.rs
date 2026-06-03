@@ -366,6 +366,59 @@ pub(crate) fn parse_snd_file_complete(resp: &Resp<'_>) -> Option<i64> {
         .or_else(|| resp.body.get("fileId").and_then(Value::as_i64))
 }
 
+/// Detect send-file completion(s) reported via a `chatItemsStatusesUpdated`
+/// event — the **Android / in-process `libsimplex`** shape (D0026 §12).
+///
+/// Unlike the ws-core CLI (which emits a discrete `sndFileCompleteXFTP`,
+/// [`parse_snd_file_complete`]), the FFI transport signals an XFTP upload
+/// finishing by flipping the chat item's file status to `sndComplete` inside a
+/// `chatItemsStatusesUpdated` batch — there is NO standalone
+/// `sndFileCompleteXFTP` on-device. Without matching this, `await_snd_file_complete`
+/// never observes completion, hangs to its 180 s timeout, and — because it is
+/// the single drainer while parked — blocks the sender's own recv loop for that
+/// whole window (the two-device "B→A right after A→B" finding, D0026 §12).
+///
+/// Returns the `fileId`s of items whose **send** finished. On-device
+/// (frame-verified, D0026 §12) a finished XFTP upload surfaces as the item's
+/// `meta.itemStatus = {"type":"sndSent","sndProgress":"complete"}` — the file
+/// record's own `fileStatus` still reads `sndStored` in that same event, so the
+/// item-level `sndProgress` is the observable "done" signal, not the file
+/// status. A `sndProgress` that is not yet `complete` (e.g. in-progress) matches
+/// nothing, so the await keeps waiting. The ws-core CLI shape
+/// (`file.fileStatus.type == "sndComplete"`) is accepted as a fallback.
+pub(crate) fn parse_snd_complete_file_ids(resp: &Resp<'_>) -> Vec<i64> {
+    if resp.tag != "chatItemsStatusesUpdated" {
+        return Vec::new();
+    }
+    let Some(items) = resp.body.get("chatItems").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let chat_item = item.get("chatItem")?;
+            // Only outbound file items can "complete" a send.
+            let file_id = chat_item.get("file")?.get("fileId")?.as_i64()?;
+            // Primary (Android / in-process libsimplex): the item's send progress
+            // reaches "complete".
+            let snd_progress_complete = chat_item
+                .get("meta")
+                .and_then(|m| m.get("itemStatus"))
+                .and_then(|s| s.get("sndProgress"))
+                .and_then(Value::as_str)
+                == Some("complete");
+            // Fallback (ws-core CLI): the file record itself reaches sndComplete.
+            let file_status_complete = chat_item
+                .get("file")
+                .and_then(|f| f.get("fileStatus"))
+                .and_then(|s| s.get("type"))
+                .and_then(Value::as_str)
+                == Some("sndComplete");
+            (snd_progress_complete || file_status_complete).then_some(file_id)
+        })
+        .collect()
+}
+
 /// A received-file *completion* (`rcvFileComplete`): the local path the
 /// sidecar wrote the decrypted file to (Cairn reads it back as the envelope
 /// bytes), plus the `fileId` so the recv path can route the completion to the
@@ -604,6 +657,49 @@ mod tests {
             parse_snd_file_complete(&Resp::from_frame(&progress).unwrap()),
             None
         );
+    }
+
+    #[test]
+    fn detects_snd_complete_via_chat_item_statuses() {
+        // On-device (frame-verified, D0026 §12): a finished XFTP upload surfaces
+        // as the item's `meta.itemStatus.sndProgress == "complete"` inside a
+        // `chatItemsStatusesUpdated` batch — note the file's own `fileStatus`
+        // still reads `sndStored` in this same event. The FFI frame uses the
+        // `result` envelope key.
+        let complete = parse_frame(
+            r#"{"result":{"type":"chatItemsStatusesUpdated","chatItems":[{"chatItem":{"file":{"fileId":12,"fileStatus":{"type":"sndStored"}},"meta":{"itemStatus":{"sndProgress":"complete","type":"sndSent"}}}}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parse_snd_complete_file_ids(&Resp::from_frame(&complete).unwrap()),
+            vec![12]
+        );
+
+        // An in-progress send (no sndProgress=complete yet) is NOT completion →
+        // empty (the await must keep waiting until the upload actually finishes).
+        let progress = parse_frame(
+            r#"{"result":{"type":"chatItemsStatusesUpdated","chatItems":[{"chatItem":{"file":{"fileId":12,"fileStatus":{"type":"sndStored"}},"meta":{"itemStatus":{"type":"sndSent"}}}}]}}"#,
+        )
+        .unwrap();
+        assert!(parse_snd_complete_file_ids(&Resp::from_frame(&progress).unwrap()).is_empty());
+
+        // ws-core CLI fallback shape: the file record itself reaches sndComplete.
+        let cli = parse_frame(
+            r#"{"resp":{"type":"chatItemsStatusesUpdated","chatItems":[{"chatItem":{"file":{"fileId":7,"fileStatus":{"type":"sndComplete"}}}}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parse_snd_complete_file_ids(&Resp::from_frame(&cli).unwrap()),
+            vec![7]
+        );
+
+        // A status update with no file (a plain text message's delivery status)
+        // yields nothing.
+        let text = parse_frame(
+            r#"{"result":{"type":"chatItemsStatusesUpdated","chatItems":[{"chatItem":{"meta":{"itemStatus":{"sndProgress":"complete","type":"sndSent"}}}}]}}"#,
+        )
+        .unwrap();
+        assert!(parse_snd_complete_file_ids(&Resp::from_frame(&text).unwrap()).is_empty());
     }
 
     #[test]
