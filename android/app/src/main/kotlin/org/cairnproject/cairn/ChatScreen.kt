@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -39,6 +40,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -164,6 +166,7 @@ private fun ContactListView(state: UiState.ContactList, vm: MessagingViewModel) 
                             "peer ${contact.peerKeyHex.take(16)}…",
                             style = MaterialTheme.typography.bodySmall,
                         )
+                        TrustBadge(contact.verified)
                     }
                 }
             }
@@ -237,12 +240,29 @@ private fun InvitingView(state: UiState.Inviting) {
 private fun ChatView(state: UiState.Conversation, vm: MessagingViewModel) {
     val messages by vm.messages.collectAsStateWithLifecycle()
     var draft by remember { mutableStateOf("") }
+    var showVerify by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = { vm.backToContacts() }) { Text("‹ Contacts") }
-            Text(
-                "${state.displayName} · ${state.peerKeyHex.take(12)}…",
-                style = MaterialTheme.typography.labelMedium,
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "${state.displayName} · ${state.peerKeyHex.take(12)}…",
+                    style = MaterialTheme.typography.labelMedium,
+                )
+                TrustBadge(state.verified)
+            }
+            if (!state.verified) {
+                TextButton(onClick = { showVerify = true }) { Text("Verify") }
+            }
+        }
+        if (showVerify) {
+            VerifyDialog(
+                state,
+                onConfirm = {
+                    vm.markCurrentVerified()
+                    showVerify = false
+                },
+                onDismiss = { showVerify = false },
             )
         }
         LazyColumn(
@@ -271,6 +291,61 @@ private fun ChatView(state: UiState.Conversation, vm: MessagingViewModel) {
             ) { Text("Send") }
         }
     }
+}
+
+/**
+ * Trust badge for a contact (D0006 §70). Green ✓ = the user confirmed the
+ * safety number out of band; amber = TOFU-paired but not yet verified. (The
+ * automated transitive-trust classification from cairn-trust-graph is a
+ * follow-on, once contacts carry attestations.)
+ */
+@Composable
+private fun TrustBadge(verified: Boolean) {
+    val (label, color) = if (verified) {
+        "✓ Verified" to Color(0xFF2E7D32)
+    } else {
+        "• Unverified (first contact)" to Color(0xFFB26A00)
+    }
+    Text(label, color = color, style = MaterialTheme.typography.labelMedium)
+}
+
+/**
+ * Safety-number comparison dialog: the user compares the shared number with
+ * their contact out of band and, if it matches, marks the contact verified.
+ */
+@Composable
+private fun VerifyDialog(
+    state: UiState.Conversation,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Verify ${state.displayName}") },
+        text = {
+            Column {
+                Text(
+                    "Compare this safety number with your contact — read it aloud, " +
+                        "or hold your screens side by side. It is the same on both " +
+                        "devices only if no one is intercepting your keys.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    Verification.safetyNumber(state.myKeyHex, state.peerKeyHex),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "If the numbers differ, a different key is in use — do not mark verified.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("It matches — mark verified") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable

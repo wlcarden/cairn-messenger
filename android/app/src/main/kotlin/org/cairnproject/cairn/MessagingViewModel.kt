@@ -37,6 +37,8 @@ sealed interface UiState {
         val myKeyHex: String,
         val peerKeyHex: String,
         val displayName: String,
+        /** Whether the user has confirmed the safety number out of band. */
+        val verified: Boolean,
     ) : UiState
 
     /** A fatal bootstrap/transport error. */
@@ -184,7 +186,12 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
             }
             _messages.value = hist.map { ChatMessage(it.mine, String(it.payload)) }
             Log.i(TAG, "opened ${contact.displayName}: ${hist.size} history msgs")
-            _ui.value = UiState.Conversation(myHex, contact.peerKeyHex, contact.displayName)
+            _ui.value = UiState.Conversation(
+                myHex,
+                contact.peerKeyHex,
+                contact.displayName,
+                verified = contact.verified,
+            )
             if (awaitTor()) startRecvLoop(contact.connId, peer)
         }
     }
@@ -257,8 +264,24 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         if (firstInbound != null && firstInbound.isNotEmpty()) {
             _messages.value = listOf(ChatMessage(mine = false, text = String(firstInbound)))
         }
-        _ui.value = UiState.Conversation(myHex, peerHex, peerHex.take(8))
+        // A freshly-paired contact is TOFU-unverified until the user confirms
+        // the safety number out of band (D0006 §70).
+        _ui.value = UiState.Conversation(myHex, peerHex, peerHex.take(8), verified = false)
         startRecvLoop(connId, peer)
+    }
+
+    /**
+     * Mark the open conversation's contact as verified — the user asserts they
+     * compared the safety number out of band and it matched (D0006 §70). Local
+     * trust, persisted in the encrypted CONTACTS record.
+     */
+    fun markCurrentVerified() {
+        val peerHex = peerKeyRaw?.toHex() ?: return
+        val store = contacts ?: return
+        val existing = runCatching { store.get(peerHex) }.getOrNull() ?: return
+        runCatching { store.save(existing.copy(verified = true)) }
+        Log.i(TAG, "contact $peerHex marked VERIFIED")
+        (_ui.value as? UiState.Conversation)?.let { _ui.value = it.copy(verified = true) }
     }
 
     /** Continuously receive + append messages from the peer (cancellable). */

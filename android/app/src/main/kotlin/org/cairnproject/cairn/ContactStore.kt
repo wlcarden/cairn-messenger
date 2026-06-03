@@ -21,6 +21,11 @@ data class Contact(
     val displayName: String,
     /** Unix-seconds when this contact was first paired. */
     val pairedAtUnix: Long,
+    /**
+     * `true` once the user has confirmed the safety number out of band (D0006
+     * §70 in-person / channel-verified). `false` = paired but TOFU-unverified.
+     */
+    val verified: Boolean = false,
 )
 
 /**
@@ -49,6 +54,7 @@ class ContactStore(private val storage: StorageHandle) {
             .put("conn", contact.connId)
             .put("name", contact.displayName)
             .put("at", contact.pairedAtUnix)
+            .put("v", contact.verified)
             .toString()
             .toByteArray()
         runCatching { storage.put(CATEGORY, contact.peerKeyHex.fromHex(), payload) }
@@ -64,6 +70,7 @@ class ContactStore(private val storage: StorageHandle) {
                 connId = o.getString("conn"),
                 displayName = o.optString("name", peerKeyHex.take(8)),
                 pairedAtUnix = o.optLong("at", 0),
+                verified = o.optBoolean("v", false),
             )
         }.getOrNull()
     }

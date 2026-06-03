@@ -140,6 +140,10 @@ class MainActivity : ComponentActivity() {
             Log.i(TAG, "driver: openFirstContact")
             viewModel.openFirstContact()
         }
+        intent.getStringExtra("verify")?.let {
+            Log.i(TAG, "driver: markCurrentVerified")
+            viewModel.markCurrentVerified()
+        }
         // Two-party loopback selftest (D0026 §12): runs BOTH peers in this one
         // process over the bundled Tor, proving the full envelope round-trip
         // without a second device. Trigger AFTER Tor is up (the proxy is fixed
