@@ -71,6 +71,9 @@ android {
     }
     buildFeatures {
         compose = true
+        // Generates BuildConfig.DEBUG so key-bearing logs (MY_PUBKEY /
+        // INVITE_BLOB / LEARNED peer) can be gated out of release builds.
+        buildConfig = true
     }
     composeOptions {
         // Kotlin 1.9.24 pairs with Compose Compiler 1.5.14.

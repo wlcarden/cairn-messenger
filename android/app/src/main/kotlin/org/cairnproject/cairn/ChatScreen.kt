@@ -6,9 +6,12 @@ package org.cairnproject.cairn
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +35,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -41,16 +45,20 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -63,6 +71,7 @@ import com.journeyapps.barcodescanner.ScanOptions
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 /**
  * The Cairn chat surface (D0003 Kotlin UI). Renders the [MessagingViewModel]
@@ -534,23 +543,47 @@ private fun ChatView(state: UiState.Conversation, vm: MessagingViewModel) {
             )
         }
         val listState = rememberLazyListState()
-        LaunchedEffect(messages.size) {
-            if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+        val scope = rememberCoroutineScope()
+        val atBottom by remember {
+            derivedStateOf {
+                val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()
+                last == null || last.index >= messages.lastIndex - 1
+            }
         }
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
+        // Auto-scroll to the newest only when already near the bottom (or it's my
+        // own send) — don't yank the view while the user reads back history.
+        LaunchedEffect(messages.size) {
+            if (messages.isNotEmpty() && (atBottom || messages.last().mine)) {
+                listState.animateScrollToItem(messages.lastIndex)
+            }
+        }
+        Box(
+            Modifier
                 .weight(1f)
-                .fillMaxWidth()
-                .padding(vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+                .fillMaxWidth(),
         ) {
-            itemsIndexed(messages) { i, msg ->
-                val prev = messages.getOrNull(i - 1)
-                if (prev == null || dayKey(prev.tsUnix) != dayKey(msg.tsUnix)) {
-                    DateSeparator(msg.tsUnix)
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                itemsIndexed(messages) { i, msg ->
+                    val prev = messages.getOrNull(i - 1)
+                    if (prev == null || dayKey(prev.tsUnix) != dayKey(msg.tsUnix)) {
+                        DateSeparator(msg.tsUnix)
+                    }
+                    MessageBubble(msg, onRetry = { vm.resend(it.text) })
                 }
-                MessageBubble(msg, onRetry = { vm.resend(it.text) })
+            }
+            if (!atBottom) {
+                FilledTonalButton(
+                    onClick = { scope.launch { listState.animateScrollToItem(messages.lastIndex) } },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp),
+                ) { Text("↓ Newest") }
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -733,8 +766,11 @@ private fun RenameDialog(current: String, onConfirm: (String) -> Unit, onDismiss
     )
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageBubble(msg: ChatMessage, onRetry: (ChatMessage) -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     val container = if (msg.mine) {
         MaterialTheme.colorScheme.primaryContainer
     } else {
@@ -749,12 +785,16 @@ private fun MessageBubble(msg: ChatMessage, onRetry: (ChatMessage) -> Unit) {
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (msg.mine) Arrangement.End else Arrangement.Start,
     ) {
-        val cardMod = if (msg.status == SendStatus.FAILED) {
-            Modifier.clickable { onRetry(msg) }
-        } else {
-            Modifier
-        }
-        Card(modifier = cardMod, colors = CardDefaults.cardColors(containerColor = container)) {
+        Card(
+            modifier = Modifier.combinedClickable(
+                onClick = { if (msg.status == SendStatus.FAILED) onRetry(msg) },
+                onLongClick = {
+                    clipboard.setText(AnnotatedString(msg.text))
+                    Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+                },
+            ),
+            colors = CardDefaults.cardColors(containerColor = container),
+        ) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                 Text(msg.text, color = onColor)
                 Row(verticalAlignment = Alignment.CenterVertically) {

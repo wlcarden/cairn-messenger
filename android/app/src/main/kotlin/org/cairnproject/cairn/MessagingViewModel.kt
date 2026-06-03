@@ -164,7 +164,9 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 session = s
                 contacts = ContactStore(s.storage)
                 myHex = s.publicKeyRaw.toHex()
-                Log.i(TAG, "MY_PUBKEY=$myHex")
+                // A public key, but still identifying metadata — keep it out of
+                // release logcat (debug keeps it for the test harnesses).
+                if (BuildConfig.DEBUG) Log.i(TAG, "MY_PUBKEY=$myHex")
                 showContacts()
             } catch (e: Exception) {
                 Log.w(TAG, "unlock failed: ${e.message}")
@@ -226,7 +228,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 // One scheme-validated token carries the SMP link + our key — no
                 // fragile "<uri>|<key>" split (a "|" is legal in a URI) (H4).
                 val blob = "cairn://invite?k=$myHex&u=" + URLEncoder.encode(uri, "UTF-8")
-                Log.i(TAG, "INVITE_BLOB=$blob")
+                if (BuildConfig.DEBUG) Log.i(TAG, "INVITE_BLOB=$blob")
                 _ui.value = UiState.Inviting(myHex, blob)
                 val connId = s.handle.awaitConnection()
                 connectionId = connId
@@ -234,7 +236,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 // Learn the peer from its first (0-length hello) envelope (TOFU).
                 val first = s.handle.recvLearningSender(connId)
                 val learned = first.senderOperationalPubkey
-                Log.i(TAG, "LEARNED peer=${learned.toHex()}")
+                if (BuildConfig.DEBUG) Log.i(TAG, "LEARNED peer=${learned.toHex()}")
                 goLive(connId, learned, firstInbound = first.payload)
             } catch (e: CancellationException) {
                 throw e
