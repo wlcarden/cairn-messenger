@@ -51,6 +51,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -80,6 +81,8 @@ fun ChatScreen(vm: MessagingViewModel) {
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
 
             when (val state = ui) {
+                is UiState.Welcome -> WelcomeScreen(vm)
+
                 is UiState.Locked -> LockScreen(state, vm)
 
                 is UiState.Starting -> Centered {
@@ -124,9 +127,56 @@ fun ChatScreen(vm: MessagingViewModel) {
     }
 }
 
+/** A one-screen "what is Cairn / no account / no reset" explainer (C4 onboarding). */
+@Composable
+private fun WelcomeScreen(vm: MessagingViewModel) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(top = 40.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("Welcome to Cairn", style = MaterialTheme.typography.titleLarge)
+        Text(
+            "Cairn is a private messenger — no phone number, no account. Your " +
+                "messages, contacts, and keys live only on this device, encrypted " +
+                "by a passphrase you choose next.",
+            Modifier.padding(top = 16.dp),
+            textAlign = TextAlign.Center,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            "There is no server and no password reset: if you forget your " +
+                "passphrase, your data can't be recovered. Write it down somewhere safe.",
+            Modifier.padding(top = 12.dp),
+            textAlign = TextAlign.Center,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Button(
+            onClick = { vm.beginSetup() },
+            modifier = Modifier.padding(top = 24.dp),
+        ) { Text("Get started") }
+    }
+}
+
+/** Minimum first-launch passphrase length (a too-short secret = brute-forceable KEK). */
+private const val MIN_PASSPHRASE = 8
+
 @Composable
 private fun LockScreen(state: UiState.Locked, vm: MessagingViewModel) {
     var pass by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+    var reveal by remember { mutableStateOf(false) }
+    val transform = if (reveal) VisualTransformation.None else PasswordVisualTransformation()
+    val tooShort = pass.length < MIN_PASSPHRASE
+    val mismatch = state.firstLaunch && confirm.isNotEmpty() && pass != confirm
+    val canSubmit = if (state.firstLaunch) {
+        pass.length >= MIN_PASSPHRASE && pass == confirm
+    } else {
+        pass.isNotBlank()
+    }
+
     Column(
         Modifier
             .fillMaxSize()
@@ -140,9 +190,8 @@ private fun LockScreen(state: UiState.Locked, vm: MessagingViewModel) {
         )
         Text(
             if (state.firstLaunch) {
-                "This passphrase encrypts your messages, contacts, and keys on " +
-                    "this device. There is no way to recover it — write it down " +
-                    "somewhere safe."
+                "This passphrase encrypts everything on this device and can't be " +
+                    "reset — pick one you'll remember, and write it down somewhere safe."
             } else {
                 "Unlock your encrypted data on this device."
             },
@@ -155,12 +204,50 @@ private fun LockScreen(state: UiState.Locked, vm: MessagingViewModel) {
             onValueChange = { pass = it },
             label = { Text("Passphrase") },
             singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
+            visualTransformation = transform,
+            trailingIcon = {
+                TextButton(onClick = { reveal = !reveal }) {
+                    Text(if (reveal) "Hide" else "Show")
+                }
+            },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 20.dp),
         )
+        if (state.firstLaunch) {
+            OutlinedTextField(
+                value = confirm,
+                onValueChange = { confirm = it },
+                label = { Text("Confirm passphrase") },
+                singleLine = true,
+                isError = mismatch,
+                visualTransformation = transform,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp),
+            )
+            val (hint, bad) = when {
+                pass.isEmpty() -> "At least $MIN_PASSPHRASE characters — there is no reset." to false
+                tooShort -> "Too short — at least $MIN_PASSPHRASE characters." to true
+                mismatch -> "Passphrases don't match." to true
+                else -> "Looks good — remember it, and write it down." to false
+            }
+            val hintColor = if (bad) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            Text(
+                hint,
+                color = hintColor,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
         if (state.error != null) {
             Text(
                 state.error,
@@ -171,7 +258,7 @@ private fun LockScreen(state: UiState.Locked, vm: MessagingViewModel) {
         }
         Button(
             onClick = { vm.unlock(pass) },
-            enabled = pass.isNotBlank(),
+            enabled = canSubmit,
             modifier = Modifier.padding(top = 20.dp),
         ) { Text(if (state.firstLaunch) "Create & unlock" else "Unlock") }
     }

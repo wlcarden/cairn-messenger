@@ -42,6 +42,9 @@ fun Contact.trust(): Trust = when {
 
 /** Top-level UI phase. */
 sealed interface UiState {
+    /** First-ever launch: a one-screen "what is Cairn" explainer before setup. */
+    data object Welcome : UiState
+
     /** Before unlock: ask for the passphrase (set it on [firstLaunch]). */
     data class Locked(val firstLaunch: Boolean, val error: String?) : UiState
 
@@ -113,7 +116,13 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         // is only meaningful if it's keyed by a user secret. First launch (no
         // store yet) sets the passphrase; later launches must match it.
         val storeExists = java.io.File(getApplication<Application>().filesDir, "store.db").exists()
-        _ui.value = UiState.Locked(firstLaunch = !storeExists, error = null)
+        _ui.value =
+            if (storeExists) UiState.Locked(firstLaunch = false, error = null) else UiState.Welcome
+    }
+
+    /** Welcome → passphrase setup: the user tapped "Get started" (C4 onboarding). */
+    fun beginSetup() {
+        _ui.value = UiState.Locked(firstLaunch = true, error = null)
     }
 
     /**

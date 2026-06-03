@@ -127,6 +127,7 @@ class MainActivity : ComponentActivity() {
      * app has reached Ready.
      *
      *   --es unlock "<passphrase>"    → unlock the encrypted session
+     *   --es beginsetup "1"           → Welcome → first-launch passphrase screen
      *   --es create "1"               → createInvitation (logs INVITE_BLOB)
      *   --es invite "<uri>|<peerHex>" → acceptInvitation
      *   --es send   "<text>"          → send to the connected peer
@@ -145,6 +146,10 @@ class MainActivity : ComponentActivity() {
         intent.getStringExtra("unlock")?.let {
             Log.i(TAG, "driver: unlock")
             viewModel.unlock(it)
+        }
+        intent.getStringExtra("beginsetup")?.let {
+            Log.i(TAG, "driver: beginSetup")
+            viewModel.beginSetup()
         }
         intent.getStringExtra("create")?.let {
             Log.i(TAG, "driver: createInvitation")
