@@ -104,6 +104,18 @@ class MainActivity : ComponentActivity() {
         handleDriverExtras(intent)
     }
 
+    // Whole-app foreground state drives the recv router (C2): a message for a
+    // VISIBLE conversation appends to the live view; otherwise it notifies.
+    override fun onStart() {
+        super.onStart()
+        viewModel.onAppForeground(true)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        viewModel.onAppForeground(false)
+    }
+
     /**
      * Demo-automation hook for adb-driven two-device tests. Reads optional
      * string extras and dispatches them to the [MessagingViewModel] — the

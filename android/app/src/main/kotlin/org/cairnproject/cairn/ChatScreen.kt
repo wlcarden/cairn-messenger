@@ -110,10 +110,14 @@ fun ChatScreen(vm: MessagingViewModel) {
 
                 is UiState.Failed -> Centered {
                     Text(
-                        "Failed: ${state.message}",
+                        "Something went wrong:\n${state.message}",
                         color = MaterialTheme.colorScheme.error,
                         textAlign = TextAlign.Center,
                     )
+                    Button(
+                        onClick = { vm.dismissFailure() },
+                        modifier = Modifier.padding(top = 16.dp),
+                    ) { Text("Back to contacts") }
                 }
             }
         }
@@ -205,6 +209,14 @@ private fun ContactListView(state: UiState.ContactList, vm: MessagingViewModel) 
     }
 
     Column(Modifier.verticalScroll(rememberScrollState())) {
+        if (state.error != null) {
+            Text(
+                state.error,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
         Text("Your Cairn key", style = MaterialTheme.typography.titleSmall)
         SelectableBlock(state.myKeyHex)
 

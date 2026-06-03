@@ -49,7 +49,12 @@ sealed interface UiState {
     data object Starting : UiState
 
     /** Home: the list of saved contacts + add (invite / scan) actions. */
-    data class ContactList(val myKeyHex: String, val contacts: List<Contact>) : UiState
+    data class ContactList(
+        val myKeyHex: String,
+        val contacts: List<Contact>,
+        /** A non-fatal error (e.g. a malformed pasted invitation) shown inline. */
+        val error: String? = null,
+    ) : UiState
 
     /** I created an invitation; show [inviteToShare] as a QR for a contact. */
     data class Inviting(val myKeyHex: String, val inviteToShare: String) : UiState
@@ -92,9 +97,15 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     private var contacts: ContactStore? = null
 
     @Volatile private var torReady = false
+    @Volatile private var appForeground = true
     private var connectionId: String? = null
     private var peerKeyRaw: ByteArray? = null
-    private var recvJob: Job? = null
+
+    /**
+     * One receive loop per saved contact (connId → job) — global, not just the
+     * open conversation, so messages arrive + notify in the background (C2).
+     */
+    private val recvJobs = mutableMapOf<String, Job>()
     private var myHex: String = ""
 
     init {
@@ -136,10 +147,11 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Refresh the contact list from the encrypted store + show the home screen. */
-    private fun showContacts() {
+    private fun showContacts(error: String? = null) {
         val list = runCatching { contacts?.list() ?: emptyList() }.getOrDefault(emptyList())
         Log.i(TAG, "contacts: ${list.size}")
-        _ui.value = UiState.ContactList(myHex, list)
+        _ui.value = UiState.ContactList(myHex, list, error)
+        ensureReceiving()
     }
 
     /** The Activity signals the bundled Tor is bootstrapped (SOCKS up). */
@@ -150,6 +162,16 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onTorFailed(message: String) {
         _torStatus.value = "Bundled Tor: $message"
+    }
+
+    /** MainActivity reports whole-app foreground state (notify vs. live append). */
+    fun onAppForeground(foreground: Boolean) {
+        appForeground = foreground
+    }
+
+    /** Leave the terminal error screen (C3) — back to contacts if the session is up. */
+    fun dismissFailure() {
+        if (session != null) showContacts() else _ui.value = UiState.Locked(false, null)
     }
 
     /**
@@ -187,12 +209,12 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         val s = session ?: return
         val parts = blob.trim().split("|", limit = 2)
         if (parts.size != 2) {
-            _ui.value = UiState.Failed("invite must be <uri>|<peerKeyHex>")
+            showContacts(error = "That doesn't look like a Cairn invitation.")
             return
         }
         val peer = runCatching { parts[1].fromHex() }.getOrNull()
         if (peer == null) {
-            _ui.value = UiState.Failed("invite has a malformed peer key")
+            showContacts(error = "That invitation's key looks malformed.")
             return
         }
         viewModelScope.launch {
@@ -223,7 +245,6 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         val peer = runCatching { contact.peerKeyHex.fromHex() }.getOrNull() ?: return
         peerKeyRaw = peer
         connectionId = contact.connId
-        recvJob?.cancel()
         _messages.value = emptyList()
         viewModelScope.launch {
             val hist = withContext(Dispatchers.IO) {
@@ -238,8 +259,10 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 contact.displayName,
                 trust = contact.trust(),
             )
-            if (awaitTor()) startRecvLoop(contact.connId, peer)
         }
+        // The global receive manager already covers this contact; ensure its
+        // loop is running (e.g. the first open right after unlock).
+        ensureReceiving()
     }
 
     /**
@@ -257,10 +280,8 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Leave the conversation; cancel the recv loop + return to the contact list. */
+    /** Leave the conversation; keep receiving in the background + show contacts. */
     fun backToContacts() {
-        recvJob?.cancel()
-        recvJob = null
         connectionId = null
         peerKeyRaw = null
         _messages.value = emptyList()
@@ -313,7 +334,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         // A freshly-paired contact is TOFU-unverified until the user confirms
         // the safety number out of band (D0006 §70).
         _ui.value = UiState.Conversation(myHex, peerHex, peerHex.take(8), Trust.UNVERIFIED)
-        startRecvLoop(connId, peer)
+        ensureReceiving()
     }
 
     /**
@@ -362,19 +383,21 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
      * downgrade persists as plain unverified across a restart, since a contact
      * record is keyed by its peer key and can't hold a conflicting one.)
      */
-    private fun onPeerKeyMismatch() {
-        val peerHex = peerKeyRaw?.toHex() ?: return
+    private fun onPeerKeyMismatch(peerHex: String) {
         contacts?.let { store ->
             runCatching { store.get(peerHex) }.getOrNull()?.let { c ->
                 runCatching { store.save(c.copy(verified = false)) }
             }
         }
         Log.w(TAG, "PEER KEY MISMATCH on $peerHex — downgraded; surfacing KEY_CHANGED")
-        (_ui.value as? UiState.Conversation)?.let { _ui.value = it.copy(trust = Trust.KEY_CHANGED) }
+        val cur = _ui.value as? UiState.Conversation
+        if (cur?.peerKeyHex == peerHex) _ui.value = cur.copy(trust = Trust.KEY_CHANGED)
     }
 
     /** Driver/testing hook: exercise the key-mismatch handler without a live MITM. */
-    fun simulateKeyMismatch() = onPeerKeyMismatch()
+    fun simulateKeyMismatch() {
+        peerKeyRaw?.toHex()?.let { onPeerKeyMismatch(it) }
+    }
 
     /** Rename the open conversation's contact (persisted in the CONTACTS store). */
     fun renameCurrentContact(name: String) {
@@ -396,50 +419,91 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         backToContacts()
     }
 
-    /** Continuously receive + append messages from the peer (cancellable). */
-    private fun startRecvLoop(connId: String, peer: ByteArray) {
-        val s = session ?: return
-        recvJob?.cancel()
-        recvJob = viewModelScope.launch {
-            while (true) {
-                try {
-                    // op == device key in the demo, so peer is both.
-                    val r = s.handle.recv(connId, peer, peer)
-                    // 0-length payloads are hello/key-exchange markers, not chat.
-                    if (r.payload.isEmpty()) continue
-                    val text = String(r.payload)
-                    Log.i(TAG, "RECV len=${text.length}: $text")
-                    _messages.update { it + ChatMessage(mine = false, text = text) }
-                } catch (e: CairnFfiException.EnvelopeVerifyFailed) {
-                    // The next envelope did not verify against the pinned peer
-                    // key — a key change or active interception (D0006 §70).
-                    Log.e(TAG, "recv: ENVELOPE VERIFY FAILED — possible key change/interception", e)
-                    onPeerKeyMismatch()
-                    break
-                } catch (e: Exception) {
-                    Log.w(TAG, "recv loop ended (recv threw): ${e.message}", e)
-                    break
-                }
+    /**
+     * Ensure a receive loop is running for EVERY saved contact (not just the open
+     * conversation) so messages arrive + notify in the background (C2). Idempotent
+     * — skips contacts that already have a live loop.
+     */
+    private fun ensureReceiving() {
+        val list = runCatching { contacts?.list() ?: emptyList() }.getOrDefault(emptyList())
+        for (c in list) {
+            val job = recvJobs[c.connId]
+            if (job == null || !job.isActive) {
+                recvJobs[c.connId] = viewModelScope.launch { receiveLoop(c) }
             }
         }
     }
 
-    private suspend fun awaitTor(): Boolean {
+    /**
+     * Per-contact receive loop. Routes each message to the live view if that
+     * conversation is visible, else to a content-hidden notification (C2). A
+     * verify-failure downgrades trust (C1); transient transport errors retry with
+     * a backoff, so a Tor blip no longer silently kills reception (was H2).
+     */
+    private suspend fun receiveLoop(contact: Contact) {
+        val s = session ?: return
+        val peer = runCatching { contact.peerKeyHex.fromHex() }.getOrNull() ?: return
+        if (!awaitTorQuiet()) return
+        var failures = 0
+        while (true) {
+            try {
+                val r = s.handle.recv(contact.connId, peer, peer)
+                failures = 0
+                if (r.payload.isEmpty()) continue // hello/key-exchange marker
+                val text = String(r.payload)
+                Log.i(TAG, "RECV len=${text.length} from ${contact.peerKeyHex.take(12)}")
+                routeIncoming(contact, text)
+            } catch (e: CairnFfiException.EnvelopeVerifyFailed) {
+                // The envelope did not verify against the pinned peer key — a key
+                // change or active interception (D0006 §70).
+                Log.e(TAG, "recv VERIFY FAILED on ${contact.peerKeyHex.take(12)} — key change?", e)
+                onPeerKeyMismatch(contact.peerKeyHex)
+                break
+            } catch (e: Exception) {
+                failures++
+                Log.w(TAG, "recv blip on ${contact.peerKeyHex.take(12)} (#$failures): ${e.message}")
+                if (failures >= MAX_RECV_FAILURES) {
+                    Log.w(TAG, "recv giving up on ${contact.peerKeyHex.take(12)}")
+                    break
+                }
+                kotlinx.coroutines.delay(RECV_RETRY_MS)
+            }
+        }
+    }
+
+    /** Append to the live view if the conversation is visible, else notify (C2). */
+    private fun routeIncoming(contact: Contact, text: String) {
+        val cur = _ui.value as? UiState.Conversation
+        if (appForeground && cur?.peerKeyHex == contact.peerKeyHex) {
+            _messages.update { it + ChatMessage(mine = false, text = text) }
+        } else {
+            Log.i(TAG, "notify: new message from ${contact.peerKeyHex.take(12)}")
+            Notifications.postNewMessage(getApplication<Application>(), contact.peerKeyHex)
+        }
+    }
+
+    /** Wait for bundled Tor WITHOUT mutating the UI (for background loops). */
+    private suspend fun awaitTorQuiet(): Boolean {
         var waited = 0
         while (!torReady && waited < TOR_WAIT_MS) {
             kotlinx.coroutines.delay(500)
             waited += 500
         }
-        if (!torReady) {
-            _ui.value = UiState.Failed("bundled Tor not ready")
-            return false
-        }
-        return true
+        return torReady
+    }
+
+    /** Wait for bundled Tor; on timeout flip to the (recoverable) error screen. */
+    private suspend fun awaitTor(): Boolean {
+        if (awaitTorQuiet()) return true
+        _ui.value = UiState.Failed("bundled Tor not ready")
+        return false
     }
 
     private companion object {
         const val TAG = "CairnFfi"
         const val TOR_WAIT_MS = 200_000
+        const val MAX_RECV_FAILURES = 12
+        const val RECV_RETRY_MS = 5_000L
     }
 }
 
