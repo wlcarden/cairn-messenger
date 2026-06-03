@@ -99,6 +99,44 @@ pub(crate) fn parse_frame(raw: &str) -> Option<Value> {
     serde_json::from_str(raw).ok()
 }
 
+/// Classification of a simplex-chat **top-level `{"error": {...}}`** command
+/// reply (D0026 §12). This shape is distinct from a `{"resp":{"type":"chatError"
+/// ..}}` reply (which [`Resp::is_error`] handles) — it has no `resp`/`result`
+/// object, so [`Resp::from_frame`] returns `None` and it must be checked
+/// separately by [`crate::sidecar::flow::command`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommandErrorClass {
+    /// A relay (`BROKER`) / transport (`NETWORK`) agent error — a TRANSIENT
+    /// SMP-relay reachability failure over Tor (e.g. `BROKER`/`TIMEOUT`, which
+    /// is routine when a `.onion`/clearnet relay is slow). Safe + worthwhile to
+    /// RETRY (a single timeout shouldn't fail the operation).
+    TransientRelay,
+    /// A non-transient agent/command error (e.g. a rejected/invalid command).
+    /// Do not retry.
+    Fatal,
+}
+
+/// Detect + classify a top-level `{"error": {...}}` command reply.
+///
+/// simplex-chat returns relay failures as
+/// `{"error": {"type": "errorAgent", "agentError": {"type": "BROKER",
+/// "brokerErr": {"type": "TIMEOUT"}, "brokerAddress": "smp://…"}}}` — the
+/// `BROKER`/`NETWORK` agent-error types are the transient Tor-relay case.
+/// Returns `None` when the frame carries no top-level `error` object.
+pub(crate) fn classify_command_error(frame: &Value) -> Option<CommandErrorClass> {
+    let err = frame.get("error")?;
+    let agent_type = err
+        .get("agentError")
+        .and_then(|a| a.get("type"))
+        .and_then(Value::as_str);
+    Some(match agent_type {
+        // BROKER = relay unreachable/slow; NETWORK = transport blip — both are
+        // routine over Tor and recoverable on retry.
+        Some("BROKER" | "NETWORK") => CommandErrorClass::TransientRelay,
+        _ => CommandErrorClass::Fatal,
+    })
+}
+
 // ===================================================================
 // Command builders (reference-derived simplex-chat WS API strings)
 // ===================================================================
@@ -582,5 +620,41 @@ mod tests {
         let err =
             parse_frame(r#"{"corrId":"3","resp":{"type":"chatCmdError","chatError":{}}}"#).unwrap();
         assert!(Resp::from_frame(&err).unwrap().is_error());
+    }
+
+    #[test]
+    fn classifies_top_level_agent_errors_for_retry() {
+        // The failure the de-opaque pass surfaced (D0026 §12): the SMP relay
+        // times out creating the queue over Tor, returned as a TOP-LEVEL
+        // {"error":{agentError:{BROKER,..}}} shape — NOT {"resp":{chatError}} —
+        // so `Resp::is_error` misses it and it must be classified retryable here.
+        let broker_timeout = parse_frame(
+            r#"{"error":{"type":"errorAgent","agentError":{"type":"BROKER","brokerErr":{"type":"TIMEOUT"},"brokerAddress":"smp://x@smp9.simplex.im"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            classify_command_error(&broker_timeout),
+            Some(CommandErrorClass::TransientRelay)
+        );
+        // A NETWORK agent error is likewise transient → retryable.
+        let network =
+            parse_frame(r#"{"error":{"type":"errorAgent","agentError":{"type":"NETWORK"}}}"#)
+                .unwrap();
+        assert_eq!(
+            classify_command_error(&network),
+            Some(CommandErrorClass::TransientRelay)
+        );
+        // A different agent/store error is fatal (must NOT be retried).
+        let fatal = parse_frame(
+            r#"{"error":{"type":"errorStore","storeError":{"type":"duplicateName"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            classify_command_error(&fatal),
+            Some(CommandErrorClass::Fatal)
+        );
+        // A normal (non-error) reply carries no top-level `error` → not classified.
+        let ok = parse_frame(r#"{"resp":{"type":"invitation","connLinkInvitation":{}}}"#).unwrap();
+        assert_eq!(classify_command_error(&ok), None);
     }
 }

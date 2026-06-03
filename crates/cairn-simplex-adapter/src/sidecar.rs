@@ -256,6 +256,23 @@ pub(crate) mod flow {
             );
             return Err(SimplexAdapterError::SidecarProtocol);
         };
+        // Top-level `{"error": {...}}` agent error (D0026 §12): a relay
+        // BROKER/TIMEOUT etc. arrives in THIS shape, NOT `{"resp":{type:
+        // chatError}}`, so the `is_error()` check below misses it. Classify it
+        // so a transient relay timeout becomes a RETRYABLE Network error
+        // (callers retry) instead of an unattributed SidecarProtocol.
+        if let Some(class) = protocol::classify_command_error(&frame) {
+            log::warn!(
+                "cairn-smp: cmd '{verb}' → agent error ({class:?}): {}",
+                raw.chars().take(300).collect::<String>()
+            );
+            return Err(match class {
+                protocol::CommandErrorClass::TransientRelay => {
+                    SimplexAdapterError::Network { retry_budget_used: 0 }
+                }
+                protocol::CommandErrorClass::Fatal => SimplexAdapterError::SidecarProtocol,
+            });
+        }
         if Resp::from_frame(&frame).is_some_and(|r| r.is_error()) {
             log::warn!(
                 "cairn-smp: cmd '{verb}' → ERROR reply: {}",
@@ -323,8 +340,46 @@ pub(crate) mod flow {
         Ok(())
     }
 
-    /// Create an identifier-less queue + return its out-of-band invitation.
+    /// Max retries for a transient relay (`BROKER`/`NETWORK`) command error
+    /// before giving up (D0026 §12). A Tor relay timing out once while creating
+    /// or connecting to a queue is routine; bounded retries with linear backoff
+    /// recover it without hanging the caller forever.
+    const RELAY_RETRY_MAX: u8 = 3;
+
+    /// Linear backoff between relay-timeout retries (attempt is 1-based).
+    fn relay_backoff(attempt: u8) -> std::time::Duration {
+        std::time::Duration::from_millis(750_u64.saturating_mul(u64::from(attempt)))
+    }
+
+    /// Create an identifier-less queue + return its out-of-band invitation,
+    /// RETRYING transient relay timeouts (D0026 §12). The SMP relay returning
+    /// `errorAgent`/`BROKER`/`TIMEOUT` over Tor is routine — a single timeout
+    /// must not fail invitation creation, so a transient `Network` error is
+    /// retried up to [`RELAY_RETRY_MAX`].
     pub(crate) async fn create_invitation<C: RawChannel>(
+        chan: &C,
+        user_id: i64,
+    ) -> Result<Invitation, SimplexAdapterError> {
+        let mut attempt = 0u8;
+        loop {
+            match try_create_invitation(chan, user_id).await {
+                Ok(inv) => return Ok(inv),
+                Err(SimplexAdapterError::Network { .. }) if attempt < RELAY_RETRY_MAX => {
+                    attempt = attempt.saturating_add(1);
+                    let backoff = relay_backoff(attempt);
+                    log::warn!(
+                        "cairn-smp: create_invitation — transient relay timeout, retry {attempt}/{RELAY_RETRY_MAX} in {}ms",
+                        backoff.as_millis()
+                    );
+                    tokio::time::sleep(backoff).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// One invitation-creation attempt (wrapped by [`create_invitation`]'s retry).
+    async fn try_create_invitation<C: RawChannel>(
         chan: &C,
         user_id: i64,
     ) -> Result<Invitation, SimplexAdapterError> {
@@ -364,8 +419,26 @@ pub(crate) mod flow {
         user_id: i64,
         uri: &str,
     ) -> Result<ConnectionId, SimplexAdapterError> {
+        // Retry the connect command on a transient relay timeout (D0026 §12),
+        // same as create_invitation; the subsequent contactConnected await has
+        // its own bounded timeout.
+        let mut attempt = 0u8;
+        loop {
+            match command(chan, protocol::cmd_connect_via_link(user_id, uri)).await {
+                Ok(_) => break,
+                Err(SimplexAdapterError::Network { .. }) if attempt < RELAY_RETRY_MAX => {
+                    attempt = attempt.saturating_add(1);
+                    let backoff = relay_backoff(attempt);
+                    log::warn!(
+                        "cairn-smp: accept_invitation — transient relay timeout, retry {attempt}/{RELAY_RETRY_MAX} in {}ms",
+                        backoff.as_millis()
+                    );
+                    tokio::time::sleep(backoff).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
         log::info!("cairn-smp: accept_invitation -> connect sent, awaiting contactConnected");
-        let _ = command(chan, protocol::cmd_connect_via_link(user_id, uri)).await?;
         await_contact_connected(chan).await
     }
 
