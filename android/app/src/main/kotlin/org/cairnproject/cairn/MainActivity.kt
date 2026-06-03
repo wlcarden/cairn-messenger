@@ -114,16 +114,22 @@ class MainActivity : ComponentActivity() {
      * session/Tor are ready (it gates internally), so drive these only once the
      * app has reached Ready.
      *
+     *   --es unlock "<passphrase>"    → unlock the encrypted session
      *   --es create "1"               → createInvitation (logs INVITE_BLOB)
      *   --es invite "<uri>|<peerHex>" → acceptInvitation
      *   --es send   "<text>"          → send to the connected peer
      *   --es open   "1"               → openFirstContact (resume saved contact)
+     *   --es verify "1"               → mark the open contact verified
      *
      * One-link pairing (D0026 §12): the inviter no longer needs the peer's key
      * up front — it learns the peer from the first envelope (TOFU) — so `create`
      * takes no key. The acceptor still gets the inviter's key from the blob.
      */
     private fun handleDriverExtras(intent: Intent) {
+        intent.getStringExtra("unlock")?.let {
+            Log.i(TAG, "driver: unlock")
+            viewModel.unlock(it)
+        }
         intent.getStringExtra("create")?.let {
             Log.i(TAG, "driver: createInvitation")
             viewModel.createInvitation()

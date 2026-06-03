@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -42,6 +43,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -71,6 +74,8 @@ fun ChatScreen(vm: MessagingViewModel) {
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
 
             when (val state = ui) {
+                is UiState.Locked -> LockScreen(state, vm)
+
                 is UiState.Starting -> Centered {
                     CircularProgressIndicator()
                     Text("Bringing up encrypted session…", Modifier.padding(top = 12.dp))
@@ -106,6 +111,59 @@ fun ChatScreen(vm: MessagingViewModel) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun LockScreen(state: UiState.Locked, vm: MessagingViewModel) {
+    var pass by remember { mutableStateOf("") }
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(top = 40.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            if (state.firstLaunch) "Create a passphrase" else "Enter your passphrase",
+            style = MaterialTheme.typography.titleLarge,
+        )
+        Text(
+            if (state.firstLaunch) {
+                "This passphrase encrypts your messages, contacts, and keys on " +
+                    "this device. There is no way to recover it — write it down " +
+                    "somewhere safe."
+            } else {
+                "Unlock your encrypted data on this device."
+            },
+            Modifier.padding(top = 8.dp),
+            textAlign = TextAlign.Center,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedTextField(
+            value = pass,
+            onValueChange = { pass = it },
+            label = { Text("Passphrase") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 20.dp),
+        )
+        if (state.error != null) {
+            Text(
+                state.error,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 8.dp),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        Button(
+            onClick = { vm.unlock(pass) },
+            enabled = pass.isNotBlank(),
+            modifier = Modifier.padding(top = 20.dp),
+        ) { Text(if (state.firstLaunch) "Create & unlock" else "Unlock") }
     }
 }
 

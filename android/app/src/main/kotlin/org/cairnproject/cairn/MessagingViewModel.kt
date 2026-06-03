@@ -20,6 +20,9 @@ data class ChatMessage(val mine: Boolean, val text: String)
 
 /** Top-level UI phase. */
 sealed interface UiState {
+    /** Before unlock: ask for the passphrase (set it on [firstLaunch]). */
+    data class Locked(val firstLaunch: Boolean, val error: String?) : UiState
+
     /** Bringing up the encrypted session + bundled Tor. */
     data object Starting : UiState
 
@@ -73,10 +76,30 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     private var myHex: String = ""
 
     init {
+        // Gate everything behind an unlock passphrase: the at-rest encryption
+        // is only meaningful if it's keyed by a user secret. First launch (no
+        // store yet) sets the passphrase; later launches must match it.
+        val storeExists = java.io.File(getApplication<Application>().filesDir, "store.db").exists()
+        _ui.value = UiState.Locked(firstLaunch = !storeExists, error = null)
+    }
+
+    /**
+     * Unlock (or, on first launch, set up) the encrypted session with
+     * [passphrase] — derives the storage KEK + the SQLCipher DB key from it. A
+     * wrong passphrase is rejected (the canary fails to decrypt) and returns to
+     * the lock screen with an error.
+     */
+    fun unlock(passphrase: String) {
+        if (passphrase.isEmpty() || session != null) return
+        val firstLaunch = (ui.value as? UiState.Locked)?.firstLaunch ?: false
+        _ui.value = UiState.Starting
         viewModelScope.launch {
             try {
                 val s = withContext(Dispatchers.IO) {
-                    CairnSession.bootstrap(getApplication<Application>().filesDir)
+                    CairnSession.bootstrap(
+                        getApplication<Application>().filesDir,
+                        passphrase.toByteArray(),
+                    )
                 }
                 session = s
                 contacts = ContactStore(s.storage)
@@ -84,8 +107,8 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 Log.i(TAG, "MY_PUBKEY=$myHex")
                 showContacts()
             } catch (e: Exception) {
-                Log.e(TAG, "session bootstrap failed", e)
-                _ui.value = UiState.Failed("session: ${e.message}")
+                Log.w(TAG, "unlock failed: ${e.message}")
+                _ui.value = UiState.Locked(firstLaunch, error = "Could not unlock — ${e.message}")
             }
         }
     }

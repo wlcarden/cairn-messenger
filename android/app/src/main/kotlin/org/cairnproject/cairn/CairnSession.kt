@@ -6,6 +6,8 @@ package org.cairnproject.cairn
 import android.util.Log
 import java.io.File
 import java.security.SecureRandom
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import uniffi.cairn_uniffi.AttestationCertificate
 import uniffi.cairn_uniffi.CairnFfiException
 import uniffi.cairn_uniffi.DemoEd25519Signer
@@ -119,13 +121,21 @@ class CairnSession private constructor(
          * provide one, falling back to the software demo identity otherwise so
          * the app never bricks on a key-provisioning gap.
          */
-        fun bootstrap(filesDir: File): CairnSession {
+        fun bootstrap(filesDir: File, passphrase: ByteArray): CairnSession {
             val storage = StorageHandle.open(
                 "${filesDir.absolutePath}/store.db",
-                // Demo passphrase — the real one is user-entered at unlock.
-                "cairn-demo-passphrase".toByteArray(),
+                // The user's unlock passphrase → Argon2id KEK (D0022 §2.2). The
+                // StrongBox-attested material (DemoKeyMaterial) is still a demo
+                // constant (a separate hardening) but the SECRET is now real:
+                // the at-rest encryption is keyed by the user, not a constant.
+                passphrase,
                 DemoKeyMaterial(),
             )
+            // The storage layer does NOT verify the passphrase on open (a wrong
+            // passphrase yields a wrong KEK that only fails on a sealed read), so
+            // validate it against an encrypted canary; first launch writes it.
+            // Throws on a wrong passphrase.
+            validateOrInitPassphrase(storage)
 
             // Prefer the hardware-backed Ed25519 device key (D0020 §3.4 / D0028);
             // its private key never leaves the TEE/StrongBox — the signer is the
@@ -154,21 +164,65 @@ class CairnSession private constructor(
                 dbPath = "${filesDir.absolutePath}/simplex-db",
                 filesDir = "${filesDir.absolutePath}/xftp",
                 socksProxy = BUNDLED_TOR_SOCKS,
-                // At-rest encryption (D0006 §3.5 / D0022 §2.2): opens the in-process libsimplex
-                // chat DB with SQLCipher so the SMP-agent/chat databases (queue
-                // secrets + message metadata) are AES-encrypted on disk. Demo
-                // passphrase for now — DISTINCT from the storage passphrase above
-                // (no cross-domain key reuse). v1 will derive this from the
-                // user-unlocked Argon2id storage KEK via a domain-separated KDF,
-                // never a hardcoded constant. NB the DB must be created encrypted
-                // on a fresh install; an existing unencrypted DB cannot be opened
-                // with a key (no SQLCipher header).
-                dbKey = "cairn-demo-db-passphrase",
+                // At-rest encryption (D0006 §3.5 / D0022 §2.2): opens the
+                // in-process libsimplex chat DB with SQLCipher (queue secrets +
+                // message metadata AES-encrypted on disk). The key is derived
+                // from the SAME user passphrase as the storage KEK but
+                // DOMAIN-SEPARATED (HMAC, distinct from the Argon2id KEK path) so
+                // the two layers never share a key. NB a DB created under one
+                // passphrase cannot be opened with another (fresh installs only).
+                dbKey = deriveDbKey(passphrase),
                 maxRetries = 3.toUByte(),
             )
             val handle = SimplexAdapterHandle(storage, signer, keyAlias, publicKeyRaw, config)
             Log.i(TAG, "CairnSession bootstrapped (${publicKeyRaw.size}-byte op key)")
             return CairnSession(publicKeyRaw, storage, handle)
         }
+
+        /**
+         * Validate the unlock passphrase against an encrypted canary (D0022):
+         * the storage layer derives a KEK from any passphrase without verifying
+         * it — a wrong passphrase only fails when a sealed record is read — so we
+         * seal a known marker under the KEK and read it back. First launch
+         * writes it. Throws [IllegalStateException] on a wrong passphrase.
+         */
+        private fun validateOrInitPassphrase(storage: StorageHandle) {
+            val read = runCatching { storage.get(IDENTITY_CATEGORY, UNLOCK_CANARY_ID) }
+            if (read.isFailure) {
+                // Sealed-record read failed → wrong KEK → wrong passphrase.
+                throw IllegalStateException("wrong passphrase")
+            }
+            val existing = read.getOrNull()
+            if (existing == null) {
+                storage.put(IDENTITY_CATEGORY, UNLOCK_CANARY_ID, UNLOCK_CANARY_VALUE)
+                Log.i(TAG, "unlock: first launch — passphrase set")
+            } else if (!existing.contentEquals(UNLOCK_CANARY_VALUE)) {
+                throw IllegalStateException("wrong passphrase")
+            } else {
+                Log.i(TAG, "unlock: passphrase OK")
+            }
+        }
+
+        /**
+         * The SQLCipher DB key, DOMAIN-SEPARATED from the storage KEK: HMAC-
+         * SHA256 keyed by the passphrase over a fixed domain tag, hex-encoded
+         * (SQLCipher applies its own PBKDF2 to the result). Ties the DB key to
+         * the user passphrase without reusing the Argon2id storage-KEK path.
+         */
+        private fun deriveDbKey(passphrase: ByteArray): String {
+            val mac = Mac.getInstance("HmacSHA256")
+            mac.init(SecretKeySpec(passphrase, "HmacSHA256"))
+            return mac.doFinal(SIMPLEX_DB_KEY_DOMAIN.toByteArray()).toHex()
+        }
+
+        /** Must match `cairn_storage::categories::IDENTITY`. */
+        private const val IDENTITY_CATEGORY = "identity"
+
+        /** Domain tag separating the SQLCipher DB key from the storage KEK. */
+        private const val SIMPLEX_DB_KEY_DOMAIN = "cairn-v1-simplex-db-key"
+
+        /** Record id + value of the encrypted passphrase canary. */
+        private val UNLOCK_CANARY_ID = "cairn-unlock-canary-v1".toByteArray()
+        private val UNLOCK_CANARY_VALUE = "cairn-unlock-ok".toByteArray()
     }
 }
