@@ -319,6 +319,15 @@ impl From<RecoveryError> for CairnFfiError {
 
 impl From<SimplexAdapterError> for CairnFfiError {
     fn from(e: SimplexAdapterError) -> Self {
+        // De-opaque the cause (D0018 §4.2): the coarse public variant below
+        // deliberately hides WHICH adapter step failed from a remote attacker,
+        // but that distinction (e.g. SidecarUnavailable vs SidecarProtocol vs
+        // ConnectionNotFound, all → SidecarFailure) is exactly what makes
+        // on-device debugging tractable. Log it on the developer channel only —
+        // `debug!` is compiled out of release, so the public error surface
+        // stays an oracle-free coarse enum. This is the single chokepoint every
+        // messaging op funnels through (`map_err(CairnFfiError::from)`).
+        log::debug!("cairn-ffi: SimplexAdapterError -> facade | cause: {e}");
         match e {
             SimplexAdapterError::NetworkUnreached => Self::NetworkUnreached,
             SimplexAdapterError::Network { retry_budget_used } => {

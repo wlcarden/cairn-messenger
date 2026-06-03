@@ -153,13 +153,13 @@ pub trait SidecarTransport: Sync {
 )]
 pub(crate) mod flow {
     use serde_json::Value;
-    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::{Mutex as AsyncMutex, Notify};
 
     use crate::adapter::{ConnectionId, Invitation};
     use crate::error::SimplexAdapterError;
     use crate::protocol::{self, Resp};
 
-    use std::collections::{HashMap, VecDeque};
+    use std::collections::{HashMap, HashSet, VecDeque};
     use std::future::Future;
     use std::path::Path;
 
@@ -201,6 +201,13 @@ pub(crate) mod flow {
         /// the one a given `recv` is waiting on — held until that connection's
         /// own `recv` drains them.
         buffered: HashMap<ConnectionId, VecDeque<Vec<u8>>>,
+        /// `fileId`s whose outbound `sndFileCompleteXFTP` was routed by the
+        /// shared drainer (D0026 §12). A concurrent `send`'s
+        /// `await_snd_file_complete` consumes its own id here instead of racing
+        /// the recv-loop for the event — the fix for the single-stream /
+        /// two-consumers hazard where a `send` running alongside the recv-loop
+        /// had its completion event stolen and hung.
+        snd_completed: HashSet<i64>,
     }
 
     /// An established channel plus the active `userId` the `/_connect` /
@@ -214,6 +221,15 @@ pub(crate) mod flow {
         /// never across the network drain, so concurrent `recv`s on different
         /// connections don't starve each other.
         pub(crate) demux: AsyncMutex<RecvDemux>,
+        /// The single-drainer token (D0026 §12). Exactly one task at a time
+        /// reads `next_event` and routes it for ALL waiters (recv + concurrent
+        /// send-completion awaits) via [`pump_one`]; others park on
+        /// [`Self::notify`]. Held only across one event read, so it hands off
+        /// between events.
+        pub(crate) drain: AsyncMutex<()>,
+        /// Woken after each routed event so parked waiters re-check their
+        /// condition promptly (a bounded park backstops any missed wake).
+        pub(crate) notify: Notify,
     }
 
     /// Issue a command + return the parsed response frame, mapping a
@@ -223,19 +239,31 @@ pub(crate) mod flow {
         cmd: String,
     ) -> Result<Value, SimplexAdapterError> {
         // Diagnostic: the leading verb only (avoids logging the full invitation
-        // URI / message body), so logcat shows the command sequence.
+        // URI / message body), so logcat shows the command sequence. The `debug`
+        // trace + the `warn` failure paths below de-opaque a stalled handshake /
+        // rejected command (D0026 §12) — every command failure now names its
+        // verb + reason instead of bubbling up an unattributed SidecarProtocol.
         let verb: String = cmd.chars().take_while(|c| !c.is_whitespace()).collect();
-        let raw = chan.send(cmd).await?;
-        let frame = protocol::parse_frame(&raw).ok_or(SimplexAdapterError::SidecarProtocol)?;
-        if Resp::from_frame(&frame).is_some_and(|r| r.is_error()) {
-            // Previously swallowed silently; surface the error reply so a stalled
-            // handshake / rejected command is visible on-device (D0026 §12).
+        log::debug!("cairn-smp: cmd '{verb}' →");
+        let raw = chan.send(cmd).await.map_err(|e| {
+            log::warn!("cairn-smp: cmd '{verb}' transport send failed: {e}");
+            e
+        })?;
+        let Some(frame) = protocol::parse_frame(&raw) else {
             log::warn!(
-                "cairn-smp: cmd '{verb}' -> ERROR reply: {}",
+                "cairn-smp: cmd '{verb}' → unparseable reply: {}",
+                raw.chars().take(200).collect::<String>()
+            );
+            return Err(SimplexAdapterError::SidecarProtocol);
+        };
+        if Resp::from_frame(&frame).is_some_and(|r| r.is_error()) {
+            log::warn!(
+                "cairn-smp: cmd '{verb}' → ERROR reply: {}",
                 raw.chars().take(400).collect::<String>()
             );
             return Err(SimplexAdapterError::SidecarProtocol);
         }
+        log::debug!("cairn-smp: cmd '{verb}' → ok");
         Ok(frame)
     }
 
@@ -301,9 +329,25 @@ pub(crate) mod flow {
         user_id: i64,
     ) -> Result<Invitation, SimplexAdapterError> {
         let frame = command(chan, protocol::cmd_create_invitation(user_id)).await?;
-        let resp = Resp::from_frame(&frame).ok_or(SimplexAdapterError::SidecarProtocol)?;
-        let uri =
-            protocol::parse_invitation_link(&resp).ok_or(SimplexAdapterError::SidecarProtocol)?;
+        let Some(resp) = Resp::from_frame(&frame) else {
+            log::warn!(
+                "cairn-smp: create_invitation — /_connect reply not a Resp; head: {}",
+                format!("{frame:?}").chars().take(400).collect::<String>()
+            );
+            return Err(SimplexAdapterError::SidecarProtocol);
+        };
+        let Some(uri) = protocol::parse_invitation_link(&resp) else {
+            // De-opaque (D0026 §12): `/_connect` returned a NON-error response
+            // that carries no invitation link — log its tag + head so the
+            // unexpected shape is diagnosable instead of a bare SidecarProtocol
+            // (this is the failure the de-opaque pass surfaced on Bastille).
+            log::warn!(
+                "cairn-smp: create_invitation — /_connect reply has no invitation link (tag={}); head: {}",
+                resp.tag,
+                format!("{frame:?}").chars().take(400).collect::<String>()
+            );
+            return Err(SimplexAdapterError::SidecarProtocol);
+        };
         log::info!("cairn-smp: create_invitation -> link created, awaiting peer");
         Ok(Invitation { uri })
     }
@@ -347,21 +391,36 @@ pub(crate) mod flow {
     /// the `fileId` is a SimpleX-layer transfer handle, used only to match the
     /// completion event.)
     pub(crate) async fn send_envelope<C: RawChannel>(
-        chan: &C,
+        conn: &Conn<C>,
         files_dir: &Path,
-        conn: &ConnectionId,
+        files_base: &Path,
+        conn_id: &ConnectionId,
         raw: &[u8],
     ) -> Result<(), SimplexAdapterError> {
         let path = stage_outgoing(files_dir, raw)?;
-        let chat_ref = format!("@{}", conn.0);
-        let frame = command(chan, protocol::cmd_send_file(&chat_ref, &path)).await?;
+        // Send-path diagnostic (D0026 §12, two-device B→A): pinpoint exactly
+        // where a send stalls — local staging, the `/_send` command's return, or
+        // the XFTP upload emitting progress.
+        log::info!(
+            "cairn-smp: send_envelope staged {} bytes at {path} (conn={})",
+            raw.len(),
+            conn_id.0
+        );
+        let chat_ref = format!("@{}", conn_id.0);
+        let frame = command(&conn.chan, protocol::cmd_send_file(&chat_ref, &path)).await?;
         let resp = Resp::from_frame(&frame).ok_or(SimplexAdapterError::SidecarProtocol)?;
+        log::info!("cairn-smp: send_envelope /_send returned tag={}", resp.tag);
         if resp.is_error() {
             return Err(SimplexAdapterError::SidecarProtocol);
         }
         let file_id =
             protocol::parse_sent_file_id(&resp).ok_or(SimplexAdapterError::SidecarProtocol)?;
-        await_snd_file_complete(chan, file_id).await
+        log::info!("cairn-smp: send_envelope awaiting sndFileCompleteXFTP file_id={file_id}");
+        // Await the upload completion over the SHARED drainer so a recv-loop
+        // running concurrently can't steal the `sndFileCompleteXFTP` event
+        // (D0026 §12 two-device fix). `conn_id` is the fallback owner for any
+        // incoming completion this drainer routes (1:1 single conversation).
+        await_snd_file_complete(conn, files_base, conn_id, file_id).await
     }
 
     /// Drain events until the daemon reports `sndFileCompleteXFTP` for
@@ -374,24 +433,19 @@ pub(crate) mod flow {
     const XFTP_COMPLETE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
     async fn await_snd_file_complete<C: RawChannel>(
-        chan: &C,
+        conn: &Conn<C>,
+        files_base: &Path,
+        fallback_conn: &ConnectionId,
         file_id: i64,
     ) -> Result<(), SimplexAdapterError> {
-        let drain = async {
-            loop {
-                let frame = next_event_frame(chan).await?;
-                let Some(resp) = Resp::from_frame(&frame) else {
-                    continue;
-                };
-                // Per-event diagnostic (D0026 §12): the XFTP upload progress
-                // (sndFileProgressXFTP → sndFileCompleteXFTP) is silent otherwise.
-                log::info!("cairn-smp: await_snd_file_complete event type={}", resp.tag);
-                if protocol::parse_snd_file_complete(&resp) == Some(file_id) {
-                    return Ok::<(), SimplexAdapterError>(());
-                }
-            }
-        };
-        match tokio::time::timeout(XFTP_COMPLETE_TIMEOUT, drain).await {
+        // Drive the SHARED drainer until THIS upload's completion is routed into
+        // `snd_completed` (by whichever task drained the event — possibly a
+        // concurrent recv-loop), then consume it. The recv-loop no longer steals
+        // the `sndFileCompleteXFTP` event (D0026 §12 two-device fix).
+        let drive_fut = drive(conn, files_base, fallback_conn, |demux| {
+            demux.snd_completed.remove(&file_id).then_some(())
+        });
+        match tokio::time::timeout(XFTP_COMPLETE_TIMEOUT, drive_fut).await {
             Ok(result) => result,
             Err(_elapsed) => {
                 log::warn!(
@@ -420,95 +474,150 @@ pub(crate) mod flow {
     /// path shape are reference-derived; their live-daemon fidelity is the
     /// `integration-tests` gate (D0026 §12), exercised hermetically here.
     pub(crate) async fn recv_envelope<C: RawChannel>(
-        chan: &C,
-        demux: &AsyncMutex<RecvDemux>,
-        conn: &ConnectionId,
+        conn: &Conn<C>,
+        conn_id: &ConnectionId,
         files_base: &Path,
     ) -> Result<Vec<u8>, SimplexAdapterError> {
+        // Drive the SHARED drainer until a completed envelope is buffered for
+        // THIS connection. `pump_one` routes EVERY event (incl. a concurrent
+        // send's `sndFileCompleteXFTP`), so the recv-loop and a send no longer
+        // steal each other's events (D0026 §12 two-device fix).
+        drive(conn, files_base, conn_id, |demux| {
+            demux.buffered.get_mut(conn_id).and_then(VecDeque::pop_front)
+        })
+        .await
+    }
+
+    /// The bounded park a non-drainer waits before re-checking (D0026 §12). The
+    /// drainer's `notify_waiters` wakes parked waiters promptly; this backstops
+    /// any missed wake (and lets a waiter take over draining if the previous
+    /// drainer handed off).
+    const PUMP_PARK: std::time::Duration = std::time::Duration::from_millis(500);
+
+    /// Make progress toward a per-waiter `ready` condition over the SHARED event
+    /// stream (D0026 §12). The first caller to grab `conn.drain` becomes THE
+    /// drainer — it reads + routes one event for ALL waiters via [`pump_one`],
+    /// then wakes parked waiters; others park on `conn.notify` (bounded) and
+    /// re-check. This is the fix for the single-stream / two-consumers hazard:
+    /// `recv_envelope` and a concurrent send's `await_snd_file_complete` both
+    /// pull from the one `next_event` queue, and without a single routing
+    /// drainer each silently dropped the other's events (a `send` alongside the
+    /// recv-loop hung — D0026 §12 two-device finding). Unchanged for the
+    /// sequential CLI/test flow: the sole caller simply becomes the drainer.
+    async fn drive<C, T>(
+        conn: &Conn<C>,
+        files_base: &Path,
+        fallback_conn: &ConnectionId,
+        mut ready: impl FnMut(&mut RecvDemux) -> Option<T>,
+    ) -> Result<T, SimplexAdapterError>
+    where
+        C: RawChannel,
+    {
         loop {
-            // 1. A previously-buffered envelope for this connection? (Bind to a
-            // local so the lock guard drops before the network drain below.)
-            let buffered = demux
+            // Hold the demux lock ONLY for the readiness check, in its own scope
+            // so the guard drops before the drain/pump below (`pump_one`
+            // re-locks demux — holding it here would deadlock).
+            let ready_value = {
+                let mut demux = conn.demux.lock().await;
+                ready(&mut demux)
+            };
+            if let Some(value) = ready_value {
+                return Ok(value);
+            }
+            match conn.drain.try_lock() {
+                Ok(_guard) => {
+                    pump_one(&conn.chan, &conn.demux, files_base, fallback_conn).await?;
+                    conn.notify.notify_waiters();
+                }
+                Err(_) => {
+                    // Someone else is draining (and routing OUR events too);
+                    // wait to be woken, with a bounded backstop.
+                    let _ = tokio::time::timeout(PUMP_PARK, conn.notify.notified()).await;
+                }
+            }
+        }
+    }
+
+    /// Read ONE event from the shared stream and route it into `demux` so a
+    /// single drainer serves BOTH the recv path (incoming offers/completions)
+    /// AND concurrent send-completion awaits (D0026 §12). `fallback_conn` owns a
+    /// completion whose offer carried no contactId / was untracked (the v1 1:1
+    /// single-conversation default, D0026 §5).
+    async fn pump_one<C: RawChannel>(
+        chan: &C,
+        demux: &AsyncMutex<RecvDemux>,
+        files_base: &Path,
+        fallback_conn: &ConnectionId,
+    ) -> Result<(), SimplexAdapterError> {
+        let frame = next_event_frame(chan).await?;
+        let Some(resp) = Resp::from_frame(&frame) else {
+            return Ok(()); // non-conforming event frame; skip
+        };
+        // Per-event diagnostic (D0026 §12): the offer→accept→complete receive
+        // sequence + the outbound sndFileProgress/Complete are silent otherwise.
+        log::info!("cairn-smp: pump event type={}", resp.tag);
+        // Compact per-item summary of a `newChatItems` event (content type +
+        // whether each item carries a file id) so the received-file offer's
+        // location is visible without the giant `chatInfo` blob.
+        if resp.tag == "newChatItems"
+            && let Some(items) = resp.body.get("chatItems").and_then(Value::as_array)
+        {
+            let summary: Vec<String> = items
+                .iter()
+                .enumerate()
+                .map(|(i, it)| {
+                    let ci = it.get("chatItem");
+                    let ctype = ci
+                        .and_then(|c| c.get("content"))
+                        .and_then(|c| c.get("type"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("?");
+                    let file = ci
+                        .and_then(|c| c.get("file"))
+                        .and_then(|f| f.get("fileId"))
+                        .and_then(Value::as_i64);
+                    format!("[{i}]{ctype} file={file:?}")
+                })
+                .collect();
+            log::info!("cairn-smp: pump items: {}", summary.join(" "));
+        }
+
+        // Outbound XFTP upload completion → satisfy a concurrent send's await.
+        if let Some(file_id) = protocol::parse_snd_file_complete(&resp) {
+            demux.lock().await.snd_completed.insert(file_id);
+            return Ok(());
+        }
+
+        // Incoming file offer → accept (so the daemon XFTP-downloads it; no
+        // demux lock held across the command), then record the owning conn.
+        if let Some(offer) = protocol::parse_received_file_offer(&resp) {
+            let _ = command(chan, protocol::cmd_receive_file(offer.file_id)).await?;
+            let owner = offer
+                .contact_id
+                .map_or_else(|| fallback_conn.clone(), |id| ConnectionId(id.to_string()));
+            demux.lock().await.pending.insert(offer.file_id, owner);
+            return Ok(());
+        }
+
+        // Incoming file completion → read bytes + buffer for the owning conn
+        // (the waiting `recv` for that conn pops it on its next `ready` check).
+        if let Some(done) = protocol::parse_rcv_file_complete(&resp) {
+            let bytes = read_completed_file(files_base, &done.path)?;
+            let owner = {
+                let mut state = demux.lock().await;
+                done.file_id
+                    .and_then(|fid| state.pending.remove(&fid))
+                    .unwrap_or_else(|| fallback_conn.clone())
+            };
+            demux
                 .lock()
                 .await
                 .buffered
-                .get_mut(conn)
-                .and_then(VecDeque::pop_front);
-            if let Some(bytes) = buffered {
-                return Ok(bytes);
-            }
-
-            // 2. Drain the next event (the channel serializes `next_event`).
-            let frame = next_event_frame(chan).await?;
-            let Some(resp) = Resp::from_frame(&frame) else {
-                continue; // non-conforming event frame; skip
-            };
-            // Per-event diagnostic (D0026 §12): the XFTP receive sequence
-            // (offer → accept → complete) is silent otherwise.
-            log::info!("cairn-smp: recv_envelope event type={}", resp.tag);
-            // Compact per-item summary of a `newChatItems` event (content type
-            // + whether each item carries a file id) so the received-file
-            // offer's location is visible without the giant `chatInfo` blob
-            // (D0026 §12 recv diagnostic — this is how the on-device file offer
-            // was confirmed to arrive as `[0]rcvMsgContent file=Some(_)`).
-            if resp.tag == "newChatItems" {
-                if let Some(items) = resp.body.get("chatItems").and_then(Value::as_array) {
-                    let summary: Vec<String> = items
-                        .iter()
-                        .enumerate()
-                        .map(|(i, it)| {
-                            let ci = it.get("chatItem");
-                            let ctype = ci
-                                .and_then(|c| c.get("content"))
-                                .and_then(|c| c.get("type"))
-                                .and_then(Value::as_str)
-                                .unwrap_or("?");
-                            let file = ci
-                                .and_then(|c| c.get("file"))
-                                .and_then(|f| f.get("fileId"))
-                                .and_then(Value::as_i64);
-                            format!("[{i}]{ctype} file={file:?}")
-                        })
-                        .collect();
-                    log::info!("cairn-smp: recv_envelope items: {}", summary.join(" "));
-                }
-            }
-
-            if let Some(offer) = protocol::parse_received_file_offer(&resp) {
-                // Accept so the daemon XFTP-downloads it (no demux lock held
-                // across this command), then record the owning connection.
-                let _ = command(chan, protocol::cmd_receive_file(offer.file_id)).await?;
-                let owner = offer
-                    .contact_id
-                    .map_or_else(|| conn.clone(), |id| ConnectionId(id.to_string()));
-                demux.lock().await.pending.insert(offer.file_id, owner);
-                continue;
-            }
-
-            if let Some(done) = protocol::parse_rcv_file_complete(&resp) {
-                let bytes = read_completed_file(files_base, &done.path)?;
-                // Route by the completion's `fileId` (matched against the
-                // accepted offer); untracked → the requesting `conn`.
-                let owner = {
-                    let mut state = demux.lock().await;
-                    done.file_id
-                        .and_then(|fid| state.pending.remove(&fid))
-                        .unwrap_or_else(|| conn.clone())
-                };
-                if &owner == conn {
-                    return Ok(bytes);
-                }
-                demux
-                    .lock()
-                    .await
-                    .buffered
-                    .entry(owner)
-                    .or_default()
-                    .push_back(bytes);
-            }
-            // Unrelated event (or a buffered-for-another-conn completion) —
-            // keep draining.
+                .entry(owner)
+                .or_default()
+                .push_back(bytes);
         }
+        Ok(())
     }
 
     /// Drain incoming events until a `contactConnected` arrives, returning its
@@ -712,6 +821,8 @@ mod wscore {
                         chan,
                         user_id,
                         demux: AsyncMutex::new(flow::RecvDemux::default()),
+                        drain: AsyncMutex::new(()),
+                        notify: tokio::sync::Notify::new(),
                     })
                 })
                 .await
@@ -739,7 +850,8 @@ mod wscore {
 
         async fn send(&self, conn: &ConnectionId, raw: &[u8]) -> Result<(), SimplexAdapterError> {
             let c = self.conn().await?;
-            flow::send_envelope(&c.chan, &self.files_dir, conn, raw).await
+            flow::send_envelope(c, &self.files_dir, &self.files_dir.join("sx-files"), conn, raw)
+                .await
         }
 
         async fn recv(&self, conn: &ConnectionId) -> Result<Vec<u8>, SimplexAdapterError> {
@@ -747,7 +859,7 @@ mod wscore {
             // Received files land in the configured `sx-files` folder; the
             // daemon reports their paths relative to it on Android (D0026 §12).
             // The ws-core CLI path is absolute, so the base is ignored there.
-            flow::recv_envelope(&c.chan, &c.demux, conn, &self.files_dir.join("sx-files")).await
+            flow::recv_envelope(c, conn, &self.files_dir.join("sx-files")).await
         }
     }
 }
@@ -880,12 +992,21 @@ mod ffi {
         async fn conn(&self) -> Result<&Conn<FfiChannel>, SimplexAdapterError> {
             self.conn
                 .get_or_try_init(|| async {
+                    // Bring-up cause-logging (D0026 §12): a createInvitation/send
+                    // `SidecarFailure` is most often a failed bring-up step here,
+                    // previously opaque. `init` discards its rich error into
+                    // SidecarUnavailable — log the real cause first.
+                    log::debug!("cairn-smp: FFI conn bring-up — init libsimplex");
                     let (client, events) = init(
                         DefaultUser::regular(PROFILE_NAME),
                         DbOpts::unencrypted(&self.db_path),
                     )
                     .await
-                    .map_err(|_| SimplexAdapterError::SidecarUnavailable)?;
+                    .map_err(|e| {
+                        log::error!("cairn-smp: libsimplex init FAILED: {e:?}");
+                        SimplexAdapterError::SidecarUnavailable
+                    })?;
+                    log::info!("cairn-smp: FFI conn — libsimplex init ok, configuring");
                     let chan = FfiChannel {
                         client,
                         events: AsyncMutex::new(events),
@@ -910,10 +1031,13 @@ mod ffi {
                     )
                     .await?;
                     let user_id = flow::query_active_user_id(&chan).await?;
+                    log::info!("cairn-smp: FFI conn ESTABLISHED (userId={user_id})");
                     Ok(Conn {
                         chan,
                         user_id,
                         demux: AsyncMutex::new(flow::RecvDemux::default()),
+                        drain: AsyncMutex::new(()),
+                        notify: tokio::sync::Notify::new(),
                     })
                 })
                 .await
@@ -941,7 +1065,8 @@ mod ffi {
 
         async fn send(&self, conn: &ConnectionId, raw: &[u8]) -> Result<(), SimplexAdapterError> {
             let c = self.conn().await?;
-            flow::send_envelope(&c.chan, &self.files_dir, conn, raw).await
+            flow::send_envelope(c, &self.files_dir, &self.files_dir.join("sx-files"), conn, raw)
+                .await
         }
 
         async fn recv(&self, conn: &ConnectionId) -> Result<Vec<u8>, SimplexAdapterError> {
@@ -949,7 +1074,7 @@ mod ffi {
             // Received files land in the configured `sx-files` folder; the
             // daemon reports their paths relative to it on Android (D0026 §12).
             // The ws-core CLI path is absolute, so the base is ignored there.
-            flow::recv_envelope(&c.chan, &c.demux, conn, &self.files_dir.join("sx-files")).await
+            flow::recv_envelope(c, conn, &self.files_dir.join("sx-files")).await
         }
     }
 }
@@ -1205,12 +1330,12 @@ mod mock_ws_tests {
     reason = "tests assert on known-shape fixtures; unwrap panics ARE the failure signal"
 )]
 mod demux_tests {
-    use super::flow::{self, RawChannel, RecvDemux};
+    use super::flow::{self, Conn, RawChannel, RecvDemux};
     use crate::adapter::ConnectionId;
     use crate::error::SimplexAdapterError;
 
     use std::collections::VecDeque;
-    use tokio::sync::Mutex as AsyncMutex;
+    use tokio::sync::{Mutex as AsyncMutex, Notify};
 
     /// A `RawChannel` that replays a scripted event sequence + records the
     /// commands sent (the `/freceive` accepts).
@@ -1267,26 +1392,28 @@ mod demux_tests {
             events: AsyncMutex::new(events),
             sent: AsyncMutex::new(Vec::new()),
         };
-        let demux = AsyncMutex::new(RecvDemux::default());
+        let conn = Conn {
+            chan,
+            user_id: 0,
+            demux: AsyncMutex::new(RecvDemux::default()),
+            drain: AsyncMutex::new(()),
+            notify: Notify::new(),
+        };
         let conn_a = ConnectionId("10".to_string());
         let conn_b = ConnectionId("20".to_string());
 
         // recv(conn-10) drains conn-20's offer+completion (buffering B), then
         // conn-10's offer+completion → returns A.
-        let got_a = flow::recv_envelope(&chan, &demux, &conn_a, &dir)
-            .await
-            .unwrap();
+        let got_a = flow::recv_envelope(&conn, &conn_a, &dir).await.unwrap();
         assert_eq!(got_a, b"envelope-A");
 
         // recv(conn-20) returns the buffered envelope WITHOUT draining (the
         // event queue is now empty; draining would error).
-        let got_b = flow::recv_envelope(&chan, &demux, &conn_b, &dir)
-            .await
-            .unwrap();
+        let got_b = flow::recv_envelope(&conn, &conn_b, &dir).await.unwrap();
         assert_eq!(got_b, b"envelope-B");
 
         // Both offers were accepted (two `/freceive` commands).
-        let sent = chan.sent.lock().await;
+        let sent = conn.chan.sent.lock().await;
         assert_eq!(sent.len(), 2);
         assert!(sent.iter().all(|c| c.starts_with("/freceive ")));
         drop(sent);
@@ -1330,5 +1457,90 @@ mod demux_tests {
             sent.as_slice(),
             ["/_files_folder /files", "/_temp_folder /temp"]
         );
+    }
+
+    /// A BLOCKING channel: `next_event` awaits an mpsc receiver (so a recv-loop
+    /// genuinely WAITS for the next event, as on-device — not the script
+    /// channel's error-on-empty), and `send` returns a canned non-error
+    /// `/_send` reply carrying a fixed fileId.
+    struct MpscChannel {
+        rx: AsyncMutex<tokio::sync::mpsc::UnboundedReceiver<String>>,
+        sent: AsyncMutex<Vec<String>>,
+        send_reply: String,
+    }
+
+    impl RawChannel for MpscChannel {
+        async fn send(&self, cmd: String) -> Result<String, SimplexAdapterError> {
+            self.sent.lock().await.push(cmd);
+            Ok(self.send_reply.clone())
+        }
+        async fn next_event(&self) -> Result<String, SimplexAdapterError> {
+            self.rx
+                .lock()
+                .await
+                .recv()
+                .await
+                .ok_or(SimplexAdapterError::SidecarUnavailable)
+        }
+    }
+
+    fn sent_reply(file_id: i64) -> String {
+        format!(
+            r#"{{"resp":{{"type":"newChatItems","chatItems":[{{"chatItem":{{"file":{{"fileId":{file_id}}}}}}}]}}}}"#
+        )
+    }
+    fn snd_complete(file_id: i64) -> String {
+        format!(
+            r#"{{"resp":{{"type":"sndFileCompleteXFTP","chatItem":{{"file":{{"fileId":{file_id}}}}}}}}}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn send_completes_while_recv_loop_drains_shared_stream() {
+        // The D0026 §12 two-device bug: a `send`'s sndFileCompleteXFTP await and
+        // the recv-loop both consume the ONE event stream. With the OLD code the
+        // recv-loop ate + discarded the send's completion event and the send
+        // hung (no progress, no timeout — exactly device B's symptom). Here both
+        // run CONCURRENTLY over a blocking channel; the unified drainer routes
+        // each event to the right waiter, so BOTH must finish. The send's
+        // completion is fed FIRST — the ordering that broke the old code.
+        let dir = std::env::temp_dir().join(format!("cairn-concurrent-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let inbound = dir.join("inbound.bin");
+        std::fs::write(&inbound, b"hi-from-peer").unwrap();
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let conn = Conn {
+            chan: MpscChannel {
+                rx: AsyncMutex::new(rx),
+                sent: AsyncMutex::new(Vec::new()),
+                send_reply: sent_reply(99),
+            },
+            user_id: 0,
+            demux: AsyncMutex::new(RecvDemux::default()),
+            drain: AsyncMutex::new(()),
+            notify: Notify::new(),
+        };
+        let conn_id = ConnectionId("7".to_string());
+
+        tx.send(snd_complete(99)).unwrap(); // the SEND's completion — fed first
+        tx.send(offer(1, 7)).unwrap(); // then the recv's incoming file…
+        tx.send(complete(1, inbound.to_str().unwrap())).unwrap();
+
+        // A hard timeout turns a regression (the hang) into a clean failure.
+        let (recv_res, send_res) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                tokio::join!(
+                    flow::recv_envelope(&conn, &conn_id, &dir),
+                    flow::send_envelope(&conn, &dir, &dir, &conn_id, b"hello-peer"),
+                )
+            })
+            .await
+            .expect("deadlock: send + recv did not both complete (the two-consumers bug)");
+
+        assert_eq!(recv_res.unwrap(), b"hi-from-peer"); // recv got its message
+        send_res.unwrap(); // send completed — its sndFileCompleteXFTP was routed
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

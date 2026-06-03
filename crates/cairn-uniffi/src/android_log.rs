@@ -27,9 +27,16 @@ use log::LevelFilter;
 /// crate's `release_max_level_info` feature already drops debug/trace in
 /// release builds).
 pub fn init() {
-    android_logger::init_once(
-        Config::default()
-            .with_max_level(LevelFilter::Info)
-            .with_tag("CairnRust"),
-    );
+    // Debug builds raise the RUNTIME level to Debug so the de-opaqued failure
+    // causes + the command/event flow (`debug!`) are visible via `adb logcat`;
+    // release stays at Info (and the `log` crate's `release_max_level_info`
+    // already compiles `debug!`/`trace!` out of release entirely). D0018 §4.2:
+    // those rich causes go ONLY to this developer log channel — the public
+    // UniFFI error surface stays coarse, so no error-oracle is exposed.
+    let max_level = if cfg!(debug_assertions) {
+        LevelFilter::Debug
+    } else {
+        LevelFilter::Info
+    };
+    android_logger::init_once(Config::default().with_max_level(max_level).with_tag("CairnRust"));
 }

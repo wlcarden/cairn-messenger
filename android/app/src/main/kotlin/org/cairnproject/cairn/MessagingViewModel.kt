@@ -174,7 +174,11 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                     Log.i(TAG, "RECV len=${text.length}: $text")
                     _messages.update { it + ChatMessage(mine = false, text = text) }
                 } catch (e: Exception) {
-                    Log.e(TAG, "recv loop ended", e)
+                    // Expected when the conversation closes / transport drops —
+                    // a recv that throws ends the loop. WARN (not ERROR): it is
+                    // a normal terminal condition, and the Rust cause is logged
+                    // de-opaqued under "CairnRust" (debug builds).
+                    Log.w(TAG, "recv loop ended (recv threw): ${e.message}", e)
                     break
                 }
             }
