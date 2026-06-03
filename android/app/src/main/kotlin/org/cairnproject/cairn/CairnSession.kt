@@ -104,22 +104,48 @@ private const val BUNDLED_TOR_SOCKS = "127.0.0.1:9050"
  * in-process FFI transport, routed through the bundled Tor's SOCKS proxy).
  */
 class CairnSession private constructor(
-    val identity: CairnIdentity,
+    /** Raw 32-byte Ed25519 device/operational public key (the envelope sender id). */
+    val publicKeyRaw: ByteArray,
     val handle: SimplexAdapterHandle,
 ) {
     companion object {
         private const val TAG = "CairnFfi"
 
-        /** Bootstrap the demo session under [filesDir]. */
+        /**
+         * Bootstrap the session under [filesDir]. Uses the **hardware-backed
+         * Ed25519 device key** ([KeystoreEd25519Signer]) when the platform can
+         * provide one, falling back to the software demo identity otherwise so
+         * the app never bricks on a key-provisioning gap.
+         */
         fun bootstrap(filesDir: File): CairnSession {
-            val identity = CairnIdentity.generate()
-            val signer = DemoSigner(identity)
             val storage = StorageHandle.open(
                 "${filesDir.absolutePath}/store.db",
                 // Demo passphrase — the real one is user-entered at unlock.
                 "cairn-demo-passphrase".toByteArray(),
                 DemoKeyMaterial(),
             )
+
+            // Prefer the hardware-backed Ed25519 device key (D0020 §3.4 / D0028);
+            // its private key never leaves the TEE/StrongBox — the signer is the
+            // HardwareKeySigner callback the Rust core invokes to sign each
+            // envelope. Fall back to the software demo identity if unavailable.
+            val signer: HardwareKeySigner
+            val publicKeyRaw: ByteArray
+            val keyAlias: String
+            val hardware = KeystoreEd25519Signer.generateOrLoad()
+            if (hardware != null) {
+                signer = hardware
+                publicKeyRaw = hardware.publicKeyRaw
+                keyAlias = KeystoreEd25519Signer.DEVICE_KEY_ALIAS
+                Log.i(TAG, "CairnSession: HARDWARE device key (${hardware.securityLevel})")
+            } else {
+                val identity = CairnIdentity.generate()
+                signer = DemoSigner(identity)
+                publicKeyRaw = identity.publicKeyRaw
+                keyAlias = DEMO_DEVICE_KEY_ALIAS
+                Log.w(TAG, "CairnSession: SOFTWARE demo device key (hardware key unavailable)")
+            }
+
             val config = SidecarEndpointConfig(
                 host = "127.0.0.1",
                 port = 5225.toUShort(),
@@ -128,15 +154,9 @@ class CairnSession private constructor(
                 socksProxy = BUNDLED_TOR_SOCKS,
                 maxRetries = 3.toUByte(),
             )
-            val handle = SimplexAdapterHandle(
-                storage,
-                signer,
-                DEMO_DEVICE_KEY_ALIAS,
-                identity.publicKeyRaw,
-                config,
-            )
-            Log.i(TAG, "CairnSession bootstrapped (demo identity ${identity.publicKeyRaw.size}-byte op key)")
-            return CairnSession(identity, handle)
+            val handle = SimplexAdapterHandle(storage, signer, keyAlias, publicKeyRaw, config)
+            Log.i(TAG, "CairnSession bootstrapped (${publicKeyRaw.size}-byte op key)")
+            return CairnSession(publicKeyRaw, handle)
         }
     }
 }

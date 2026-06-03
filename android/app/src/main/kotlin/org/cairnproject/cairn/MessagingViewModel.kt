@@ -70,7 +70,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                     CairnSession.bootstrap(getApplication<Application>().filesDir)
                 }
                 session = s
-                val myHex = s.identity.publicKeyRaw.toHex()
+                val myHex = s.publicKeyRaw.toHex()
                 Log.i(TAG, "MY_PUBKEY=$myHex")
                 _ui.value = UiState.Ready(myHex)
             } catch (e: Exception) {
@@ -93,7 +93,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     /** Create an invitation to share; then await the peer connecting. */
     fun createInvitation(peerKeyHex: String) {
         val s = session ?: return
-        val myHex = (ui.value as? UiState.Ready)?.myKeyHex ?: s.identity.publicKeyRaw.toHex()
+        val myHex = (ui.value as? UiState.Ready)?.myKeyHex ?: s.publicKeyRaw.toHex()
         peerKeyRaw = runCatching { peerKeyHex.trim().fromHex() }.getOrNull()
         viewModelScope.launch {
             if (!awaitTor()) return@launch
@@ -114,7 +114,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     /** Accept a peer's `"<uri>|<peerKeyHex>"` invitation. */
     fun acceptInvitation(blob: String) {
         val s = session ?: return
-        val myHex = (ui.value as? UiState.Ready)?.myKeyHex ?: s.identity.publicKeyRaw.toHex()
+        val myHex = (ui.value as? UiState.Ready)?.myKeyHex ?: s.publicKeyRaw.toHex()
         val parts = blob.trim().split("|", limit = 2)
         if (parts.size != 2) {
             _ui.value = UiState.Failed("invite must be <uri>|<peerKeyHex>")

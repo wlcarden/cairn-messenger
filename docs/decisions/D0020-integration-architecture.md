@@ -474,6 +474,14 @@ class AndroidKeyStoreSigner(private val keyStore: KeyStore) : HardwareKeySigner 
 }
 ```
 
+> **Revision (2026-06-03) — the device-key signer LANDED on-device; the P-256 sketch above is illustrative.** The Cairn envelope/identity is **Ed25519** (COSE_Sign1 EdDSA, ed25519-dalek), so the device key must be Ed25519 — NOT the `SHA256withECDSA` / `secp256r1` shown above, whose AndroidKeyStore output is ASN.1-DER (an X.509 SPKI key + DER-wrapped signature) that the raw-encoding verifier rejects (the earlier "wire-incompatible" finding). The landed `KeystoreEd25519Signer` (Kotlin) yields a raw 32-byte pubkey (the trailing 32 bytes of the Ed25519 SPKI) + raw 64-byte signatures that verify against ed25519-dalek — **proven on two physical Pixels: TEE-signed envelopes round-trip A↔B over Tor.** Three AndroidKeyStore-Ed25519 gotchas had to be resolved, all confirmed on-device:
+>
+> 1. **StrongBox rejects Ed25519** (`Unsupported StrongBox EC: ed25519` on the Pixel's Titan-M2), so the key is **TEE** — which also matches §3.5's per-message-key element (StrongBox is reserved for the periodic operational-identity / capability-token key).
+> 2. **Sign with `getKey`, not `getEntry`** — building a `KeyStore.PrivateKeyEntry` cross-checks the private-key algorithm against the self-signed cert's public-key algorithm, which mismatches for an AndroidKeyStore Ed25519 key (`private key algorithm does not match algorithm of public key in end entity certificate`).
+> 3. **Authorize `DIGEST_NONE` at keygen** — Ed25519 is pure EdDSA (no external digest); without `setDigests(DIGEST_NONE)` KeyMint rejects the sign op (`Digest 0 ... not authorized` → `INCOMPATIBLE_DIGEST`).
+>
+> The private key never leaves the TEE; the `HardwareKeySigner.sign` callback returns only signature bytes, and a self-heal regenerates a key whose params can't sign. **Still pending:** the StrongBox **operational-identity** key (capability tokens, §3.5), and Rust-side **attestation-chain verification** (§3.8–§3.9) that cryptographically proves the TEE backing — the signer exposes `attestation_chain`; verifying it against Google's root + the GrapheneOS verified-boot fingerprint is the follow-up that turns "TEE by construction" into "TEE by proof".
+
 **Properties this pattern delivers:**
 
 - Neither key's material exits hardware: `sign(device_alias, payload)` → device key signs in StrongBox; bytes return. `sign(op_alias, payload)` → operational identity signs in StrongBox; bytes return. The Rust core receives two signature byte arrays; it does NOT receive either signing key.
