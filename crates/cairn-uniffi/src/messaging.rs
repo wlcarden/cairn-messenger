@@ -129,6 +129,15 @@ pub struct SidecarEndpointConfig {
     /// over Tor; `None` = direct connections. **Desktop / CI (ws-core):**
     /// ignored — the external CLI owns its own network config.
     pub socks_proxy: Option<String>,
+    /// Optional SQLCipher passphrase for the at-rest chat DB (D0006 §3.5 / D0022 §2.2).
+    /// **Android (in-process FFI):** `Some` opens the in-process `libsimplex`
+    /// chat DB with `DbOpts::encrypted` (AES-encrypted SMP-agent/chat databases
+    /// on disk); `None` opens it unencrypted. Supplied by the storage layer (a
+    /// demo passphrase now; the Argon2id storage KEK in v1). **Desktop / CI
+    /// (ws-core):** ignored — the external CLI owns its own DB. A DB first
+    /// created unencrypted cannot later be opened encrypted (fresh installs
+    /// only).
+    pub db_key: Option<String>,
     /// Maximum send/recv retry attempts (backoff uses the D0023 §5.3
     /// defaults).
     pub max_retries: u8,
@@ -258,10 +267,11 @@ impl SimplexAdapterHandle {
             port: config.port,
         });
         #[cfg(target_os = "android")]
-        let transport = FfiSidecarTransport::with_socks_proxy(
+        let transport = FfiSidecarTransport::with_options(
             PathBuf::from(config.db_path),
             PathBuf::from(config.files_dir),
             config.socks_proxy,
+            config.db_key,
         );
         let adapter =
             SimplexAdapter::new(transport, adapter_config).map_err(CairnFfiError::from)?;
@@ -539,8 +549,14 @@ pub async fn messaging_ffi_two_party_selftest(
 ) -> Result<String, CairnFfiError> {
     #[cfg(target_os = "android")]
     {
-        match two_party_roundtrip(&db_path_a, &files_dir_a, &db_path_b, &files_dir_b, socks_proxy)
-            .await
+        match two_party_roundtrip(
+            &db_path_a,
+            &files_dir_a,
+            &db_path_b,
+            &files_dir_b,
+            socks_proxy,
+        )
+        .await
         {
             Ok(s) => Ok(s),
             Err(e) => Ok(format!("two-party selftest FAILED: {e:?}")),
@@ -589,10 +605,15 @@ fn two_party_build_adapter(
     for suffix in ["_agent.db", "_chat.db", "_agent.db-wal", "_chat.db-wal"] {
         let _ = std::fs::remove_file(format!("{db_path}{suffix}"));
     }
-    let transport = FfiSidecarTransport::with_socks_proxy(
+    // Exercise the at-rest-encrypted bring-up (D0006 §3.5 / D0022 §2.2) the production path
+    // uses: the loop above deletes the prior run's DB files, so this prefix is
+    // fresh and safe to open with `DbOpts::encrypted` (a DB first created
+    // unencrypted could not later be opened encrypted).
+    let transport = FfiSidecarTransport::with_options(
         PathBuf::from(db_path),
         PathBuf::from(files_dir),
         socks_proxy,
+        Some("cairn-selftest-dbkey".to_owned()),
     );
     SimplexAdapter::new(transport, config)
 }

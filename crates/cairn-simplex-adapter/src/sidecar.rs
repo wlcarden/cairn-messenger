@@ -374,9 +374,9 @@ pub(crate) mod flow {
                 raw.chars().take(300).collect::<String>()
             );
             return Err(match class {
-                protocol::CommandErrorClass::TransientRelay => {
-                    SimplexAdapterError::Network { retry_budget_used: 0 }
-                }
+                protocol::CommandErrorClass::TransientRelay => SimplexAdapterError::Network {
+                    retry_budget_used: 0,
+                },
                 protocol::CommandErrorClass::Fatal => SimplexAdapterError::SidecarProtocol,
             });
         }
@@ -530,7 +530,12 @@ pub(crate) mod flow {
         // its own bounded timeout.
         let mut attempt = 0u8;
         loop {
-            match command(&conn.chan, protocol::cmd_connect_via_link(conn.user_id, uri)).await {
+            match command(
+                &conn.chan,
+                protocol::cmd_connect_via_link(conn.user_id, uri),
+            )
+            .await
+            {
                 Ok(_) => break,
                 Err(SimplexAdapterError::Network { .. }) if attempt < RELAY_RETRY_MAX => {
                     attempt = attempt.saturating_add(1);
@@ -1058,8 +1063,14 @@ mod wscore {
 
         async fn send(&self, conn: &ConnectionId, raw: &[u8]) -> Result<(), SimplexAdapterError> {
             let c = self.conn().await?;
-            flow::send_envelope(c, &self.files_dir, &self.files_dir.join("sx-files"), conn, raw)
-                .await
+            flow::send_envelope(
+                c,
+                &self.files_dir,
+                &self.files_dir.join("sx-files"),
+                conn,
+                raw,
+            )
+            .await
         }
 
         async fn recv(&self, conn: &ConnectionId) -> Result<Vec<u8>, SimplexAdapterError> {
@@ -1154,9 +1165,17 @@ mod ffi {
     /// What remains for an on-device Tor run is a *running* proxy on the
     /// device (Orbot / the C-Tor `ForegroundService`), not adapter code.
     ///
-    /// **Still deferred to the on-device cycle (D0026 §12):** the DB is opened
-    /// `unencrypted` here — on device it should be `DbOpts::encrypted` with a
-    /// key from the storage/StrongBox layer.
+    /// **At-rest encryption (D0006 §3.5 / D0022 §2.2 / D0026 §12):** when `db_key` is `Some`,
+    /// the chat DB is opened with `DbOpts::encrypted` (SQLCipher) so the SMP
+    /// agent/chat databases — which hold queue secrets and message metadata —
+    /// are AES-encrypted on disk; `None` opens `unencrypted` (the ws-core/dev
+    /// default, where the external CLI owns its own DB). The key is supplied by
+    /// the storage layer (a demo passphrase for now; the Argon2id-derived
+    /// storage KEK in v1). **Migration caveat:** a DB first created
+    /// `unencrypted` cannot later be opened `encrypted` (no SQLCipher header);
+    /// switching an existing install requires a SimpleX rekey
+    /// (`apiStorageEncryption`) or a fresh DB. v1 fresh-installs create the DB
+    /// encrypted from the start.
     pub struct FfiSidecarTransport {
         /// App-private path prefix for the in-process SimpleX chat DB.
         db_path: PathBuf,
@@ -1167,32 +1186,46 @@ mod ffi {
         /// `Some` → a `/network socks=<addr>` command at bring-up routes
         /// outbound traffic over Tor; `None` → direct connections.
         socks_proxy: Option<String>,
+        /// Optional SQLCipher passphrase for the at-rest chat DB (D0006 §3.5 / D0022 §2.2).
+        /// `Some` → `DbOpts::encrypted`; `None` → `DbOpts::unencrypted`.
+        db_key: Option<String>,
         conn: OnceCell<Conn<FfiChannel>>,
     }
 
     impl FfiSidecarTransport {
         /// Construct the (lazily-initialised) in-process transport with an
         /// app-private DB-path prefix + `CryptoFile`-staging directory, with
-        /// outbound traffic on direct (non-Tor) connections.
+        /// outbound traffic on direct (non-Tor) connections and an
+        /// **unencrypted** DB (dev default).
         #[must_use]
         pub fn new(db_path: PathBuf, files_dir: PathBuf) -> Self {
-            Self::with_socks_proxy(db_path, files_dir, None)
+            Self::with_options(db_path, files_dir, None, None)
         }
 
-        /// As [`Self::new`], but route the daemon's outbound SMP/XFTP traffic
-        /// through the SOCKS5 proxy at `socks_proxy` (`<ip>:<port>`, the C-Tor
-        /// service, D0020 §2.2) via a `/network socks=` command issued at
-        /// bring-up. `None` is equivalent to [`Self::new`].
+        /// As [`Self::new`], but with the two optional bring-up knobs:
+        ///
+        /// - `socks_proxy` (`Some(<ip>:<port>)`) routes the daemon's outbound
+        ///   SMP/XFTP traffic through that SOCKS5 proxy (the C-Tor service,
+        ///   D0020 §2.2) via a `/network socks=` command issued at bring-up;
+        ///   `None` = direct connections.
+        /// - `db_key` (`Some(passphrase)`) opens the chat DB with
+        ///   `DbOpts::encrypted` (SQLCipher at-rest encryption, D0006 §3.5 / D0022 §2.2);
+        ///   `None` opens it `unencrypted`.
+        ///
+        /// `with_options(db_path, files_dir, None, None)` is equivalent to
+        /// [`Self::new`].
         #[must_use]
-        pub fn with_socks_proxy(
+        pub fn with_options(
             db_path: PathBuf,
             files_dir: PathBuf,
             socks_proxy: Option<String>,
+            db_key: Option<String>,
         ) -> Self {
             Self {
                 db_path,
                 files_dir,
                 socks_proxy,
+                db_key,
                 conn: OnceCell::new(),
             }
         }
@@ -1206,16 +1239,29 @@ mod ffi {
                     // `SidecarFailure` is most often a failed bring-up step here,
                     // previously opaque. `init` discards its rich error into
                     // SidecarUnavailable — log the real cause first.
-                    log::debug!("cairn-smp: FFI conn bring-up — init libsimplex");
-                    let (client, events) = init(
-                        DefaultUser::regular(PROFILE_NAME),
-                        DbOpts::unencrypted(&self.db_path),
-                    )
-                    .await
-                    .map_err(|e| {
-                        log::error!("cairn-smp: libsimplex init FAILED: {e:?}");
-                        SimplexAdapterError::SidecarUnavailable
-                    })?;
+                    //
+                    // At-rest encryption (D0006 §3.5 / D0022 §2.2): `Some(key)` →
+                    // `DbOpts::encrypted` (SQLCipher); `None` → `unencrypted`.
+                    // NB a DB first created unencrypted cannot later be opened
+                    // encrypted (no SQLCipher header) — fresh installs only.
+                    let db_opts = match self.db_key.as_deref() {
+                        Some(key) => DbOpts::encrypted(&self.db_path, key.to_owned()),
+                        None => DbOpts::unencrypted(&self.db_path),
+                    };
+                    log::debug!(
+                        "cairn-smp: FFI conn bring-up — init libsimplex (db at-rest: {})",
+                        if self.db_key.is_some() {
+                            "encrypted"
+                        } else {
+                            "unencrypted"
+                        }
+                    );
+                    let (client, events) = init(DefaultUser::regular(PROFILE_NAME), db_opts)
+                        .await
+                        .map_err(|e| {
+                            log::error!("cairn-smp: libsimplex init FAILED: {e:?}");
+                            SimplexAdapterError::SidecarUnavailable
+                        })?;
                     log::info!("cairn-smp: FFI conn — libsimplex init ok, configuring");
                     let chan = Arc::new(FfiChannel {
                         client,
@@ -1249,11 +1295,8 @@ mod ffi {
                         demux: AsyncMutex::new(flow::RecvDemux::default()),
                         notify: tokio::sync::Notify::new(),
                     });
-                    let drainer = flow::spawn_drainer(
-                        Arc::clone(&chan),
-                        Arc::clone(&shared),
-                        files_folder,
-                    );
+                    let drainer =
+                        flow::spawn_drainer(Arc::clone(&chan), Arc::clone(&shared), files_folder);
                     Ok(Conn {
                         chan,
                         user_id,
@@ -1286,8 +1329,14 @@ mod ffi {
 
         async fn send(&self, conn: &ConnectionId, raw: &[u8]) -> Result<(), SimplexAdapterError> {
             let c = self.conn().await?;
-            flow::send_envelope(c, &self.files_dir, &self.files_dir.join("sx-files"), conn, raw)
-                .await
+            flow::send_envelope(
+                c,
+                &self.files_dir,
+                &self.files_dir.join("sx-files"),
+                conn,
+                raw,
+            )
+            .await
         }
 
         async fn recv(&self, conn: &ConnectionId) -> Result<Vec<u8>, SimplexAdapterError> {

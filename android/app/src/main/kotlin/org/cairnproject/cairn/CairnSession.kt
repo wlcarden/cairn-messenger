@@ -152,6 +152,16 @@ class CairnSession private constructor(
                 dbPath = "${filesDir.absolutePath}/simplex-db",
                 filesDir = "${filesDir.absolutePath}/xftp",
                 socksProxy = BUNDLED_TOR_SOCKS,
+                // At-rest encryption (D0006 §3.5 / D0022 §2.2): opens the in-process libsimplex
+                // chat DB with SQLCipher so the SMP-agent/chat databases (queue
+                // secrets + message metadata) are AES-encrypted on disk. Demo
+                // passphrase for now — DISTINCT from the storage passphrase above
+                // (no cross-domain key reuse). v1 will derive this from the
+                // user-unlocked Argon2id storage KEK via a domain-separated KDF,
+                // never a hardcoded constant. NB the DB must be created encrypted
+                // on a fresh install; an existing unencrypted DB cannot be opened
+                // with a key (no SQLCipher header).
+                dbKey = "cairn-demo-db-passphrase",
                 maxRetries = 3.toUByte(),
             )
             val handle = SimplexAdapterHandle(storage, signer, keyAlias, publicKeyRaw, config)
