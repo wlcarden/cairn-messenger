@@ -106,6 +106,8 @@ private const val BUNDLED_TOR_SOCKS = "127.0.0.1:9050"
 class CairnSession private constructor(
     /** Raw 32-byte Ed25519 device/operational public key (the envelope sender id). */
     val publicKeyRaw: ByteArray,
+    /** The opened encrypted store — backs the contact list + message history. */
+    val storage: StorageHandle,
     val handle: SimplexAdapterHandle,
 ) {
     companion object {
@@ -166,7 +168,7 @@ class CairnSession private constructor(
             )
             val handle = SimplexAdapterHandle(storage, signer, keyAlias, publicKeyRaw, config)
             Log.i(TAG, "CairnSession bootstrapped (${publicKeyRaw.size}-byte op key)")
-            return CairnSession(publicKeyRaw, handle)
+            return CairnSession(publicKeyRaw, storage, handle)
         }
     }
 }

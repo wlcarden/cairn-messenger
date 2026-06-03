@@ -57,8 +57,8 @@ use std::sync::Arc;
 
 use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, SIGNATURE_LEN, VerifyingKey};
 use cairn_simplex_adapter::{
-    ConnectionId, EnvelopeSigner, Invitation, LocalIdentity, RetryBudget, SimplexAdapter,
-    SimplexAdapterConfig, SimplexAdapterError,
+    ConnectionId, EnvelopeSigner, HistoryMessage, Invitation, LocalIdentity, RetryBudget,
+    SimplexAdapter, SimplexAdapterConfig, SimplexAdapterError,
 };
 // The concrete transport is selected per target (D0026 §12): the ws-core
 // CLI-sidecar client for desktop/dev/CI, the in-process JNI `libsimplex`
@@ -192,6 +192,22 @@ pub struct ReceivedMessageRecord {
     pub payload: Vec<u8>,
     /// Receive-side Unix-seconds timestamp.
     pub received_at_unix: u64,
+}
+
+/// One persisted message in a conversation's history (D0026 §3.2).
+///
+/// For the contact-list / conversation-resume UI. `mine` distinguishes the
+/// sent vs received direction; the payload is decoded (already verified when
+/// it flowed) and the timestamp is the envelope's construction time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+pub struct HistoryMessageRecord {
+    /// `true` if this side SENT the message (outgoing); `false` if received.
+    pub mine: bool,
+    /// Application-level payload (padding stripped).
+    pub payload: Vec<u8>,
+    /// Envelope construction Unix-seconds timestamp.
+    pub timestamp_unix: u64,
 }
 
 /// An opaque async handle to the Cairn SimpleX messaging adapter (D0027 §2.2).
@@ -456,6 +472,44 @@ impl SimplexAdapterHandle {
             payload: received.payload,
             received_at_unix: received.received_at_unix,
         })
+    }
+
+    /// Load the persisted conversation history with `peer_operational_pubkey`
+    /// (both directions, chronological) for the contact-list / conversation
+    /// resume UI (D0026 §3.2). Reads the local `MESSAGES` store — records were
+    /// verified when they flowed, so they are decoded without re-verifying.
+    /// Synchronous (a local storage read, no network).
+    ///
+    /// # Errors
+    ///
+    /// - [`CairnFfiError::MalformedData`] if `peer_operational_pubkey` is not
+    ///   32 bytes.
+    /// - The facade mapping of any `SimplexAdapterError`
+    ///   ([`CairnFfiError::StorageFailure`] on a read failure).
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+    )]
+    pub fn load_message_history(
+        &self,
+        peer_operational_pubkey: Vec<u8>,
+    ) -> Result<Vec<HistoryMessageRecord>, CairnFfiError> {
+        let peer: [u8; PUBLIC_KEY_LEN] = peer_operational_pubkey
+            .as_slice()
+            .try_into()
+            .map_err(|_| CairnFfiError::MalformedData)?;
+        let history = self
+            .adapter
+            .load_message_history(&peer)
+            .map_err(CairnFfiError::from)?;
+        Ok(history
+            .into_iter()
+            .map(|m: HistoryMessage| HistoryMessageRecord {
+                mine: m.mine,
+                payload: m.payload,
+                timestamp_unix: m.timestamp_unix,
+            })
+            .collect())
     }
 }
 

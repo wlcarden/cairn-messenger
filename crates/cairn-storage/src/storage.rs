@@ -364,6 +364,7 @@ pub const ALL_CATEGORIES: &[&str] = &[
     categories::RATCHET_STATE,
     categories::MESSAGES,
     categories::SIGSUM_CACHE,
+    categories::CONTACTS,
 ];
 
 #[cfg(test)]

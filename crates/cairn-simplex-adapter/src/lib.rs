@@ -131,12 +131,13 @@ pub mod storage;
 pub use cairn_sigsum_client::RetryBudget;
 
 pub use adapter::{
-    ConnectionId, Invitation, LocalIdentity, MessageSent, ReceivedMessage, SidecarEndpoint,
-    SimplexAdapter, SimplexAdapterConfig,
+    ConnectionId, HistoryMessage, Invitation, LocalIdentity, MessageSent, ReceivedMessage,
+    SidecarEndpoint, SimplexAdapter, SimplexAdapterConfig,
 };
 pub use envelope::{
-    DOMAIN_TAG, ENVELOPE_SCHEMA_VERSION, EnvelopeSigner, MessageEnvelope, next_prior_envelope_hash,
-    verify_envelope, verify_envelope_learning_sender,
+    DOMAIN_TAG, ENVELOPE_SCHEMA_VERSION, EnvelopeSigner, MessageEnvelope,
+    decode_envelope_unverified, next_prior_envelope_hash, verify_envelope,
+    verify_envelope_learning_sender,
 };
 pub use error::SimplexAdapterError;
 pub use padding::{

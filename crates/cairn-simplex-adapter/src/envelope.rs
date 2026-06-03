@@ -368,6 +368,31 @@ pub fn verify_envelope_learning_sender(
     Ok(envelope)
 }
 
+/// Decode an already-persisted envelope's [`MessageEnvelope`] **without
+/// verifying the signature**, for reading message history (D0026 §3.2).
+///
+/// A record in the `MESSAGES` store was verified when it was sent or received;
+/// re-verifying it on display would require the sender's device key, which the
+/// history view does not hold. This decodes the canonical-CBOR payload for the
+/// user-facing fields (payload bytes + timestamp + the directed sender /
+/// recipient pubkeys). **Not for receiving untrusted bytes** — use
+/// [`verify_envelope`] / [`verify_envelope_learning_sender`] on the wire.
+///
+/// # Errors
+///
+/// [`SimplexAdapterError::EnvelopeDecodeFailed`] if the `COSE_Sign1` bytes or
+/// the inner payload don't parse.
+pub fn decode_envelope_unverified(
+    envelope_bytes: &[u8],
+) -> Result<MessageEnvelope, SimplexAdapterError> {
+    let cose = CoseSign1::from_bytes(envelope_bytes)
+        .map_err(|_| SimplexAdapterError::EnvelopeDecodeFailed)?;
+    let payload = cose
+        .payload()
+        .ok_or(SimplexAdapterError::EnvelopeDecodeFailed)?;
+    MessageEnvelope::from_canonical_cbor(payload)
+}
+
 /// Compute the `prior_envelope_hash` that the NEXT envelope between
 /// the same `(sender, recipient)` pair must commit to.
 ///

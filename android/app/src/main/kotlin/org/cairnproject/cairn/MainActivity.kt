@@ -117,6 +117,7 @@ class MainActivity : ComponentActivity() {
      *   --es create "1"               → createInvitation (logs INVITE_BLOB)
      *   --es invite "<uri>|<peerHex>" → acceptInvitation
      *   --es send   "<text>"          → send to the connected peer
+     *   --es open   "1"               → openFirstContact (resume saved contact)
      *
      * One-link pairing (D0026 §12): the inviter no longer needs the peer's key
      * up front — it learns the peer from the first envelope (TOFU) — so `create`
@@ -134,6 +135,10 @@ class MainActivity : ComponentActivity() {
         intent.getStringExtra("send")?.let {
             Log.i(TAG, "driver: send len=${it.length}")
             viewModel.send(it)
+        }
+        intent.getStringExtra("open")?.let {
+            Log.i(TAG, "driver: openFirstContact")
+            viewModel.openFirstContact()
         }
         // Two-party loopback selftest (D0026 §12): runs BOTH peers in this one
         // process over the bundled Tor, proving the full envelope round-trip

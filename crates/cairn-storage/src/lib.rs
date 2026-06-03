@@ -166,4 +166,6 @@ pub mod categories {
     pub const MESSAGES: &str = "messages";
     /// Sigsum log heads + witness cosignatures cache.
     pub const SIGSUM_CACHE: &str = "sigsum_cache";
+    /// Paired contacts for the contact list + conversation resume (D0026 §12).
+    pub const CONTACTS: &str = "contacts";
 }

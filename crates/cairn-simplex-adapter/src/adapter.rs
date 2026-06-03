@@ -37,8 +37,8 @@ use cairn_sigsum_client::RetryBudget;
 use cairn_storage::{Storage, StorageError, categories};
 
 use crate::envelope::{
-    ENVELOPE_SCHEMA_VERSION, EnvelopeSigner, MessageEnvelope, next_prior_envelope_hash,
-    verify_envelope, verify_envelope_learning_sender,
+    ENVELOPE_SCHEMA_VERSION, EnvelopeSigner, MessageEnvelope, decode_envelope_unverified,
+    next_prior_envelope_hash, verify_envelope, verify_envelope_learning_sender,
 };
 use crate::error::SimplexAdapterError;
 use crate::padding::{generate_padding, padding_bytes_required};
@@ -140,6 +140,19 @@ pub struct ReceivedMessage {
     pub payload: Vec<u8>,
     /// Receive-side wall-clock timestamp.
     pub received_at_unix: u64,
+}
+
+/// One persisted message in a conversation's history per
+/// [`SimplexAdapter::load_message_history`] (D0026 §3.2).
+#[derive(Debug, Clone)]
+pub struct HistoryMessage {
+    /// `true` if this side SENT it (an outgoing `me -> peer` record); `false`
+    /// for an incoming `peer -> me` record.
+    pub mine: bool,
+    /// Application-level payload (envelope key 6; padding is a separate field).
+    pub payload: Vec<u8>,
+    /// Envelope construction Unix-seconds timestamp (key 4).
+    pub timestamp_unix: u64,
 }
 
 /// Per-`(sender, recipient)` envelope-chain cursor.
@@ -415,6 +428,70 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             payload,
             received_at_unix: now_unix(),
         })
+    }
+
+    /// Load the persisted conversation history with `peer` — both directions,
+    /// chronologically ordered by envelope timestamp (D0026 §3.2). Reads the
+    /// `MESSAGES` store this adapter already persists on every `send`/`recv`;
+    /// records were verified when they flowed, so they are decoded WITHOUT
+    /// re-verifying (the history view holds no device key). 0-length hello
+    /// markers (the one-link-pairing key exchange, D0026 §12) are skipped.
+    ///
+    /// `O(N)` in the pair's message count (a contiguous `0..` walk per
+    /// direction), called once when a conversation is opened.
+    ///
+    /// # Errors
+    ///
+    /// [`SimplexAdapterError::Storage`] on a read failure;
+    /// [`SimplexAdapterError::EnvelopeDecodeFailed`] if a stored record does
+    /// not parse.
+    pub fn load_message_history(
+        &self,
+        peer_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
+    ) -> Result<Vec<HistoryMessage>, SimplexAdapterError> {
+        let me = &self.identity.operational_pubkey;
+        let mut out: Vec<HistoryMessage> = Vec::new();
+        // Incoming: peer -> me. Outgoing: me -> peer.
+        self.collect_direction(peer_operational_pubkey, me, false, &mut out)?;
+        self.collect_direction(me, peer_operational_pubkey, true, &mut out)?;
+        // Chronological across both directions; stable so same-second ties keep
+        // their per-direction insertion order.
+        out.sort_by_key(|m| m.timestamp_unix);
+        Ok(out)
+    }
+
+    /// Walk the contiguous `0..` `MESSAGES` records for one directed
+    /// `(sender, recipient)` pair, decoding each into [`HistoryMessage`]s
+    /// appended to `out`. Stops at the first missing message number.
+    fn collect_direction(
+        &self,
+        sender: &[u8; PUBLIC_KEY_LEN],
+        recipient: &[u8; PUBLIC_KEY_LEN],
+        mine: bool,
+        out: &mut Vec<HistoryMessage>,
+    ) -> Result<(), SimplexAdapterError> {
+        let mut message_number = 0u64;
+        loop {
+            let record_id = message_record_id_for(sender, recipient, message_number);
+            match self.storage.get(categories::MESSAGES, &record_id) {
+                Ok(cose) => {
+                    let envelope = decode_envelope_unverified(&cose)?;
+                    // Skip the 0-length pairing hello (D0026 §12) — it is a
+                    // key-exchange marker, not a user-visible message.
+                    if !envelope.payload.is_empty() {
+                        out.push(HistoryMessage {
+                            mine,
+                            payload: envelope.payload,
+                            timestamp_unix: envelope.timestamp,
+                        });
+                    }
+                    message_number = message_number.saturating_add(1);
+                }
+                Err(StorageError::RecordNotFound { .. }) => break,
+                Err(e) => return Err(SimplexAdapterError::from(e)),
+            }
+        }
+        Ok(())
     }
 
     /// The `(prior_envelope_hash, next_message_number)` for the next send to
@@ -903,6 +980,65 @@ mod tests {
             matches!(err, SimplexAdapterError::EnvelopeSignatureVerifyFailed),
             "got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn load_message_history_returns_both_directions() {
+        let wire = MockSidecarTransport::new();
+        let alice = make_party_1to1([1u8; 32], wire.clone());
+        let bob = make_party_1to1([2u8; 32], wire.clone());
+        let conn = ConnectionId("c".to_string());
+
+        // alice -> bob, then bob -> alice (each side persists its own view).
+        alice
+            .adapter
+            .send(&conn, &bob.operational_pubkey, b"a1")
+            .await
+            .unwrap();
+        bob.adapter.recv_learning_sender(&conn).await.unwrap();
+        bob.adapter
+            .send(&conn, &alice.operational_pubkey, b"b1")
+            .await
+            .unwrap();
+        alice
+            .adapter
+            .recv(&conn, &bob.operational_pubkey, &bob.device_vk)
+            .await
+            .unwrap();
+
+        // From alice's store: her outgoing "a1" (mine) + her incoming "b1".
+        let hist = alice
+            .adapter
+            .load_message_history(&bob.operational_pubkey)
+            .unwrap();
+        assert_eq!(hist.len(), 2);
+        assert!(hist.iter().any(|m| m.mine && m.payload == b"a1"));
+        assert!(hist.iter().any(|m| !m.mine && m.payload == b"b1"));
+    }
+
+    #[tokio::test]
+    async fn load_message_history_skips_zero_length_hello() {
+        let wire = MockSidecarTransport::new();
+        let alice = make_party_1to1([3u8; 32], wire.clone());
+        let bob = make_party_1to1([4u8; 32], wire.clone());
+        let conn = ConnectionId("c".to_string());
+        // The 0-length pairing hello (D0026 §12), then a real message.
+        alice
+            .adapter
+            .send(&conn, &bob.operational_pubkey, b"")
+            .await
+            .unwrap();
+        alice
+            .adapter
+            .send(&conn, &bob.operational_pubkey, b"real")
+            .await
+            .unwrap();
+        let hist = alice
+            .adapter
+            .load_message_history(&bob.operational_pubkey)
+            .unwrap();
+        assert_eq!(hist.len(), 1);
+        assert_eq!(hist[0].payload, b"real");
     }
 
     #[tokio::test]

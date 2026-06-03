@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -30,6 +31,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -46,11 +48,9 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 
 /**
- * The Cairn demo chat surface (D0003 Kotlin UI). Renders the [MessagingViewModel]
- * state machine: bring-up → pair (show an invitation QR / scan a contact's) →
- * live 1:1 chat, over the bundled SimpleX-over-Tor transport. Pairing is
- * one-link (D0026 §12): the inviter shares a single QR and learns the peer from
- * its first envelope (TOFU); the acceptor scans once.
+ * The Cairn chat surface (D0003 Kotlin UI). Renders the [MessagingViewModel]
+ * state machine: bring-up → contact list (+ one-link QR pairing) → live 1:1
+ * chat with persisted history, over the bundled SimpleX-over-Tor transport.
  */
 @Composable
 fun ChatScreen(vm: MessagingViewModel) {
@@ -74,7 +74,7 @@ fun ChatScreen(vm: MessagingViewModel) {
                     Text("Bringing up encrypted session…", Modifier.padding(top = 12.dp))
                 }
 
-                is UiState.Ready -> SetupView(state, vm)
+                is UiState.ContactList -> ContactListView(state, vm)
 
                 is UiState.Inviting -> InvitingView(state)
 
@@ -93,7 +93,7 @@ fun ChatScreen(vm: MessagingViewModel) {
                     )
                 }
 
-                is UiState.Connected -> ChatView(state, vm)
+                is UiState.Conversation -> ChatView(state, vm)
 
                 is UiState.Failed -> Centered {
                     Text(
@@ -108,7 +108,7 @@ fun ChatScreen(vm: MessagingViewModel) {
 }
 
 @Composable
-private fun SetupView(state: UiState.Ready, vm: MessagingViewModel) {
+private fun ContactListView(state: UiState.ContactList, vm: MessagingViewModel) {
     val context = LocalContext.current
     var showPaste by remember { mutableStateOf(false) }
     var pasted by remember { mutableStateOf("") }
@@ -143,19 +143,39 @@ private fun SetupView(state: UiState.Ready, vm: MessagingViewModel) {
         SelectableBlock(state.myKeyHex)
 
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
-        Text("Connect with a contact", style = MaterialTheme.typography.titleMedium)
-        Text(
-            "Invite shows a QR for your contact to scan; Scan reads theirs. " +
-                "You only need ONE side to scan.",
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(top = 2.dp),
-        )
+        Text("Contacts", style = MaterialTheme.typography.titleMedium)
+        if (state.contacts.isEmpty()) {
+            Text(
+                "No contacts yet — invite someone, or scan their invitation.",
+                Modifier.padding(top = 4.dp),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        } else {
+            state.contacts.forEach { contact ->
+                Card(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp)
+                        .clickable { vm.openContact(contact) },
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(contact.displayName, style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "peer ${contact.peerKeyHex.take(16)}…",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+        }
+
+        HorizontalDivider(Modifier.padding(vertical = 12.dp))
+        Text("Add a contact", style = MaterialTheme.typography.titleMedium)
         Row(Modifier.padding(top = 8.dp)) {
             Button(onClick = { vm.createInvitation() }) { Text("Invite a contact") }
             Spacer(Modifier.size(12.dp))
             OutlinedButton(onClick = onScanClick) { Text("Scan invitation") }
         }
-
         Spacer(Modifier.height(12.dp))
         OutlinedButton(onClick = { showPaste = !showPaste }) {
             Text(if (showPaste) "Hide paste option" else "Paste a link instead")
@@ -214,14 +234,17 @@ private fun InvitingView(state: UiState.Inviting) {
 }
 
 @Composable
-private fun ChatView(state: UiState.Connected, vm: MessagingViewModel) {
+private fun ChatView(state: UiState.Conversation, vm: MessagingViewModel) {
     val messages by vm.messages.collectAsStateWithLifecycle()
     var draft by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize()) {
-        Text(
-            "Connected · peer ${state.peerKeyHex.take(16)}…",
-            style = MaterialTheme.typography.labelMedium,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = { vm.backToContacts() }) { Text("‹ Contacts") }
+            Text(
+                "${state.displayName} · ${state.peerKeyHex.take(12)}…",
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
         LazyColumn(
             Modifier
                 .weight(1f)

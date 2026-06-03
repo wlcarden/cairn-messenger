@@ -242,6 +242,26 @@ impl StorageHandle {
             .delete(category, &record_id)
             .map_err(CairnFfiError::from)
     }
+
+    /// List the record ids stored in `category` — e.g. to enumerate paired
+    /// `CONTACTS` (D0026 §12) so the UI can show known contacts across
+    /// restarts. Returns the raw record-id bytes; the caller `get`s each for
+    /// its payload.
+    ///
+    /// # Errors
+    ///
+    /// - [`CairnFfiError::MalformedData`] if `category` is unknown.
+    /// - [`CairnFfiError::StorageFailure`] for an underlying SQLite failure.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+    )]
+    pub fn list_records(&self, category: String) -> Result<Vec<Vec<u8>>, CairnFfiError> {
+        let category = validate_category(&category)?;
+        self.storage
+            .list_records(category)
+            .map_err(CairnFfiError::from)
+    }
 }
 
 impl StorageHandle {
