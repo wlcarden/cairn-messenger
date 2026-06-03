@@ -7,7 +7,10 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import java.net.URLDecoder
+import java.net.URLEncoder
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -106,7 +109,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages = _messages.asStateFlow()
 
-    private val _torStatus = MutableStateFlow("starting bundled Tor…")
+    private val _torStatus = MutableStateFlow("Connecting to the Tor network…")
     val torStatus = _torStatus.asStateFlow()
 
     private var session: CairnSession? = null
@@ -122,6 +125,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
      * open conversation, so messages arrive + notify in the background (C2).
      */
     private val recvJobs = mutableMapOf<String, Job>()
+    private var pairingJob: Job? = null
     private var myHex: String = ""
     private val msgIdSeq = AtomicLong(0)
 
@@ -180,11 +184,12 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     /** The Activity signals the bundled Tor is bootstrapped (SOCKS up). */
     fun onTorReady() {
         torReady = true
-        _torStatus.value = "Bundled Tor ready (SOCKS 127.0.0.1:9050)"
+        _torStatus.value = "Connected to the Tor network"
     }
 
     fun onTorFailed(message: String) {
-        _torStatus.value = "Bundled Tor: $message"
+        Log.w(TAG, "Tor failed: $message")
+        _torStatus.value = "Couldn't connect to the Tor network"
     }
 
     /** MainActivity reports whole-app foreground state (notify vs. live append). */
@@ -197,6 +202,15 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         if (session != null) showContacts() else _ui.value = UiState.Locked(false, null)
     }
 
+    /** Cancel a pending invite/connect and return to the contact list (H3). */
+    fun cancelPairing() {
+        pairingJob?.cancel()
+        pairingJob = null
+        connectionId = null
+        peerKeyRaw = null
+        showContacts()
+    }
+
     /**
      * Create an invitation to share (inviter side). The peer's operational key
      * is learned from its first envelope (TOFU, D0026 §12) — one QR/link, no
@@ -205,11 +219,13 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     fun createInvitation() {
         val s = session ?: return
         peerKeyRaw = null
-        viewModelScope.launch {
+        pairingJob = viewModelScope.launch {
             if (!awaitTor()) return@launch
             try {
                 val uri = s.handle.createInvitation()
-                val blob = "$uri|$myHex"
+                // One scheme-validated token carries the SMP link + our key — no
+                // fragile "<uri>|<key>" split (a "|" is legal in a URI) (H4).
+                val blob = "cairn://invite?k=$myHex&u=" + URLEncoder.encode(uri, "UTF-8")
                 Log.i(TAG, "INVITE_BLOB=$blob")
                 _ui.value = UiState.Inviting(myHex, blob)
                 val connId = s.handle.awaitConnection()
@@ -220,6 +236,8 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 val learned = first.senderOperationalPubkey
                 Log.i(TAG, "LEARNED peer=${learned.toHex()}")
                 goLive(connId, learned, firstInbound = first.payload)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "createInvitation failed", e)
                 _ui.value = UiState.Failed("invite: ${e.message}")
@@ -227,35 +245,56 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Accept a peer's `"<uri>|<peerKeyHex>"` invitation (acceptor side). */
+    /** Accept a peer's `cairn://invite?k=…&u=…` invitation (acceptor side). */
     fun acceptInvitation(blob: String) {
         val s = session ?: return
-        val parts = blob.trim().split("|", limit = 2)
-        if (parts.size != 2) {
+        val parsed = parseInvite(blob)
+        if (parsed == null) {
             showContacts(error = "That doesn't look like a Cairn invitation.")
             return
         }
-        val peer = runCatching { parts[1].fromHex() }.getOrNull()
-        if (peer == null) {
-            showContacts(error = "That invitation's key looks malformed.")
-            return
-        }
-        viewModelScope.launch {
+        val (uri, peer) = parsed
+        pairingJob = viewModelScope.launch {
             if (!awaitTor()) return@launch
             _ui.value = UiState.Connecting(myHex)
             try {
-                val connId = s.handle.acceptInvitation(parts[0])
+                val connId = s.handle.acceptInvitation(uri)
                 connectionId = connId
                 // Tell the inviter who we are (0-length hello) so its
                 // recvLearningSender learns our key; then go live.
                 s.handle.send(connId, peer, ByteArray(0))
                 Log.i(TAG, "sent hello so the inviter learns our key")
                 goLive(connId, peer, firstInbound = null)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "acceptInvitation failed", e)
                 _ui.value = UiState.Failed("accept: ${e.message}")
             }
         }
+    }
+
+    /**
+     * Parse a `cairn://invite?k=<hex>&u=<urlencoded SMP uri>` invitation into the
+     * SMP uri + the peer's operational key (H4 — one token, no "|" split, since a
+     * "|" is legal in a URI). Tolerates the scheme with or without "//".
+     */
+    private fun parseInvite(blob: String): Pair<String, ByteArray>? {
+        val t = blob.trim()
+        val query = when {
+            t.startsWith("cairn://invite?") -> t.removePrefix("cairn://invite?")
+            t.startsWith("cairn:invite?") -> t.removePrefix("cairn:invite?")
+            else -> return null
+        }
+        val params = query.split("&").mapNotNull {
+            val i = it.indexOf('=')
+            if (i < 0) null else it.substring(0, i) to it.substring(i + 1)
+        }.toMap()
+        val keyHex = params["k"] ?: return null
+        val uriEnc = params["u"] ?: return null
+        val uri = runCatching { URLDecoder.decode(uriEnc, "UTF-8") }.getOrNull() ?: return null
+        val peer = runCatching { keyHex.fromHex() }.getOrNull() ?: return null
+        return uri to peer
     }
 
     /**

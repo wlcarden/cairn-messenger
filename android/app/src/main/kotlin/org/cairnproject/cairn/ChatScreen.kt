@@ -97,7 +97,7 @@ fun ChatScreen(vm: MessagingViewModel) {
 
                 is UiState.ContactList -> ContactListView(state, vm)
 
-                is UiState.Inviting -> InvitingView(state)
+                is UiState.Inviting -> InvitingView(state, vm)
 
                 is UiState.Connecting -> Centered {
                     CircularProgressIndicator()
@@ -112,6 +112,10 @@ fun ChatScreen(vm: MessagingViewModel) {
                         textAlign = TextAlign.Center,
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    TextButton(
+                        onClick = { vm.cancelPairing() },
+                        modifier = Modifier.padding(top = 12.dp),
+                    ) { Text("Cancel") }
                 }
 
                 is UiState.Conversation -> ChatView(state, vm)
@@ -355,7 +359,7 @@ private fun ContactListView(state: UiState.ContactList, vm: MessagingViewModel) 
             OutlinedTextField(
                 value = pasted,
                 onValueChange = { pasted = it },
-                label = { Text("Paste invitation (<uri>|<key>)") },
+                label = { Text("Paste a Cairn invitation link") },
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 8.dp),
@@ -370,7 +374,7 @@ private fun ContactListView(state: UiState.ContactList, vm: MessagingViewModel) 
 }
 
 @Composable
-private fun InvitingView(state: UiState.Inviting) {
+private fun InvitingView(state: UiState.Inviting, vm: MessagingViewModel) {
     val context = LocalContext.current
     Column(
         Modifier
@@ -401,6 +405,10 @@ private fun InvitingView(state: UiState.Inviting) {
             style = MaterialTheme.typography.bodyMedium,
         )
         CircularProgressIndicator(Modifier.padding(top = 8.dp))
+        TextButton(
+            onClick = { vm.cancelPairing() },
+            modifier = Modifier.padding(top = 12.dp),
+        ) { Text("Cancel") }
     }
 }
 
@@ -440,7 +448,12 @@ private fun ChatView(state: UiState.Conversation, vm: MessagingViewModel) {
     }
     Column(Modifier.fillMaxSize()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { vm.backToContacts() }) { Text("‹ Contacts") }
+            TextButton(onClick = { vm.backToContacts() }) {
+                Text(
+                    "‹ Contacts",
+                    modifier = Modifier.semantics { contentDescription = "Back to contacts" },
+                )
+            }
             Column(Modifier.weight(1f)) {
                 Text(
                     "${state.displayName} · ${state.peerKeyHex.take(12)}…",
@@ -452,7 +465,9 @@ private fun ChatView(state: UiState.Conversation, vm: MessagingViewModel) {
                 TextButton(onClick = { showVerify = true }) { Text("Verify") }
             }
             Box {
-                TextButton(onClick = { menuOpen = true }) { Text("⋮") }
+                TextButton(onClick = { menuOpen = true }) {
+                    Text("⋮", modifier = Modifier.semantics { contentDescription = "More options" })
+                }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
                         text = { Text("Rename") },

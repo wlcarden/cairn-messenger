@@ -129,7 +129,8 @@ class MainActivity : ComponentActivity() {
      *   --es unlock "<passphrase>"    → unlock the encrypted session
      *   --es beginsetup "1"           → Welcome → first-launch passphrase screen
      *   --es create "1"               → createInvitation (logs INVITE_BLOB)
-     *   --es invite "<uri>|<peerHex>" → acceptInvitation
+     *   --es invite "<cairn-uri>"     → acceptInvitation
+     *   --es cancelpairing "1"        → cancel a pending invite/connect
      *   --es send   "<text>"          → send to the connected peer
      *   --es open   "1"               → openFirstContact (resume saved contact)
      *   --es verify "1"               → mark the open contact verified
@@ -158,6 +159,10 @@ class MainActivity : ComponentActivity() {
         intent.getStringExtra("invite")?.let {
             Log.i(TAG, "driver: acceptInvitation")
             viewModel.acceptInvitation(it)
+        }
+        intent.getStringExtra("cancelpairing")?.let {
+            Log.i(TAG, "driver: cancelPairing")
+            viewModel.cancelPairing()
         }
         intent.getStringExtra("send")?.let {
             Log.i(TAG, "driver: send len=${it.length}")
