@@ -510,6 +510,21 @@ private fun IdentityView(state: UiState.Identity) {
                 .size(240.dp),
         )
         Spacer(Modifier.height(16.dp))
+        Text("Your name words", style = MaterialTheme.typography.titleSmall)
+        Text(
+            FriendlyName.of(state.myKeyHex),
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Text(
+            "A short, memorable fingerprint of your key. Read these to a contact so " +
+                "they can confirm they have the right one — they survive a rename.",
+            textAlign = TextAlign.Center,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Spacer(Modifier.height(16.dp))
         Text("Your key", style = MaterialTheme.typography.titleSmall)
         SelectableBlock(state.myKeyHex)
         OutlinedButton(
@@ -939,8 +954,19 @@ private fun VerifyDialog(
                 }
                 HorizontalDivider(Modifier.padding(vertical = 12.dp))
                 Text(
-                    "Or compare this number out loud — it is identical on both " +
-                        "devices only if no one is intercepting your keys:",
+                    "Quick check — these three words are a short fingerprint of this " +
+                        "contact's key, and match the words on their identity screen:",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    FriendlyName.of(state.peerKeyHex),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "For full assurance, compare this number out loud — it is identical " +
+                        "on both devices only if no one is intercepting your keys:",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Spacer(Modifier.height(8.dp))

@@ -91,7 +91,7 @@ class ContactStore(private val storage: StorageHandle) {
             Contact(
                 peerKeyHex = peerKeyHex,
                 connId = o.getString("conn"),
-                displayName = o.optString("name", peerKeyHex.take(8)),
+                displayName = o.optString("name", "").ifEmpty { FriendlyName.of(peerKeyHex) },
                 pairedAtUnix = o.optLong("at", 0),
                 verified = verified,
                 verifiedKeyHex = verifiedKey,

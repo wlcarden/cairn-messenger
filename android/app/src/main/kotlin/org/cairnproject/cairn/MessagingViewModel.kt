@@ -424,13 +424,17 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         connectionId = connId
         peerKeyRaw = peer
         val peerHex = peer.toHex()
+        // A friendly, deterministic 3-word default name (e.g. "Brave Otter
+        // Lantern") derived from the peer key — friendlier than a hex prefix,
+        // and identical to the words the peer sees for itself (D0026 §12).
+        val name = FriendlyName.of(peerHex)
         Log.i(TAG, "CONNECTED connId=$connId peer=$peerHex")
         runCatching {
             contacts?.save(
                 Contact(
                     peerKeyHex = peerHex,
                     connId = connId,
-                    displayName = peerHex.take(8),
+                    displayName = name,
                     pairedAtUnix = System.currentTimeMillis() / 1000,
                 ),
             )
@@ -443,7 +447,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         }
         // A freshly-paired contact is TOFU-unverified until the user confirms
         // the safety number out of band (D0006 §70).
-        _ui.value = UiState.Conversation(myHex, peerHex, peerHex.take(8), Trust.UNVERIFIED)
+        _ui.value = UiState.Conversation(myHex, peerHex, name, Trust.UNVERIFIED)
         ensureReceiving()
     }
 
