@@ -555,6 +555,7 @@ private fun Monogram(name: String, keyHex: String) {
 private fun IdentityView(state: UiState.Identity, vm: MessagingViewModel) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
+    var showChangePass by remember { mutableStateOf(false) }
     Column(
         Modifier
             .fillMaxSize()
@@ -598,6 +599,13 @@ private fun IdentityView(state: UiState.Identity, vm: MessagingViewModel) {
             },
             modifier = Modifier.padding(top = 12.dp),
         ) { Text("Copy key") }
+        OutlinedButton(
+            onClick = { showChangePass = true },
+            modifier = Modifier.padding(top = 8.dp),
+        ) { Text("Change passphrase") }
+        if (showChangePass) {
+            ChangePassphraseDialog(vm, onDismiss = { showChangePass = false })
+        }
         // Quick unlock on/off (D0029). Enabling happens at the lock screen (the
         // passphrase is in hand there); here we only offer to turn it OFF, which
         // deletes the wrapped blob + the Keystore key — reverting to the
@@ -1128,6 +1136,115 @@ private fun RenameDialog(current: String, onConfirm: (String) -> Unit, onDismiss
             TextButton(onClick = { onConfirm(name) }, enabled = name.isNotBlank()) { Text("Save") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/**
+ * Change-passphrase dialog (D0030 §3). Re-keys the encrypted store from the
+ * current passphrase to a new (confirmed, min-length) one; on success quick
+ * unlock is invalidated (its blob held the old passphrase). The re-encrypt runs
+ * off the main thread — the dialog shows a busy state and blocks dismissal while
+ * it runs, so a half-applied change can't be triggered.
+ */
+@Composable
+private fun ChangePassphraseDialog(vm: MessagingViewModel, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    var current by remember { mutableStateOf("") }
+    var newPass by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    val tooShort = newPass.isNotEmpty() && newPass.length < MIN_PASSPHRASE
+    val mismatch = confirm.isNotEmpty() && newPass != confirm
+    val canSubmit = current.isNotBlank() && newPass.length >= MIN_PASSPHRASE &&
+        newPass == confirm && !busy
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("Change passphrase") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    "Your new passphrase re-encrypts everything on this device. There " +
+                        "is no reset — write it down. Quick unlock will be turned off; " +
+                        "you can re-enable it afterward.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(12.dp))
+                PasswordField("Current passphrase", current, enabled = !busy) { current = it }
+                Spacer(Modifier.height(8.dp))
+                PasswordField("New passphrase", newPass, enabled = !busy) { newPass = it }
+                Spacer(Modifier.height(8.dp))
+                PasswordField(
+                    "Confirm new passphrase",
+                    confirm,
+                    enabled = !busy,
+                    isError = mismatch,
+                ) { confirm = it }
+                (error ?: if (tooShort) {
+                    "Too short — at least $MIN_PASSPHRASE characters."
+                } else if (mismatch) {
+                    "New passphrases don't match."
+                } else {
+                    null
+                })?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        it,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                if (busy) {
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(18.dp))
+                        Spacer(Modifier.size(8.dp))
+                        Text("Re-encrypting…", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = canSubmit,
+                onClick = {
+                    error = null
+                    busy = true
+                    vm.changePassphrase(current, newPass) { ok, err ->
+                        busy = false
+                        if (ok) {
+                            Toast.makeText(context, "Passphrase changed", Toast.LENGTH_LONG).show()
+                            onDismiss()
+                        } else {
+                            error = err
+                        }
+                    }
+                },
+            ) { Text("Change") }
+        },
+        dismissButton = { TextButton(enabled = !busy, onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** A masked single-line passphrase field for dialogs. */
+@Composable
+private fun PasswordField(
+    label: String,
+    value: String,
+    enabled: Boolean = true,
+    isError: Boolean = false,
+    onValueChange: (String) -> Unit,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        singleLine = true,
+        enabled = enabled,
+        isError = isError,
+        visualTransformation = PasswordVisualTransformation(),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+        modifier = Modifier.fillMaxWidth(),
     )
 }
 

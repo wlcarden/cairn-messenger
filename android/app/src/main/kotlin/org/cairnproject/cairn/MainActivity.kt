@@ -144,6 +144,7 @@ class MainActivity : FragmentActivity() {
      *   --es quickenroll "<pass>"     → enroll quick unlock (shows the BiometricPrompt)
      *   --es quickunlock "1"          → quick-unlock prompt (decrypt → unlock)
      *   --es quickdisable "1"         → delete the wrapped passphrase + Keystore key
+     *   --es cpold "<old>" --es cpnew "<new>" → change the passphrase (re-key)
      *
      * One-link pairing (D0026 §12): the inviter no longer needs the peer's key
      * up front — it learns the peer from the first envelope (TOFU) — so `create`
@@ -234,6 +235,15 @@ class MainActivity : FragmentActivity() {
             Log.i(TAG, "driver: quickDisable")
             QuickUnlock.disable(filesDir)
             Log.i(TAG, "QUICKDISABLE: enrolled=${QuickUnlock.isEnrolled(filesDir)}")
+        }
+        // Change-passphrase (D0030 §3): requires BOTH --es cpold and --es cpnew.
+        val cpOld = intent.getStringExtra("cpold")
+        val cpNew = intent.getStringExtra("cpnew")
+        if (cpOld != null && cpNew != null) {
+            Log.i(TAG, "driver: changePassphrase")
+            viewModel.changePassphrase(cpOld, cpNew) { ok, err ->
+                Log.i(TAG, "CHANGEPASS: ok=$ok err=$err")
+            }
         }
         // Two-party loopback selftest (D0026 §12): runs BOTH peers in this one
         // process over the bundled Tor, proving the full envelope round-trip

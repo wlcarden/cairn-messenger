@@ -125,6 +125,23 @@ loop with everything else — no special-casing.
 `cairn-uniffi` exports `StorageHandle.change_passphrase(old, new)`; the KEK/DEKs
 never cross the FFI (the rekey runs entirely in Rust).
 
+> **Realized — Stage 2 (2026-06-03).** `Storage::change_passphrase` (interior-
+> mutable `RwLock` DEK cache so the live handle swaps in place, no re-open) +
+> `StorageHandle.change_passphrase(old, new, key_material)` (a fresh
+> `StrongBoxStorageKeyMaterial` reproduces the device factor) +
+> `CairnSession.changePassphrase` + a Compose change-passphrase dialog (current /
+> new / confirm, min-length, busy state) reached from My-Identity; the VM
+> invalidates quick unlock on success. Host gates: `cargo fmt`, clippy `-D
+warnings`, two new Rust tests (`change_passphrase_reencrypts_…`,
+> `change_passphrase_wrong_old_aborts_with_no_mutation`). On-device-validated on
+> a Pixel (device B disconnected; change-passphrase is single-device by nature):
+> the rekey P1→P2 succeeds; quick unlock is invalidated (the placeholder blob is
+> deleted); a wrong CURRENT passphrase is rejected with no mutation; after a
+> restart the OLD passphrase is rejected and the NEW one unlocks; and — the
+> cross-component proof — `create` after the change re-opens the libsimplex DB,
+> so the stored db-key record survived the re-encrypt and the DB was never
+> rekeyed (Design B end-to-end).
+
 ## 4. Quick-unlock interaction (D0029)
 
 The quick-unlock blob wraps the **old** passphrase. After a successful change it

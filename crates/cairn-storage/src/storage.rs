@@ -43,7 +43,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, RwLock};
 
 use rand_core::{OsRng, RngCore};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -75,8 +75,10 @@ pub struct Storage {
     conn: Mutex<Connection>,
 
     /// Per-category DEK cache. Lookup by category-tag string;
-    /// `Zeroizing<[u8; DEK_LEN]>` wipes on Drop.
-    deks: HashMap<&'static str, Zeroizing<[u8; DEK_LEN]>>,
+    /// `Zeroizing<[u8; DEK_LEN]>` wipes on Drop. Behind an `RwLock` so
+    /// [`Self::change_passphrase`] can swap the whole set in place after a
+    /// re-key (D0030 §3) — the shared handle keeps working, no re-open.
+    deks: RwLock<HashMap<&'static str, Zeroizing<[u8; DEK_LEN]>>>,
 }
 
 impl Storage {
@@ -142,7 +144,7 @@ impl Storage {
 
         Ok(Self {
             conn: Mutex::new(conn),
-            deks,
+            deks: RwLock::new(deks),
         })
     }
 
@@ -167,7 +169,7 @@ impl Storage {
         payload: &[u8],
     ) -> Result<(), StorageError> {
         let dek = self.dek_for(category)?;
-        let sealed = encryption::seal(dek, category, record_id, payload)?;
+        let sealed = encryption::seal(&dek, category, record_id, payload)?;
         let conn = self.lock_conn()?;
         conn.execute(
             "INSERT INTO storage (category, record_id, ciphertext, version)
@@ -217,7 +219,7 @@ impl Storage {
             .optional()?
             .ok_or(StorageError::RecordNotFound { category })?
         };
-        encryption::open(dek, category, record_id, &sealed)
+        encryption::open(&dek, category, record_id, &sealed)
     }
 
     /// Delete a record. Returns `true` if a row was actually removed,
@@ -319,12 +321,97 @@ impl Storage {
         self.conn.lock().map_err(|_| StorageError::MutexPoisoned)
     }
 
-    /// Look up the cached DEK for a category. Errors if the category
-    /// isn't one of the known [`ALL_CATEGORIES`] tags.
-    fn dek_for(&self, category: &'static str) -> Result<&Zeroizing<[u8; DEK_LEN]>, StorageError> {
-        self.deks
+    /// Look up the cached DEK for a category (a clone, taken under the
+    /// `deks` read lock so a concurrent [`Self::change_passphrase`] swap is
+    /// safe). Errors if the category isn't one of the known
+    /// [`ALL_CATEGORIES`] tags. The returned `Zeroizing` wipes on drop.
+    fn dek_for(&self, category: &'static str) -> Result<Zeroizing<[u8; DEK_LEN]>, StorageError> {
+        let guard = self.deks.read().map_err(|_| StorageError::MutexPoisoned)?;
+        guard
             .get(category)
+            .cloned()
             .ok_or(StorageError::RecordNotFound { category })
+    }
+
+    /// Re-key the store to `new_passphrase` (D0030 §3 — change-passphrase).
+    ///
+    /// Re-derives the KEK from `new_passphrase` + a FRESH salt, re-encrypts
+    /// EVERY record under the new per-category DEKs, and rotates the salt —
+    /// all in ONE SQLite transaction. A failure rolls the transaction back,
+    /// so the OLD passphrase still opens the store (no half-state, no data
+    /// loss). `old_passphrase` is verified implicitly: the first record
+    /// decrypt under the old-derived DEK fails for a wrong `old_passphrase`,
+    /// aborting before any write.
+    ///
+    /// The StrongBox material (device factor, D0022 §2.2) is unchanged. On
+    /// success the live in-memory DEK cache is swapped, so the shared handle
+    /// keeps working with no re-open; the libsimplex DB is untouched (its key
+    /// lives as a re-encrypted record, D0030 §2).
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::DecryptFailed`] if `old_passphrase` is wrong (the
+    ///   re-encrypt aborts with no mutation).
+    /// - [`StorageError::KeyProvider`] for KEK / StrongBox derivation failures.
+    /// - [`StorageError::OpenFailed`] for SQLite failures.
+    /// - [`StorageError::MutexPoisoned`] if an internal lock was poisoned.
+    #[allow(
+        clippy::similar_names,
+        reason = "the `old_/new_` × `kek/dek` parallel naming mirrors the key-derivation hierarchy and is intentional"
+    )]
+    pub fn change_passphrase(
+        &self,
+        key_provider: &dyn KeyProvider,
+        old_passphrase: &Zeroizing<Vec<u8>>,
+        new_passphrase: &Zeroizing<Vec<u8>>,
+    ) -> Result<(), StorageError> {
+        let material = key_provider.strongbox_material()?;
+
+        let mut conn = self.lock_conn()?;
+        let old_salt = ensure_kek_salt(&conn)?;
+        let old_kek = key_provider.derive_kek(old_passphrase, &old_salt)?;
+
+        let mut new_salt = [0u8; KEK_SALT_LEN];
+        OsRng.fill_bytes(&mut new_salt);
+        let new_kek = key_provider.derive_kek(new_passphrase, &new_salt)?;
+
+        let mut new_deks: HashMap<&'static str, Zeroizing<[u8; DEK_LEN]>> = HashMap::new();
+        let tx = conn.transaction()?;
+        for &category in ALL_CATEGORIES {
+            let old_dek = derive_category_dek(&old_kek, &material, category)?;
+            let new_dek = derive_category_dek(&new_kek, &material, category)?;
+            // Collect (id, ciphertext) first so the SELECT statement is
+            // finalized before issuing UPDATEs on the same transaction.
+            let rows: Vec<(Vec<u8>, Vec<u8>)> = {
+                let mut stmt =
+                    tx.prepare("SELECT record_id, ciphertext FROM storage WHERE category = ?")?;
+                let mapped = stmt.query_map(params![category], |r| {
+                    Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+                })?;
+                let mut v = Vec::new();
+                for row in mapped {
+                    v.push(row?);
+                }
+                v
+            };
+            for (id, ct) in rows {
+                // A wrong `old_passphrase` makes this decrypt fail → abort.
+                let pt = encryption::open(&old_dek, category, &id, &ct)?;
+                let ct2 = encryption::seal(&new_dek, category, &id, &pt)?;
+                tx.execute(
+                    "UPDATE storage SET ciphertext = ?, version = ?
+                     WHERE category = ? AND record_id = ?",
+                    params![ct2, encryption::CURRENT_RECORD_VERSION, category, id],
+                )?;
+            }
+            new_deks.insert(category, new_dek);
+        }
+        schema::meta_set(&tx, schema::META_KEK_SALT, &new_salt)?;
+        tx.commit()?;
+        drop(conn);
+
+        *self.deks.write().map_err(|_| StorageError::MutexPoisoned)? = new_deks;
+        Ok(())
     }
 }
 
@@ -567,6 +654,79 @@ mod tests {
         let result = storage.get(categories::IDENTITY, b"key-1");
         assert!(matches!(result, Err(StorageError::DecryptFailed)));
         drop(storage);
+        std::fs::remove_file(&tmpfile).ok();
+    }
+
+    #[test]
+    fn change_passphrase_reencrypts_under_new_and_old_no_longer_opens() {
+        let tmpfile = tempfile_path();
+        let provider = InMemoryKeyProvider::new();
+        let old = Zeroizing::new(b"old passphrase".to_vec());
+        let new = Zeroizing::new(b"new passphrase".to_vec());
+        {
+            let storage = Storage::open(&tmpfile, &provider, &old).unwrap();
+            storage
+                .put(categories::IDENTITY, b"k", b"secret payload")
+                .unwrap();
+            storage
+                .put(categories::MESSAGES, b"m", b"a message")
+                .unwrap();
+            storage.change_passphrase(&provider, &old, &new).unwrap();
+            // The SAME handle keeps working (the DEK cache was swapped).
+            assert_eq!(
+                storage.get(categories::IDENTITY, b"k").unwrap().as_slice(),
+                b"secret payload"
+            );
+            assert_eq!(
+                storage.get(categories::MESSAGES, b"m").unwrap().as_slice(),
+                b"a message"
+            );
+        }
+        // Reopening with the NEW passphrase recovers the records.
+        {
+            let s = Storage::open(&tmpfile, &provider, &new).unwrap();
+            assert_eq!(
+                s.get(categories::IDENTITY, b"k").unwrap().as_slice(),
+                b"secret payload"
+            );
+        }
+        // Reopening with the OLD passphrase now fails to decrypt.
+        {
+            let s = Storage::open(&tmpfile, &provider, &old).unwrap();
+            assert!(matches!(
+                s.get(categories::IDENTITY, b"k"),
+                Err(StorageError::DecryptFailed)
+            ));
+        }
+        std::fs::remove_file(&tmpfile).ok();
+    }
+
+    #[test]
+    fn change_passphrase_wrong_old_aborts_with_no_mutation() {
+        let tmpfile = tempfile_path();
+        let provider = InMemoryKeyProvider::new();
+        let old = Zeroizing::new(b"the real old".to_vec());
+        let wrong = Zeroizing::new(b"not the old".to_vec());
+        let new = Zeroizing::new(b"the new".to_vec());
+        {
+            let storage = Storage::open(&tmpfile, &provider, &old).unwrap();
+            storage
+                .put(categories::IDENTITY, b"k", b"secret payload")
+                .unwrap();
+            // A wrong old passphrase fails the first record decrypt → abort.
+            assert!(matches!(
+                storage.change_passphrase(&provider, &wrong, &new),
+                Err(StorageError::DecryptFailed)
+            ));
+        }
+        // The OLD passphrase still opens the store — the rekey rolled back.
+        {
+            let s = Storage::open(&tmpfile, &provider, &old).unwrap();
+            assert_eq!(
+                s.get(categories::IDENTITY, b"k").unwrap().as_slice(),
+                b"secret payload"
+            );
+        }
         std::fs::remove_file(&tmpfile).ok();
     }
 

@@ -207,6 +207,21 @@ class CairnSession private constructor(
     val storage: StorageHandle,
     val handle: SimplexAdapterHandle,
 ) {
+    /**
+     * Re-key the encrypted store from [old] to [new] (D0030 §3 —
+     * change-passphrase): re-encrypts every record under the new
+     * passphrase-derived DEKs + a fresh salt, atomically, then swaps the live
+     * DEK cache so this session keeps working. The device StrongBox material is
+     * unchanged (a fresh [StrongBoxStorageKeyMaterial] reproduces it), and the
+     * libsimplex DB is untouched (its key is a stored record, re-encrypted in
+     * place — D0030 §2). Throws on a wrong [old] (`StorageDecryptFailed`) with
+     * no mutation. Blocking (Argon2id ×2 + a full re-encrypt) — call off the
+     * main thread.
+     */
+    fun changePassphrase(old: ByteArray, new: ByteArray) {
+        storage.changePassphrase(old, new, StrongBoxStorageKeyMaterial())
+    }
+
     companion object {
         private const val TAG = "CairnFfi"
 

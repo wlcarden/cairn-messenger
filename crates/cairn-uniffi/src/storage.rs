@@ -262,6 +262,39 @@ impl StorageHandle {
             .list_records(category)
             .map_err(CairnFfiError::from)
     }
+
+    /// Re-key the store from `old_passphrase` to `new_passphrase` (D0030 §3 —
+    /// change-passphrase): re-encrypt every record under the new
+    /// passphrase-derived DEKs + a fresh salt, atomically. `key_material`
+    /// supplies the (unchanged) device StrongBox material for the new DEK
+    /// derivation. The live handle keeps working on success; a wrong
+    /// `old_passphrase` aborts with no mutation.
+    ///
+    /// # Errors
+    ///
+    /// - [`CairnFfiError::StorageDecryptFailed`] if `old_passphrase` is wrong
+    ///   (the re-encrypt aborts before any write).
+    /// - [`CairnFfiError::StorageFailure`] for SQLite or key-derivation
+    ///   failures (StrongBox unavailable, Argon2).
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+    )]
+    pub fn change_passphrase(
+        &self,
+        old_passphrase: Vec<u8>,
+        new_passphrase: Vec<u8>,
+        key_material: Box<dyn StrongBoxKeyMaterial>,
+    ) -> Result<(), CairnFfiError> {
+        let provider = FfiKeyProvider {
+            callback: key_material,
+        };
+        let old = Zeroizing::new(old_passphrase);
+        let new = Zeroizing::new(new_passphrase);
+        self.storage
+            .change_passphrase(&provider, &old, &new)
+            .map_err(CairnFfiError::from)
+    }
 }
 
 impl StorageHandle {

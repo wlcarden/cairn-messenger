@@ -238,6 +238,42 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         if (session != null) showContacts() else _ui.value = UiState.Locked(false, null)
     }
 
+    /**
+     * Change the unlock passphrase (D0030 §3): re-key the encrypted store from
+     * [current] to [new] off the main thread (Argon2id ×2 + a full re-encrypt,
+     * atomic), then invalidate quick unlock — its wrapped blob holds the OLD
+     * passphrase. [onResult] (`ok`, `error`) runs on the main thread; a wrong
+     * [current] is reported, not applied (the rekey aborts with no mutation).
+     */
+    fun changePassphrase(current: String, new: String, onResult: (Boolean, String?) -> Unit) {
+        val s = session
+        if (s == null) {
+            onResult(false, "Not unlocked.")
+            return
+        }
+        if (current.isEmpty() || new.isEmpty()) {
+            onResult(false, "Enter both passphrases.")
+            return
+        }
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    s.changePassphrase(current.toByteArray(), new.toByteArray())
+                }
+                // The quick-unlock blob wraps the OLD passphrase — invalidate it.
+                QuickUnlock.disable(getApplication<Application>().filesDir)
+                Log.i(TAG, "passphrase changed; quick-unlock invalidated")
+                onResult(true, null)
+            } catch (e: CairnFfiException.StorageDecryptFailed) {
+                Log.w(TAG, "changePassphrase: wrong current passphrase")
+                onResult(false, "Your current passphrase is incorrect.")
+            } catch (e: Exception) {
+                Log.e(TAG, "changePassphrase failed", e)
+                onResult(false, "Couldn't change passphrase — ${e.message}")
+            }
+        }
+    }
+
     /** Show the user's own identity screen (key QR + fingerprint). */
     fun showIdentity() {
         _ui.value = UiState.Identity(myHex, quickUnlockEnrolled = quickUnlockEnrolled())
