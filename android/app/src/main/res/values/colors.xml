@@ -5,4 +5,6 @@
     <!-- The cairn-icon teal: the adaptive-icon background layer behind the
          white stacked-cairn foreground (sampled from cairn-icon.png). -->
     <color name="ic_launcher_background">#19524E</color>
+    <!-- The same teal as the app's brand chrome (status bar + top app bar). -->
+    <color name="cairn_teal">#19524E</color>
 </resources>

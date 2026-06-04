@@ -10,6 +10,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -26,6 +27,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -34,6 +36,10 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -53,9 +59,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -78,22 +86,21 @@ import kotlinx.coroutines.launch
  * state machine: bring-up → contact list (+ one-link QR pairing) → live 1:1
  * chat with persisted history, over the bundled SimpleX-over-Tor transport.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(vm: MessagingViewModel) {
     val ui by vm.ui.collectAsStateWithLifecycle()
     val torStatus by vm.torStatus.collectAsStateWithLifecycle()
 
-    Scaffold { padding ->
+    Scaffold(
+        topBar = { CairnTopBar(torStatus) },
+    ) { padding ->
         Column(
             Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(16.dp),
+                .padding(horizontal = 16.dp),
         ) {
-            Text("Cairn", style = MaterialTheme.typography.headlineSmall)
-            Text(torStatus, style = MaterialTheme.typography.labelMedium)
-            HorizontalDivider(Modifier.padding(vertical = 8.dp))
-
             when (val state = ui) {
                 is UiState.Welcome -> WelcomeScreen(vm)
 
@@ -142,6 +149,59 @@ fun ChatScreen(vm: MessagingViewModel) {
                 }
             }
         }
+    }
+}
+
+/**
+ * The single branded top app bar (replaces the platform ActionBar + the old
+ * in-content "Cairn" title): the white cairn glyph, the name, and a compact
+ * Tor-connectivity dot — on the fixed brand teal in both light and dark.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CairnTopBar(torStatus: String) {
+    TopAppBar(
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    painterResource(R.drawable.ic_notification),
+                    contentDescription = null,
+                    modifier = Modifier.size(26.dp),
+                    tint = Color.White,
+                )
+                Spacer(Modifier.size(8.dp))
+                Text("Cairn")
+            }
+        },
+        actions = {
+            TorStatusChip(torStatus)
+            Spacer(Modifier.size(12.dp))
+        },
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = CairnTeal,
+            titleContentColor = Color.White,
+            actionIconContentColor = Color.White,
+        ),
+    )
+}
+
+/** A compact Tor-connectivity indicator (a coloured dot + a one-word label). */
+@Composable
+private fun TorStatusChip(status: String) {
+    val (dotColor, label) = when {
+        status.startsWith("Connected") -> Color(0xFF7BE0A3) to "Connected"
+        status.startsWith("Couldn't") -> Color(0xFFFFB4AB) to "Offline"
+        else -> Color(0xFFFFD487) to "Connecting"
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(dotColor),
+        )
+        Spacer(Modifier.size(6.dp))
+        Text(label, style = MaterialTheme.typography.labelMedium, color = Color.White)
     }
 }
 

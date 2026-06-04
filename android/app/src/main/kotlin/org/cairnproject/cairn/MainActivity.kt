@@ -60,7 +60,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Log.i(TAG, "Cairn core loaded: v${cairnFfiAbiVersion()}")
 
-        setContent { ChatScreen(viewModel) }
+        setContent { CairnTheme { ChatScreen(viewModel) } }
 
         // Bootstrap the bundled C-Tor engine; signal the ViewModel when a
         // circuit is built so messaging ops route through SOCKS 127.0.0.1:9050.

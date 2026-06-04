@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright (c) 2026 Cairn maintainers and contributors -->
+<resources>
+    <!-- NoActionBar: Cairn is a pure-Compose app and draws its own Material3
+         top app bar, so the platform ActionBar (which otherwise renders the
+         android:label and produced a redundant second "Cairn" title) is off.
+         The status bar uses the brand teal so it merges with the top app bar. -->
+    <style name="Theme.Cairn" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/cairn_teal</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
