@@ -7,6 +7,7 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -96,6 +97,18 @@ import kotlinx.coroutines.launch
 fun ChatScreen(vm: MessagingViewModel) {
     val ui by vm.ui.collectAsStateWithLifecycle()
     val torStatus by vm.torStatus.collectAsStateWithLifecycle()
+
+    // System BACK navigates WITHIN the app instead of exiting it: a sub-screen
+    // goes back to the conversation list (or cancels a pending pair / dismisses a
+    // failure). On the home + pre-unlock screens BACK is NOT intercepted, so it
+    // falls through to the platform default (background the app) — no back-trap.
+    val onBack: (() -> Unit)? = when (ui) {
+        is UiState.Conversation, is UiState.Identity, is UiState.AddContact -> vm::backToContacts
+        is UiState.Inviting, is UiState.Connecting -> vm::cancelPairing
+        is UiState.Failed -> vm::dismissFailure
+        else -> null
+    }
+    BackHandler(enabled = onBack != null) { onBack?.invoke() }
 
     Scaffold(
         topBar = { CairnTopBar(ui, torStatus, vm) },

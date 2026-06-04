@@ -623,7 +623,12 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         var failures = 0
         while (true) {
             try {
-                val r = s.handle.recv(contact.connId, peer, peer)
+                // The blocking FFI recv runs OFF the Main thread, so a stale /
+                // invalid connId (whose recv can block, not just suspend) can
+                // never hang the UI (would ANR). The state updates below stay on
+                // the loop's Main dispatcher, keeping recvJobs + _ui access
+                // Main-confined (no concurrent ensureReceiving races).
+                val r = withContext(Dispatchers.IO) { s.handle.recv(contact.connId, peer, peer) }
                 failures = 0
                 if (r.payload.isEmpty()) continue // hello/key-exchange marker
                 val text = String(r.payload)
