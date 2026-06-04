@@ -131,6 +131,9 @@ class MainActivity : ComponentActivity() {
      *   --es create "1"               → createInvitation (logs INVITE_BLOB)
      *   --es invite "<cairn-uri>"     → acceptInvitation
      *   --es cancelpairing "1"        → cancel a pending invite/connect
+     *   --es identity "1"             → show the My-Identity screen
+     *   --es addcontact "1"           → show the Add-a-contact screen
+     *   --es home "1"                 → back to the conversations home
      *   --es send   "<text>"          → send to the connected peer
      *   --es open   "1"               → openFirstContact (resume saved contact)
      *   --es verify "1"               → mark the open contact verified
@@ -163,6 +166,18 @@ class MainActivity : ComponentActivity() {
         intent.getStringExtra("cancelpairing")?.let {
             Log.i(TAG, "driver: cancelPairing")
             viewModel.cancelPairing()
+        }
+        intent.getStringExtra("identity")?.let {
+            Log.i(TAG, "driver: showIdentity")
+            viewModel.showIdentity()
+        }
+        intent.getStringExtra("addcontact")?.let {
+            Log.i(TAG, "driver: showAddContact")
+            viewModel.showAddContact()
+        }
+        intent.getStringExtra("home")?.let {
+            Log.i(TAG, "driver: backToContacts")
+            viewModel.backToContacts()
         }
         intent.getStringExtra("send")?.let {
             Log.i(TAG, "driver: send len=${it.length}")

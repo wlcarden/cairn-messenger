@@ -67,13 +67,21 @@ sealed interface UiState {
     /** Bringing up the encrypted session + bundled Tor. */
     data object Starting : UiState
 
-    /** Home: the list of saved contacts + add (invite / scan) actions. */
+    /** Home: the list of saved conversations. */
     data class ContactList(
         val myKeyHex: String,
         val contacts: List<Contact>,
         /** A non-fatal error (e.g. a malformed pasted invitation) shown inline. */
         val error: String? = null,
+        /** Per-contact unread counts (peer key hex → count). */
+        val unread: Map<String, Int> = emptyMap(),
     ) : UiState
+
+    /** Your own identity: key QR + fingerprint (reached from the app bar). */
+    data class Identity(val myKeyHex: String) : UiState
+
+    /** The add-a-contact screen (invite / scan / paste), behind the FAB. */
+    data class AddContact(val myKeyHex: String) : UiState
 
     /** I created an invitation; show [inviteToShare] as a QR for a contact. */
     data class Inviting(val myKeyHex: String, val inviteToShare: String) : UiState
@@ -128,6 +136,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     private var pairingJob: Job? = null
     private var myHex: String = ""
     private val msgIdSeq = AtomicLong(0)
+    private val unread = mutableMapOf<String, Int>()
 
     init {
         // Gate everything behind an unlock passphrase: the at-rest encryption
@@ -179,7 +188,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     private fun showContacts(error: String? = null) {
         val list = runCatching { contacts?.list() ?: emptyList() }.getOrDefault(emptyList())
         Log.i(TAG, "contacts: ${list.size}")
-        _ui.value = UiState.ContactList(myHex, list, error)
+        _ui.value = UiState.ContactList(myHex, list, error, unread.toMap())
         ensureReceiving()
     }
 
@@ -202,6 +211,16 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     /** Leave the terminal error screen (C3) — back to contacts if the session is up. */
     fun dismissFailure() {
         if (session != null) showContacts() else _ui.value = UiState.Locked(false, null)
+    }
+
+    /** Show the user's own identity screen (key QR + fingerprint). */
+    fun showIdentity() {
+        _ui.value = UiState.Identity(myHex)
+    }
+
+    /** Show the add-a-contact screen (invite / scan / paste). */
+    fun showAddContact() {
+        _ui.value = UiState.AddContact(myHex)
     }
 
     /** Cancel a pending invite/connect and return to the contact list (H3). */
@@ -309,6 +328,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         val peer = runCatching { contact.peerKeyHex.fromHex() }.getOrNull() ?: return
         peerKeyRaw = peer
         connectionId = contact.connId
+        unread.remove(contact.peerKeyHex)
         _messages.value = emptyList()
         viewModelScope.launch {
             val hist = withContext(Dispatchers.IO) {
@@ -567,8 +587,11 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         if (appForeground && cur?.peerKeyHex == contact.peerKeyHex) {
             _messages.update { it + ChatMessage(msgIdSeq.getAndIncrement(), false, text, tsUnix) }
         } else {
+            unread[contact.peerKeyHex] = (unread[contact.peerKeyHex] ?: 0) + 1
             Log.i(TAG, "notify: new message from ${contact.peerKeyHex.take(12)}")
             Notifications.postNewMessage(getApplication<Application>(), contact.peerKeyHex)
+            // Refresh the home list so the unread badge updates live.
+            if (_ui.value is UiState.ContactList) showContacts()
         }
     }
 

@@ -38,10 +38,12 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -93,7 +95,14 @@ fun ChatScreen(vm: MessagingViewModel) {
     val torStatus by vm.torStatus.collectAsStateWithLifecycle()
 
     Scaffold(
-        topBar = { CairnTopBar(torStatus) },
+        topBar = { CairnTopBar(ui, torStatus, vm) },
+        floatingActionButton = {
+            if (ui is UiState.ContactList) {
+                FloatingActionButton(onClick = { vm.showAddContact() }) {
+                    Icon(painterResource(R.drawable.ic_add), contentDescription = "Add a contact")
+                }
+            }
+        },
     ) { padding ->
         Column(
             Modifier
@@ -112,6 +121,10 @@ fun ChatScreen(vm: MessagingViewModel) {
                 }
 
                 is UiState.ContactList -> ContactListView(state, vm)
+
+                is UiState.Identity -> IdentityView(state)
+
+                is UiState.AddContact -> AddContactView(vm)
 
                 is UiState.Inviting -> InvitingView(state, vm)
 
@@ -159,30 +172,56 @@ fun ChatScreen(vm: MessagingViewModel) {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CairnTopBar(torStatus: String) {
-    TopAppBar(
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    painterResource(R.drawable.ic_notification),
-                    contentDescription = null,
-                    modifier = Modifier.size(26.dp),
-                    tint = Color.White,
-                )
-                Spacer(Modifier.size(8.dp))
-                Text("Cairn")
-            }
-        },
-        actions = {
-            TorStatusChip(torStatus)
-            Spacer(Modifier.size(12.dp))
-        },
-        colors = TopAppBarDefaults.topAppBarColors(
-            containerColor = CairnTeal,
-            titleContentColor = Color.White,
-            actionIconContentColor = Color.White,
-        ),
+private fun CairnTopBar(ui: UiState, torStatus: String, vm: MessagingViewModel) {
+    val colors = TopAppBarDefaults.topAppBarColors(
+        containerColor = CairnTeal,
+        titleContentColor = Color.White,
+        navigationIconContentColor = Color.White,
+        actionIconContentColor = Color.White,
     )
+    val subScreenTitle = when (ui) {
+        is UiState.Identity -> "My identity"
+        is UiState.AddContact -> "Add a contact"
+        else -> null
+    }
+    if (subScreenTitle != null) {
+        // A back-navigable sub-screen (identity / add-contact).
+        TopAppBar(
+            title = { Text(subScreenTitle) },
+            navigationIcon = {
+                IconButton(onClick = { vm.backToContacts() }) {
+                    Icon(painterResource(R.drawable.ic_back), contentDescription = "Back")
+                }
+            },
+            colors = colors,
+        )
+    } else {
+        // The branded home bar: glyph + name + Tor dot (+ a profile action on home).
+        TopAppBar(
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        painterResource(R.drawable.ic_notification),
+                        contentDescription = null,
+                        modifier = Modifier.size(26.dp),
+                        tint = Color.White,
+                    )
+                    Spacer(Modifier.size(8.dp))
+                    Text("Cairn")
+                }
+            },
+            actions = {
+                TorStatusChip(torStatus)
+                if (ui is UiState.ContactList) {
+                    IconButton(onClick = { vm.showIdentity() }) {
+                        Icon(painterResource(R.drawable.ic_person), contentDescription = "My identity")
+                    }
+                }
+                Spacer(Modifier.size(4.dp))
+            },
+            colors = colors,
+        )
+    }
 }
 
 /** A compact Tor-connectivity indicator (a coloured dot + a one-word label). */
@@ -342,14 +381,149 @@ private fun LockScreen(state: UiState.Locked, vm: MessagingViewModel) {
     }
 }
 
+/** Home: the conversations list (a messenger's primary screen). Your own key
+ *  moved to [IdentityView] (app-bar profile action); adding moved to the FAB. */
 @Composable
 private fun ContactListView(state: UiState.ContactList, vm: MessagingViewModel) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+    ) {
+        if (state.error != null) {
+            Text(
+                state.error,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(vertical = 8.dp),
+            )
+        }
+        if (state.contacts.isEmpty()) {
+            Spacer(Modifier.height(64.dp))
+            Column(
+                Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text("No conversations yet", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Tap + to invite a contact, or scan their invitation.",
+                    Modifier.padding(top = 8.dp),
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        } else {
+            Spacer(Modifier.height(4.dp))
+            state.contacts.forEach { contact ->
+                ContactRow(
+                    contact = contact,
+                    unread = state.unread[contact.peerKeyHex] ?: 0,
+                    onClick = { vm.openContact(contact) },
+                )
+            }
+        }
+    }
+}
+
+/** A single conversation row: monogram avatar · name + trust · unread badge. */
+@Composable
+private fun ContactRow(contact: Contact, unread: Int, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Monogram(contact.displayName, contact.peerKeyHex)
+        Spacer(Modifier.size(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(contact.displayName, style = MaterialTheme.typography.titleMedium)
+            TrustBadge(contact.trust())
+        }
+        if (unread > 0) {
+            Box(
+                Modifier
+                    .size(22.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    if (unread > 9) "9+" else "$unread",
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+        }
+    }
+}
+
+private val MONOGRAM_COLORS = listOf(
+    Color(0xFF1E6B64), Color(0xFF5B6BBF), Color(0xFF9C5BBF),
+    Color(0xFFBF6B5B), Color(0xFF5B9CBF), Color(0xFF6BAA4A),
+)
+
+/** A coloured circle with the contact's initial — a per-key visual identity. */
+@Composable
+private fun Monogram(name: String, keyHex: String) {
+    val bg = MONOGRAM_COLORS[(keyHex.hashCode() and 0x7fffffff) % MONOGRAM_COLORS.size]
+    val letter = name.trim().firstOrNull()?.uppercase() ?: "?"
+    Box(
+        Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(bg),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(letter, color = Color.White, style = MaterialTheme.typography.titleMedium)
+    }
+}
+
+/** The user's own identity: a scannable QR of their key + the fingerprint. */
+@Composable
+private fun IdentityView(state: UiState.Identity) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Spacer(Modifier.height(16.dp))
+        Text(
+            "Show this to a contact so they can verify they have your real key.",
+            textAlign = TextAlign.Center,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        QrImage(
+            state.myKeyHex,
+            modifier = Modifier
+                .padding(top = 16.dp)
+                .size(240.dp),
+        )
+        Spacer(Modifier.height(16.dp))
+        Text("Your key", style = MaterialTheme.typography.titleSmall)
+        SelectableBlock(state.myKeyHex)
+        OutlinedButton(
+            onClick = {
+                clipboard.setText(AnnotatedString(state.myKeyHex))
+                Toast.makeText(context, "Key copied", Toast.LENGTH_SHORT).show()
+            },
+            modifier = Modifier.padding(top = 12.dp),
+        ) { Text("Copy key") }
+    }
+}
+
+/** Add-a-contact: create a one-time invitation, or scan / paste a contact's. */
+@Composable
+private fun AddContactView(vm: MessagingViewModel) {
     val context = LocalContext.current
     var showPaste by remember { mutableStateOf(false) }
     var pasted by remember { mutableStateOf("") }
 
-    // QR scanner (zxing-android-embedded, GMS-free). A scanned QR is the peer's
-    // "<uri>|<key>" invitation blob — hand it straight to acceptInvitation.
     val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
         result.contents?.takeIf { it.isNotBlank() }?.let { vm.acceptInvitation(it) }
     }
@@ -373,57 +547,34 @@ private fun ContactListView(state: UiState.ContactList, vm: MessagingViewModel) 
         if (granted) launchScan() else cameraPermLauncher.launch(Manifest.permission.CAMERA)
     }
 
-    Column(Modifier.verticalScroll(rememberScrollState())) {
-        if (state.error != null) {
-            Text(
-                state.error,
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(bottom = 8.dp),
-            )
-        }
-        Text("Your Cairn key", style = MaterialTheme.typography.titleSmall)
-        SelectableBlock(state.myKeyHex)
-
-        HorizontalDivider(Modifier.padding(vertical = 12.dp))
-        Text("Contacts", style = MaterialTheme.typography.titleMedium)
-        if (state.contacts.isEmpty()) {
-            Text(
-                "No contacts yet — invite someone, or scan their invitation.",
-                Modifier.padding(top = 4.dp),
-                style = MaterialTheme.typography.bodySmall,
-            )
-        } else {
-            state.contacts.forEach { contact ->
-                Card(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp)
-                        .clickable { vm.openContact(contact) },
-                ) {
-                    Column(Modifier.padding(12.dp)) {
-                        Text(contact.displayName, style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            "peer ${contact.peerKeyHex.take(16)}…",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        TrustBadge(contact.trust())
-                    }
-                }
-            }
-        }
-
-        HorizontalDivider(Modifier.padding(vertical = 12.dp))
-        Text("Add a contact", style = MaterialTheme.typography.titleMedium)
-        Row(Modifier.padding(top = 8.dp)) {
-            Button(onClick = { vm.createInvitation() }) { Text("Invite a contact") }
-            Spacer(Modifier.size(12.dp))
-            OutlinedButton(onClick = onScanClick) { Text("Scan invitation") }
-        }
-        Spacer(Modifier.height(12.dp))
-        OutlinedButton(onClick = { showPaste = !showPaste }) {
-            Text(if (showPaste) "Hide paste option" else "Paste a link instead")
-        }
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+    ) {
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Pair over a one-time invitation. Share yours, or scan / paste theirs.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Button(
+            onClick = { vm.createInvitation() },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 16.dp),
+        ) { Text("Create an invitation") }
+        OutlinedButton(
+            onClick = onScanClick,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp),
+        ) { Text("Scan their invitation") }
+        OutlinedButton(
+            onClick = { showPaste = !showPaste },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp),
+        ) { Text(if (showPaste) "Hide paste" else "Paste a link instead") }
         if (showPaste) {
             OutlinedTextField(
                 value = pasted,
@@ -435,9 +586,11 @@ private fun ContactListView(state: UiState.ContactList, vm: MessagingViewModel) 
             )
             Button(
                 onClick = { vm.acceptInvitation(pasted) },
-                modifier = Modifier.padding(top = 8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
                 enabled = pasted.isNotBlank(),
-            ) { Text("Accept pasted invitation") }
+            ) { Text("Accept invitation") }
         }
     }
 }
