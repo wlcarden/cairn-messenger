@@ -57,8 +57,8 @@ use std::sync::Arc;
 
 use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, SIGNATURE_LEN, VerifyingKey};
 use cairn_simplex_adapter::{
-    ConnectionId, EnvelopeSigner, HistoryMessage, Invitation, LocalIdentity, RetryBudget,
-    SimplexAdapter, SimplexAdapterConfig, SimplexAdapterError,
+    ConnectionId, ConversationHistory, EnvelopeSigner, HistoryMessage, Invitation, LocalIdentity,
+    RetryBudget, SimplexAdapter, SimplexAdapterConfig, SimplexAdapterError,
 };
 // The concrete transport is selected per target (D0026 §12): the ws-core
 // CLI-sidecar client for desktop/dev/CI, the in-process JNI `libsimplex`
@@ -188,10 +188,16 @@ pub struct MessageSentRecord {
 pub struct ReceivedMessageRecord {
     /// Sender's operational-identity pubkey (32 bytes; D0026 §2.1 key 2).
     pub sender_operational_pubkey: Vec<u8>,
-    /// Application-level payload (padding stripped on receive).
+    /// Application-level payload (padding stripped on receive). Empty for a
+    /// read receipt (D0032), where `read_up_to` is `Some`.
     pub payload: Vec<u8>,
     /// Receive-side Unix-seconds timestamp.
     pub received_at_unix: u64,
+    /// `Some(n)` if this is a read receipt (D0032): the sender has read this
+    /// side's messages up to number `n`. The caller marks its outgoing messages
+    /// ≤ `n` as read (and must NOT treat it as a content message). `None` for a
+    /// normal message.
+    pub read_up_to: Option<u64>,
 }
 
 /// One persisted message in a conversation's history (D0026 §3.2).
@@ -208,6 +214,24 @@ pub struct HistoryMessageRecord {
     pub payload: Vec<u8>,
     /// Envelope construction Unix-seconds timestamp.
     pub timestamp_unix: u64,
+    /// This message's position on its directed chain (D0026 §3.2). For a `mine`
+    /// (outgoing) message it is compared against the peer's read high-water to
+    /// mark it read (D0032).
+    pub message_number: u64,
+}
+
+/// A conversation's history plus the peer's read high-water (D0032), the
+/// result of [`SimplexAdapterHandle::load_message_history`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+pub struct ConversationHistoryRecord {
+    /// Content messages both directions, chronological (read receipts skipped).
+    pub messages: Vec<HistoryMessageRecord>,
+    /// The highest outgoing message number the peer has acknowledged reading,
+    /// or `None`. Lets a re-opened conversation reconstruct which sent messages
+    /// show "read" (D0032) — applied only when the local read-receipts setting
+    /// is on (the reciprocal display half is a Kotlin policy).
+    pub peer_read_up_to: Option<u64>,
 }
 
 /// An opaque async handle to the Cairn SimpleX messaging adapter (D0027 §2.2).
@@ -432,6 +456,7 @@ impl SimplexAdapterHandle {
             sender_operational_pubkey: received.sender_operational_pubkey.to_vec(),
             payload: received.payload,
             received_at_unix: received.received_at_unix,
+            read_up_to: received.read_up_to,
         })
     }
 
@@ -471,6 +496,7 @@ impl SimplexAdapterHandle {
             sender_operational_pubkey: received.sender_operational_pubkey.to_vec(),
             payload: received.payload,
             received_at_unix: received.received_at_unix,
+            read_up_to: received.read_up_to,
         })
     }
 
@@ -493,23 +519,30 @@ impl SimplexAdapterHandle {
     pub fn load_message_history(
         &self,
         peer_operational_pubkey: Vec<u8>,
-    ) -> Result<Vec<HistoryMessageRecord>, CairnFfiError> {
+    ) -> Result<ConversationHistoryRecord, CairnFfiError> {
         let peer: [u8; PUBLIC_KEY_LEN] = peer_operational_pubkey
             .as_slice()
             .try_into()
             .map_err(|_| CairnFfiError::MalformedData)?;
-        let history = self
+        let ConversationHistory {
+            messages,
+            peer_read_up_to,
+        } = self
             .adapter
             .load_message_history(&peer)
             .map_err(CairnFfiError::from)?;
-        Ok(history
-            .into_iter()
-            .map(|m: HistoryMessage| HistoryMessageRecord {
-                mine: m.mine,
-                payload: m.payload,
-                timestamp_unix: m.timestamp_unix,
-            })
-            .collect())
+        Ok(ConversationHistoryRecord {
+            messages: messages
+                .into_iter()
+                .map(|m: HistoryMessage| HistoryMessageRecord {
+                    mine: m.mine,
+                    payload: m.payload,
+                    timestamp_unix: m.timestamp_unix,
+                    message_number: m.message_number,
+                })
+                .collect(),
+            peer_read_up_to,
+        })
     }
 
     /// Purge ALL local trace of the conversation with `peer_operational_pubkey`
@@ -544,6 +577,40 @@ impl SimplexAdapterHandle {
             .map_err(|_| CairnFfiError::MalformedData)?;
         self.adapter
             .purge_conversation(&ConnectionId(connection_id), &peer)
+            .await
+            .map_err(CairnFfiError::from)?;
+        Ok(())
+    }
+
+    /// Send a **read receipt** to `recipient_operational_pubkey` over
+    /// `connection_id`, acknowledging every message received from them (D0032).
+    /// A no-op if nothing has been received from that peer yet.
+    ///
+    /// WHETHER to call this is the caller's policy (read receipts are off by
+    /// default, D0032 §4) — the handle only provides the mechanism.
+    ///
+    /// # Errors
+    ///
+    /// - [`CairnFfiError::MalformedData`] if `recipient_operational_pubkey` is
+    ///   not 32 bytes.
+    /// - The facade mapping of any `SimplexAdapterError`
+    ///   ([`CairnFfiError::SidecarFailure`] when the sidecar is unreachable,
+    ///   [`CairnFfiError::StorageFailure`] on a persist failure).
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+    )]
+    pub async fn send_read_receipt(
+        &self,
+        connection_id: String,
+        recipient_operational_pubkey: Vec<u8>,
+    ) -> Result<(), CairnFfiError> {
+        let recipient: [u8; PUBLIC_KEY_LEN] = recipient_operational_pubkey
+            .as_slice()
+            .try_into()
+            .map_err(|_| CairnFfiError::MalformedData)?;
+        self.adapter
+            .send_read_receipt(&ConnectionId(connection_id), &recipient)
             .await
             .map_err(CairnFfiError::from)?;
         Ok(())

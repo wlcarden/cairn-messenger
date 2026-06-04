@@ -139,6 +139,7 @@ class MainActivity : FragmentActivity() {
      *   --es verify "1"               → mark the open contact verified
      *   --es rename "<name>"          → rename the open contact
      *   --es delete "1"               → delete the open contact
+     *   --es readreceipts "on|off"   → toggle read receipts (D0032; off by default)
      *   --es verifyscan "<peerHex>"   → verify by a scanned peer key (match → verified)
      *   --es simkeymismatch "1"       → simulate a recv key mismatch (downgrade + banner)
      *   --es quickenroll "<pass>"     → enroll quick unlock (shows the BiometricPrompt)
@@ -202,6 +203,11 @@ class MainActivity : FragmentActivity() {
         intent.getStringExtra("delete")?.let {
             Log.i(TAG, "driver: deleteCurrentContact")
             viewModel.deleteCurrentContact()
+        }
+        intent.getStringExtra("readreceipts")?.let {
+            val on = it == "on" || it == "1" || it == "true"
+            Log.i(TAG, "driver: setReadReceiptsEnabled($on)")
+            viewModel.setReadReceiptsEnabled(on)
         }
         intent.getStringExtra("verifyscan")?.let {
             Log.i(TAG, "driver: confirmVerificationByScan")

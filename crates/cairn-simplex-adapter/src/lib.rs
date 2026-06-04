@@ -131,8 +131,8 @@ pub mod storage;
 pub use cairn_sigsum_client::RetryBudget;
 
 pub use adapter::{
-    ConnectionId, HistoryMessage, Invitation, LocalIdentity, MessageSent, ReceivedMessage,
-    SidecarEndpoint, SimplexAdapter, SimplexAdapterConfig,
+    ConnectionId, ConversationHistory, HistoryMessage, Invitation, LocalIdentity, MessageSent,
+    ReceivedMessage, SidecarEndpoint, SimplexAdapter, SimplexAdapterConfig,
 };
 pub use envelope::{
     DOMAIN_TAG, ENVELOPE_SCHEMA_VERSION, EnvelopeSigner, MessageEnvelope,

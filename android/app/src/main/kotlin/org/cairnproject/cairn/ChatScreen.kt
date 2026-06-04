@@ -51,6 +51,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -673,6 +674,36 @@ private fun IdentityView(state: UiState.Identity, vm: MessagingViewModel) {
                 },
                 modifier = Modifier.padding(top = 12.dp),
             ) { Text("Turn off quick unlock") }
+        }
+        // Read receipts (D0032): OFF by default, reciprocal. When on, this device
+        // BOTH sends read acks AND shows the peer's; when off, neither — a privacy
+        // choice (a receipt reveals THAT + WHEN you read, an online-activity signal).
+        Spacer(Modifier.height(28.dp))
+        HorizontalDivider(Modifier.fillMaxWidth())
+        Spacer(Modifier.height(12.dp))
+        var receiptsOn by remember { mutableStateOf(vm.readReceiptsEnabled()) }
+        Row(
+            Modifier.fillMaxWidth().padding(top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Send read receipts", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "Off by default. When on, your contacts see when you've read their " +
+                        "messages — and you see theirs. When off, neither.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            Spacer(Modifier.size(12.dp))
+            Switch(
+                checked = receiptsOn,
+                onCheckedChange = {
+                    receiptsOn = it
+                    vm.setReadReceiptsEnabled(it)
+                },
+            )
         }
     }
 }
@@ -1332,10 +1363,12 @@ private fun MessageBubble(msg: ChatMessage, onRetry: (ChatMessage) -> Unit) {
                         Text(
                             label,
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (msg.status == SendStatus.FAILED) {
-                                MaterialTheme.colorScheme.error
-                            } else {
-                                onColor.copy(alpha = 0.7f)
+                            // READ stands out at full alpha (vs the muted "sent");
+                            // FAILED is the error color (D0032 + the legibility unit).
+                            color = when (msg.status) {
+                                SendStatus.FAILED -> MaterialTheme.colorScheme.error
+                                SendStatus.READ -> onColor
+                                else -> onColor.copy(alpha = 0.7f)
                             },
                         )
                     }
@@ -1390,6 +1423,7 @@ private fun formatRowTime(tsUnix: Long): String {
 private fun statusLabel(status: SendStatus): String? = when (status) {
     SendStatus.SENDING -> "sending…"
     SendStatus.SENT -> "sent"
+    SendStatus.READ -> "read" // D0032: the peer reported reading it (receipts on)
     SendStatus.FAILED -> "failed — tap to retry"
     SendStatus.NONE -> null
 }

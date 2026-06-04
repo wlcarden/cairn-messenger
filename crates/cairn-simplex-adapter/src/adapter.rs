@@ -136,10 +136,15 @@ pub struct MessageSent {
 pub struct ReceivedMessage {
     /// Sender's operational identity per D0026 §2.1 key 2.
     pub sender_operational_pubkey: [u8; PUBLIC_KEY_LEN],
-    /// Application-level payload (padding stripped on receive).
+    /// Application-level payload (padding stripped on receive). Empty for a
+    /// read-receipt envelope (D0032), where [`Self::read_up_to`] is `Some`.
     pub payload: Vec<u8>,
     /// Receive-side wall-clock timestamp.
     pub received_at_unix: u64,
+    /// `Some(n)` if this is a read receipt (D0032): the sender has read this
+    /// side's messages up to number `n`. `None` for a normal content message.
+    /// The caller marks its outgoing messages ≤ `n` as read.
+    pub read_up_to: Option<u64>,
 }
 
 /// One persisted message in a conversation's history per
@@ -153,6 +158,23 @@ pub struct HistoryMessage {
     pub payload: Vec<u8>,
     /// Envelope construction Unix-seconds timestamp (key 4).
     pub timestamp_unix: u64,
+    /// This message's position on its directed chain (D0026 §3.2). For a
+    /// `mine` (outgoing) message it is the send-chain number the peer's
+    /// `read_up_to` is compared against to mark it read (D0032).
+    pub message_number: u64,
+}
+
+/// A conversation's persisted history plus the peer's read high-water
+/// (D0032), returned by [`SimplexAdapter::load_message_history`].
+#[derive(Debug, Clone)]
+pub struct ConversationHistory {
+    /// Content messages both directions, chronological (read receipts skipped).
+    pub messages: Vec<HistoryMessage>,
+    /// The highest outgoing message number the peer has acknowledged reading
+    /// (the max `read_up_to` across the peer's read receipts to this side), or
+    /// `None` if the peer has sent no read receipt. Lets a re-opened
+    /// conversation reconstruct which sent messages show "read".
+    pub peer_read_up_to: Option<u64>,
 }
 
 /// Per-`(sender, recipient)` envelope-chain cursor.
@@ -281,6 +303,53 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
         recipient_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
         payload: &[u8],
     ) -> Result<MessageSent, SimplexAdapterError> {
+        self.send_envelope_inner(conn, recipient_operational_pubkey, payload, None)
+            .await
+    }
+
+    /// Send a **read receipt** to `recipient` acknowledging every message this
+    /// side has received from them (D0032).
+    ///
+    /// The high-water `read_up_to` is derived from this side's recv-chain
+    /// position for `recipient` (the highest message number received from
+    /// them), so no caller bookkeeping is needed. The receipt is an
+    /// **empty-payload** Cairn envelope carrying envelope key 8 — a normal
+    /// signed + chained envelope on the `me -> recipient` direction. A no-op
+    /// (returns `Ok` without sending) if nothing has been received from
+    /// `recipient` yet (nothing to acknowledge).
+    ///
+    /// Policy note: WHETHER to call this is the caller's (off by default,
+    /// D0032 §4); the adapter only provides the mechanism.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::send`] (transport, sign, storage, or a poisoned chain mutex).
+    pub async fn send_read_receipt(
+        &self,
+        conn: &ConnectionId,
+        recipient_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
+    ) -> Result<(), SimplexAdapterError> {
+        // The recv-chain `next_message_number` for `recipient` is the count of
+        // envelopes received from them; the highest received number is one less.
+        let (_prior, next_recv) = self.recv_chain_state(recipient_operational_pubkey)?;
+        let Some(read_up_to) = next_recv.checked_sub(1) else {
+            return Ok(()); // nothing received from this peer → nothing to ack
+        };
+        self.send_envelope_inner(conn, recipient_operational_pubkey, &[], Some(read_up_to))
+            .await?;
+        Ok(())
+    }
+
+    /// Shared send tail for [`Self::send`] (content, `read_up_to = None`) and
+    /// [`Self::send_read_receipt`] (empty payload, `read_up_to = Some`): build →
+    /// sign → transport → persist → advance the `me -> recipient` send chain.
+    async fn send_envelope_inner(
+        &self,
+        conn: &ConnectionId,
+        recipient_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
+        payload: &[u8],
+        read_up_to: Option<u64>,
+    ) -> Result<MessageSent, SimplexAdapterError> {
         let (prior_hash, message_number) = self.send_chain_state(recipient_operational_pubkey)?;
 
         let padding_len = padding_bytes_required(payload.len());
@@ -294,6 +363,7 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             prior_envelope_hash: prior_hash,
             payload: payload.to_vec(),
             padding,
+            read_up_to,
         };
         let cose = envelope.sign_with(self.identity.device_signer.as_ref())?;
 
@@ -427,6 +497,9 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             sender_operational_pubkey: *sender,
             payload,
             received_at_unix: now_unix(),
+            // A read receipt (D0032) carries key 8 + an empty payload; the caller
+            // routes a `Some` to read-status handling, not to the message list.
+            read_up_to: envelope.read_up_to,
         })
     }
 
@@ -448,16 +521,26 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
     pub fn load_message_history(
         &self,
         peer_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
-    ) -> Result<Vec<HistoryMessage>, SimplexAdapterError> {
+    ) -> Result<ConversationHistory, SimplexAdapterError> {
         let me = &self.identity.operational_pubkey;
         let mut out: Vec<HistoryMessage> = Vec::new();
-        // Incoming: peer -> me. Outgoing: me -> peer.
-        self.collect_direction(peer_operational_pubkey, me, false, &mut out)?;
+        // Incoming (peer -> me): the peer's content messages AND the peer's read
+        // receipts to me — the latter carry the `read_up_to` high-water of MY
+        // messages the peer has read (D0032), so that direction yields
+        // `peer_read_up_to`.
+        let peer_read_up_to =
+            self.collect_direction(peer_operational_pubkey, me, false, &mut out)?;
+        // Outgoing (me -> peer): my content messages. My own read receipts'
+        // `read_up_to` here ack the PEER's messages — irrelevant to read-status
+        // of my sent messages — so this direction's high-water is ignored.
         self.collect_direction(me, peer_operational_pubkey, true, &mut out)?;
         // Chronological across both directions; stable so same-second ties keep
         // their per-direction insertion order.
         out.sort_by_key(|m| m.timestamp_unix);
-        Ok(out)
+        Ok(ConversationHistory {
+            messages: out,
+            peer_read_up_to,
+        })
     }
 
     /// Purge ALL local trace of the conversation with `peer` — the deeper
@@ -500,27 +583,36 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
 
     /// Walk the contiguous `0..` `MESSAGES` records for one directed
     /// `(sender, recipient)` pair, decoding each into [`HistoryMessage`]s
-    /// appended to `out`. Stops at the first missing message number.
+    /// appended to `out` (stamped with their chain `message_number`). Stops at
+    /// the first missing message number. Returns the **max `read_up_to`** seen
+    /// on this direction (D0032) — used by [`Self::load_message_history`] for
+    /// the peer's read high-water on the incoming direction.
     fn collect_direction(
         &self,
         sender: &[u8; PUBLIC_KEY_LEN],
         recipient: &[u8; PUBLIC_KEY_LEN],
         mine: bool,
         out: &mut Vec<HistoryMessage>,
-    ) -> Result<(), SimplexAdapterError> {
+    ) -> Result<Option<u64>, SimplexAdapterError> {
         let mut message_number = 0u64;
+        let mut max_read_up_to: Option<u64> = None;
         loop {
             let record_id = message_record_id_for(sender, recipient, message_number);
             match self.storage.get(categories::MESSAGES, &record_id) {
                 Ok(cose) => {
                     let envelope = decode_envelope_unverified(&cose)?;
-                    // Skip the 0-length pairing hello (D0026 §12) — it is a
-                    // key-exchange marker, not a user-visible message.
+                    if let Some(r) = envelope.read_up_to {
+                        max_read_up_to = Some(max_read_up_to.map_or(r, |m| m.max(r)));
+                    }
+                    // Skip empty-payload envelopes — the 0-length pairing hello
+                    // (D0026 §12) AND read receipts (D0032) — they are markers,
+                    // not user-visible messages.
                     if !envelope.payload.is_empty() {
                         out.push(HistoryMessage {
                             mine,
                             payload: envelope.payload,
                             timestamp_unix: envelope.timestamp,
+                            message_number,
                         });
                     }
                     message_number = message_number.saturating_add(1);
@@ -529,7 +621,7 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
                 Err(e) => return Err(SimplexAdapterError::from(e)),
             }
         }
-        Ok(())
+        Ok(max_read_up_to)
     }
 
     /// Delete the contiguous `0..` `MESSAGES` records for one directed
@@ -1092,9 +1184,11 @@ mod tests {
             .adapter
             .load_message_history(&bob.operational_pubkey)
             .unwrap();
-        assert_eq!(hist.len(), 2);
-        assert!(hist.iter().any(|m| m.mine && m.payload == b"a1"));
-        assert!(hist.iter().any(|m| !m.mine && m.payload == b"b1"));
+        assert_eq!(hist.messages.len(), 2);
+        assert!(hist.messages.iter().any(|m| m.mine && m.payload == b"a1"));
+        assert!(hist.messages.iter().any(|m| !m.mine && m.payload == b"b1"));
+        // No read receipts flowed, so no peer read high-water.
+        assert_eq!(hist.peer_read_up_to, None);
     }
 
     #[tokio::test]
@@ -1118,8 +1212,8 @@ mod tests {
             .adapter
             .load_message_history(&bob.operational_pubkey)
             .unwrap();
-        assert_eq!(hist.len(), 1);
-        assert_eq!(hist[0].payload, b"real");
+        assert_eq!(hist.messages.len(), 1);
+        assert_eq!(hist.messages[0].payload, b"real");
     }
 
     #[tokio::test]
@@ -1154,6 +1248,7 @@ mod tests {
                 .adapter
                 .load_message_history(&bob.operational_pubkey)
                 .unwrap()
+                .messages
                 .len(),
             2,
             "precondition: alice sees both directions"
@@ -1170,6 +1265,7 @@ mod tests {
                 .adapter
                 .load_message_history(&bob.operational_pubkey)
                 .unwrap()
+                .messages
                 .is_empty(),
             "alice's history with bob must be gone after the purge"
         );
@@ -1180,6 +1276,7 @@ mod tests {
             bob.adapter
                 .load_message_history(&alice.operational_pubkey)
                 .unwrap()
+                .messages
                 .len(),
             2
         );
@@ -1221,6 +1318,123 @@ mod tests {
         assert_eq!(
             after.next_message_number, 1,
             "after purge the send chain restarts at message 0 (genesis)"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_read_receipt_round_trips_read_up_to() {
+        // bob sends two messages to alice; alice acks → bob receives an
+        // empty-payload envelope carrying read_up_to = the high-water (1, the
+        // last received number), proving the D0032 read-receipt mechanism.
+        let wire = MockSidecarTransport::new();
+        let alice = make_party_1to1([10u8; 32], wire.clone());
+        let bob = make_party_1to1([11u8; 32], wire.clone());
+        let conn = ConnectionId("c".to_string());
+
+        bob.adapter
+            .send(&conn, &alice.operational_pubkey, b"m0")
+            .await
+            .unwrap();
+        bob.adapter
+            .send(&conn, &alice.operational_pubkey, b"m1")
+            .await
+            .unwrap();
+        alice
+            .adapter
+            .recv(&conn, &bob.operational_pubkey, &bob.device_vk)
+            .await
+            .unwrap();
+        alice
+            .adapter
+            .recv(&conn, &bob.operational_pubkey, &bob.device_vk)
+            .await
+            .unwrap();
+
+        alice
+            .adapter
+            .send_read_receipt(&conn, &bob.operational_pubkey)
+            .await
+            .unwrap();
+
+        let receipt = bob
+            .adapter
+            .recv(&conn, &alice.operational_pubkey, &alice.device_vk)
+            .await
+            .unwrap();
+        assert_eq!(receipt.read_up_to, Some(1), "acks up to the last received");
+        assert!(receipt.payload.is_empty(), "a receipt carries no content");
+    }
+
+    #[tokio::test]
+    async fn send_read_receipt_is_noop_when_nothing_received() {
+        // With nothing received from bob, alice's ack is a no-op — no envelope
+        // is enqueued, so bob's recv finds nothing.
+        let wire = MockSidecarTransport::new();
+        let alice = make_party_1to1([12u8; 32], wire.clone());
+        let bob = make_party_1to1([13u8; 32], wire.clone());
+        let conn = ConnectionId("c".to_string());
+
+        alice
+            .adapter
+            .send_read_receipt(&conn, &bob.operational_pubkey)
+            .await
+            .unwrap();
+        let got = bob
+            .adapter
+            .recv(&conn, &alice.operational_pubkey, &alice.device_vk)
+            .await;
+        assert!(got.is_err(), "no receipt is sent when nothing was received");
+    }
+
+    #[tokio::test]
+    async fn load_message_history_reconstructs_peer_read_up_to() {
+        // alice sends two; bob reads + acks; alice receives the ack. alice's
+        // history then shows her two sent messages AND peer_read_up_to = 1 (so a
+        // re-opened conversation can mark sent ≤ 1 as read) — and the receipt is
+        // NOT surfaced as a message.
+        let wire = MockSidecarTransport::new();
+        let alice = make_party_1to1([14u8; 32], wire.clone());
+        let bob = make_party_1to1([15u8; 32], wire.clone());
+        let conn = ConnectionId("c".to_string());
+
+        alice
+            .adapter
+            .send(&conn, &bob.operational_pubkey, b"a0")
+            .await
+            .unwrap();
+        alice
+            .adapter
+            .send(&conn, &bob.operational_pubkey, b"a1")
+            .await
+            .unwrap();
+        bob.adapter
+            .recv(&conn, &alice.operational_pubkey, &alice.device_vk)
+            .await
+            .unwrap();
+        bob.adapter
+            .recv(&conn, &alice.operational_pubkey, &alice.device_vk)
+            .await
+            .unwrap();
+        bob.adapter
+            .send_read_receipt(&conn, &alice.operational_pubkey)
+            .await
+            .unwrap();
+        alice
+            .adapter
+            .recv(&conn, &bob.operational_pubkey, &bob.device_vk)
+            .await
+            .unwrap();
+
+        let hist = alice
+            .adapter
+            .load_message_history(&bob.operational_pubkey)
+            .unwrap();
+        assert_eq!(hist.messages.len(), 2, "the receipt is not a message");
+        assert!(hist.messages.iter().all(|m| m.mine));
+        assert_eq!(
+            hist.peer_read_up_to,
+            Some(1),
+            "the peer's read high-water is reconstructed from its receipt"
         );
     }
 

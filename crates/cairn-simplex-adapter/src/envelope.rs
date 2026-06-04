@@ -14,6 +14,12 @@
 //! | 5   | `prior_envelope_hash`            | bstr           | Empty for first envelope; SHA-256 of prior envelope signature otherwise |
 //! | 6   | `payload`                        | bstr           | Application-level payload |
 //! | 7   | `padding`                        | bstr           | Per D0026 §4 size-bin padding |
+//! | 8   | `read_up_to`                     | uint           | OPTIONAL (D0032) — present only on a read-receipt envelope; the cumulative message-number high-water the sender has read |
+//!
+//! Key 8 (`read_up_to`) is **omitted** on a normal content envelope, so
+//! content envelopes encode byte-identically to the pre-D0032 schema — the
+//! `prior_envelope_hash` chain (and persisted history) is undisturbed. A
+//! read receipt is an empty-`payload` envelope carrying only key 8 (D0032 §2).
 //!
 //! ## Signing model
 //!
@@ -56,6 +62,7 @@ const KEY_TIMESTAMP: i64 = 4;
 const KEY_PRIOR_ENVELOPE_HASH: i64 = 5;
 const KEY_PAYLOAD: i64 = 6;
 const KEY_PADDING: i64 = 7;
+const KEY_READ_UP_TO: i64 = 8;
 
 /// Produces the device-key Ed25519 signature over a Cairn message
 /// envelope's COSE `Sig_structure` (D0006 §9 hop #1).
@@ -126,6 +133,15 @@ pub struct MessageEnvelope {
     pub payload: Vec<u8>,
     /// Random padding bytes per D0026 §2.1 key 7. Receiver discards.
     pub padding: Vec<u8>,
+    /// OPTIONAL read-receipt high-water per D0026 §2.1 key 8 (D0032).
+    ///
+    /// `Some(n)` ONLY on a read-receipt envelope (empty `payload`): the
+    /// cumulative message number the sender has read on the reverse direction
+    /// — the recipient marks its outgoing messages ≤ `n` as read. `None` on a
+    /// normal content envelope, in which case key 8 is OMITTED from the
+    /// canonical encoding so content envelopes stay byte-identical to the
+    /// pre-D0032 schema (the `prior_envelope_hash` chain is undisturbed).
+    pub read_up_to: Option<u64>,
 }
 
 impl MessageEnvelope {
@@ -141,7 +157,7 @@ impl MessageEnvelope {
         let version_i64 =
             i64::try_from(self.version).map_err(|_| SimplexAdapterError::EnvelopeDecodeFailed)?;
 
-        let map = Value::Map(vec![
+        let mut entries = vec![
             (Value::Int(KEY_VERSION), Value::Int(version_i64)),
             (
                 Value::Int(KEY_SENDER_PUBKEY),
@@ -158,8 +174,17 @@ impl MessageEnvelope {
             ),
             (Value::Int(KEY_PAYLOAD), Value::Bytes(self.payload.clone())),
             (Value::Int(KEY_PADDING), Value::Bytes(self.padding.clone())),
-        ]);
-        map.encode()
+        ];
+        // Key 8 (read_up_to) is OPTIONAL (D0032): appended AFTER key 7 (canonical
+        // ascending order) ONLY when present, so a content envelope (None) encodes
+        // byte-identically to the pre-D0032 schema — the chain stays undisturbed.
+        if let Some(read_up_to) = self.read_up_to {
+            let read_up_to_i64 =
+                i64::try_from(read_up_to).map_err(|_| SimplexAdapterError::EnvelopeDecodeFailed)?;
+            entries.push((Value::Int(KEY_READ_UP_TO), Value::Int(read_up_to_i64)));
+        }
+        Value::Map(entries)
+            .encode()
             .map_err(|_| SimplexAdapterError::EnvelopeDecodeFailed)
     }
 
@@ -186,6 +211,7 @@ impl MessageEnvelope {
         let mut prior_envelope_hash: Option<Vec<u8>> = None;
         let mut payload: Option<Vec<u8>> = None;
         let mut padding: Option<Vec<u8>> = None;
+        let mut read_up_to: Option<u64> = None;
 
         for (key, value) in entries {
             let CiboriumValue::Integer(key_int_ciborium) = key else {
@@ -216,6 +242,9 @@ impl MessageEnvelope {
                     };
                     padding = Some(b);
                 }
+                // Optional read-receipt high-water (D0032); absent on content
+                // envelopes, where it stays None.
+                KEY_READ_UP_TO => read_up_to = Some(int_to_u64(&value)?),
                 _ => {} // forward-compat per D0006 §6.4
             }
         }
@@ -230,6 +259,7 @@ impl MessageEnvelope {
                 .ok_or(SimplexAdapterError::EnvelopeDecodeFailed)?,
             payload: payload.ok_or(SimplexAdapterError::EnvelopeDecodeFailed)?,
             padding: padding.ok_or(SimplexAdapterError::EnvelopeDecodeFailed)?,
+            read_up_to,
         })
     }
 
@@ -462,6 +492,7 @@ mod tests {
             prior_envelope_hash: vec![],
             payload: b"hello world".to_vec(),
             padding: vec![0xAA; 200], // pads to 256 bucket with envelope overhead
+            read_up_to: None,
         };
         (envelope, device_sk, recipient_op_sk)
     }
@@ -481,6 +512,70 @@ mod tests {
         let bytes = envelope.to_canonical_cbor().unwrap();
         let recovered = MessageEnvelope::from_canonical_cbor(&bytes).unwrap();
         assert_eq!(recovered, envelope);
+    }
+
+    #[test]
+    #[allow(
+        clippy::redundant_clone,
+        reason = "the manual map deliberately mirrors the encoder's per-field clones for an apples-to-apples byte comparison"
+    )]
+    fn content_envelope_omits_key_8_byte_identical_to_pre_d0032() {
+        // D0032 chain-safety: a content envelope (read_up_to = None) MUST encode
+        // byte-for-byte as the pre-D0032 schema (keys 1–7 only), so adding the
+        // optional key 8 disturbs neither existing prior_envelope_hash chains nor
+        // persisted history. Compare against a hand-built keys-1–7 map.
+        let (envelope, _, _) = make_envelope();
+        assert!(envelope.read_up_to.is_none());
+        let actual = envelope.to_canonical_cbor().unwrap();
+        let manual = Value::Map(vec![
+            (
+                Value::Int(KEY_VERSION),
+                Value::Int(i64::try_from(envelope.version).unwrap()),
+            ),
+            (
+                Value::Int(KEY_SENDER_PUBKEY),
+                Value::Bytes(envelope.sender_operational_pubkey.to_vec()),
+            ),
+            (
+                Value::Int(KEY_RECIPIENT_PUBKEY),
+                Value::Bytes(envelope.recipient_operational_pubkey.to_vec()),
+            ),
+            (
+                Value::Int(KEY_TIMESTAMP),
+                Value::Int(i64::try_from(envelope.timestamp).unwrap()),
+            ),
+            (
+                Value::Int(KEY_PRIOR_ENVELOPE_HASH),
+                Value::Bytes(envelope.prior_envelope_hash.clone()),
+            ),
+            (
+                Value::Int(KEY_PAYLOAD),
+                Value::Bytes(envelope.payload.clone()),
+            ),
+            (
+                Value::Int(KEY_PADDING),
+                Value::Bytes(envelope.padding.clone()),
+            ),
+        ])
+        .encode()
+        .unwrap();
+        assert_eq!(
+            actual, manual,
+            "read_up_to=None must omit key 8 → byte-identical to the pre-D0032 encoding"
+        );
+    }
+
+    #[test]
+    fn read_receipt_envelope_round_trips_read_up_to() {
+        // A read receipt (D0032): empty payload + key 8 present. Round-trips,
+        // and a fresh decoder reads back the high-water.
+        let (mut envelope, _, _) = make_envelope();
+        envelope.payload = vec![];
+        envelope.read_up_to = Some(42);
+        let bytes = envelope.to_canonical_cbor().unwrap();
+        let recovered = MessageEnvelope::from_canonical_cbor(&bytes).unwrap();
+        assert_eq!(recovered, envelope);
+        assert_eq!(recovered.read_up_to, Some(42));
     }
 
     #[test]

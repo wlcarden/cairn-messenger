@@ -20,12 +20,19 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.cairn_uniffi.CairnFfiException
 
-/** Delivery state of an outgoing message (received messages are [SendStatus.NONE]). */
-enum class SendStatus { NONE, SENDING, SENT, FAILED }
+/**
+ * Delivery state of an outgoing message (received messages are [SendStatus.NONE]).
+ * [READ] is set when the peer sends a read receipt covering this message (D0032),
+ * and is only ever shown when the local read-receipts setting is on (reciprocal).
+ */
+enum class SendStatus { NONE, SENDING, SENT, READ, FAILED }
 
 /**
  * A single chat line. [tsUnix] is the message wall-clock time; [id] is a local
  * identity so an optimistic send can be updated in place to its [status].
+ * [messageNumber] is this message's send-chain position for an outgoing message
+ * (`-1` if unknown/received) — compared against the peer's read high-water to
+ * flip [status] to [SendStatus.READ] (D0032).
  */
 data class ChatMessage(
     val id: Long,
@@ -33,6 +40,7 @@ data class ChatMessage(
     val text: String,
     val tsUnix: Long,
     val status: SendStatus = SendStatus.NONE,
+    val messageNumber: Long = -1,
 )
 
 /**
@@ -388,22 +396,32 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         val peer = runCatching { contact.peerKeyHex.fromHex() }.getOrNull() ?: return
         peerKeyRaw = peer
         connectionId = contact.connId
+        val hadUnread = contact.unread > 0
         runCatching { contacts?.clearUnread(contact.peerKeyHex) }
         _messages.value = emptyList()
         viewModelScope.launch {
             val hist = withContext(Dispatchers.IO) {
-                runCatching { s.handle.loadMessageHistory(peer) }.getOrDefault(emptyList())
+                runCatching { s.handle.loadMessageHistory(peer) }.getOrNull()
             }
-            _messages.value = hist.map {
+            // Read-status (D0032) is reciprocal: only reconstruct/display "read"
+            // when this device also sends receipts.
+            val showRead = readReceiptsEnabled()
+            val peerReadUpTo = hist?.peerReadUpTo?.toLong() ?: -1L
+            _messages.value = (hist?.messages ?: emptyList()).map {
+                val num = it.messageNumber.toLong()
+                val outgoingStatus =
+                    if (showRead && peerReadUpTo >= 0 && num in 0..peerReadUpTo) SendStatus.READ
+                    else SendStatus.SENT
                 ChatMessage(
                     id = msgIdSeq.getAndIncrement(),
                     mine = it.mine,
                     text = String(it.payload),
                     tsUnix = it.timestampUnix.toLong(),
-                    status = if (it.mine) SendStatus.SENT else SendStatus.NONE,
+                    status = if (it.mine) outgoingStatus else SendStatus.NONE,
+                    messageNumber = if (it.mine) num else -1L,
                 )
             }
-            Log.i(TAG, "opened ${contact.displayName}: ${hist.size} history msgs")
+            Log.i(TAG, "opened ${contact.displayName}: ${hist?.messages?.size ?: 0} history msgs")
             Log.i(TAG, "contact trust=${contact.trust()}")
             _ui.value = UiState.Conversation(
                 myHex,
@@ -411,6 +429,13 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 contact.displayName,
                 trust = contact.trust(),
             )
+            // Opening unread messages = reading them → ack the peer (D0032), but
+            // only if read receipts are enabled (off by default, reciprocal).
+            if (showRead && hadUnread) {
+                runCatching {
+                    withContext(Dispatchers.IO) { s.handle.sendReadReceipt(contact.connId, peer) }
+                }.onFailure { Log.w(TAG, "read-receipt on open failed: ${it.message}") }
+            }
         }
         // The global receive manager already covers this contact; ensure its
         // loop is running (e.g. the first open right after unlock).
@@ -459,9 +484,16 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         runCatching { contacts?.recordActivity(peer.toHex(), "You: $text", now, bumpUnread = false) }
         viewModelScope.launch {
             try {
-                s.handle.send(connId, peer, text.toByteArray())
+                val sent = s.handle.send(connId, peer, text.toByteArray())
                 Log.i(TAG, "SENT len=${text.length}")
-                updateStatus(id, SendStatus.SENT)
+                // Stamp the sent message's chain number so an incoming read
+                // receipt can later mark it READ (D0032).
+                val number = sent.nextMessageNumber.toLong() - 1
+                _messages.update { list ->
+                    list.map {
+                        if (it.id == id) it.copy(status = SendStatus.SENT, messageNumber = number) else it
+                    }
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "send failed", e)
                 updateStatus(id, SendStatus.FAILED)
@@ -474,6 +506,48 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun updateStatus(id: Long, status: SendStatus) {
         _messages.update { list -> list.map { if (it.id == id) it.copy(status = status) else it } }
+    }
+
+    /**
+     * Apply a peer read receipt (D0032): flip every outgoing message whose
+     * send-chain number is ≤ [upTo] from SENT to READ. No-op on SENDING/FAILED
+     * bubbles. Gated by the caller on the read-receipts setting (reciprocal).
+     */
+    private fun markReadUpTo(upTo: Long) {
+        _messages.update { list ->
+            list.map {
+                if (it.mine && it.status == SendStatus.SENT && it.messageNumber in 0..upTo) {
+                    it.copy(status = SendStatus.READ)
+                } else {
+                    it
+                }
+            }
+        }
+    }
+
+    /** Whether this device sends + displays read receipts (D0032; default OFF). */
+    fun readReceiptsEnabled(): Boolean =
+        getApplication<Application>()
+            .getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+            .getBoolean(KEY_READ_RECEIPTS, false)
+
+    /**
+     * Turn read receipts on/off (D0032). Reciprocal: when off this device sends
+     * no receipts AND shows no read status. Turning OFF immediately drops any
+     * READ ticks in the open conversation back to SENT.
+     */
+    fun setReadReceiptsEnabled(on: Boolean) {
+        getApplication<Application>()
+            .getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_READ_RECEIPTS, on)
+            .apply()
+        Log.i(TAG, "read receipts ${if (on) "ENABLED" else "disabled"}")
+        if (!on) {
+            _messages.update { list ->
+                list.map { if (it.status == SendStatus.READ) it.copy(status = SendStatus.SENT) else it }
+            }
+        }
     }
 
     /**
@@ -658,10 +732,34 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 // Main-confined (no concurrent ensureReceiving races).
                 val r = withContext(Dispatchers.IO) { s.handle.recv(contact.connId, peer, peer) }
                 failures = 0
+                // A read receipt (D0032): empty payload + readUpTo set. Apply it to
+                // the OPEN conversation's read-status (only when our setting is on —
+                // reciprocal), then continue. It is NOT a message and must NOT be
+                // acked back (no ping-pong).
+                val readUpTo = r.readUpTo
+                if (readUpTo != null) {
+                    val open = _ui.value as? UiState.Conversation
+                    if (readReceiptsEnabled() && open?.peerKeyHex == contact.peerKeyHex) {
+                        markReadUpTo(readUpTo.toLong())
+                        Log.i(TAG, "read receipt up to $readUpTo from ${contact.peerKeyHex.take(12)}")
+                    }
+                    continue
+                }
                 if (r.payload.isEmpty()) continue // hello/key-exchange marker
                 val text = String(r.payload)
                 Log.i(TAG, "RECV len=${text.length} from ${contact.peerKeyHex.take(12)}")
                 routeIncoming(contact, text, r.receivedAtUnix.toLong())
+                // Actively viewing this conversation = reading the message → ack the
+                // peer (D0032), fire-and-forget so the recv loop keeps draining;
+                // gated on the setting (off by default, reciprocal).
+                val openNow = _ui.value as? UiState.Conversation
+                if (readReceiptsEnabled() && appForeground && openNow?.peerKeyHex == contact.peerKeyHex) {
+                    viewModelScope.launch {
+                        runCatching {
+                            withContext(Dispatchers.IO) { s.handle.sendReadReceipt(contact.connId, peer) }
+                        }.onFailure { Log.w(TAG, "live read-receipt failed: ${it.message}") }
+                    }
+                }
             } catch (e: CairnFfiException.EnvelopeVerifyFailed) {
                 // The envelope did not verify against the pinned peer key — a key
                 // change or active interception (D0006 §70).
@@ -719,6 +817,10 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         const val TOR_WAIT_MS = 200_000
         const val MAX_RECV_FAILURES = 12
         const val RECV_RETRY_MS = 5_000L
+
+        /** SharedPreferences for non-sensitive UI settings (D0032 read receipts). */
+        const val PREFS = "cairn-prefs"
+        const val KEY_READ_RECEIPTS = "read_receipts_enabled"
     }
 }
 
