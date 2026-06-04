@@ -67,6 +67,12 @@ pub const fn assert_v1_carrier_types_exportable() {
     // secret-bearing. trust_graph (D0027 §2): the cascade-status enum
     // carries only PUBLIC pubkey bytes + Unix-seconds.
     assert_exportable::<crate::trust_graph::QuarantineStatusFfi>();
+    // trust_graph mint surface (D0035 §4): the strength enum is a plain
+    // discriminant; the op record carries only the PUBLIC record id +
+    // signed-op COSE bytes. The device key signs in StrongBox, never
+    // crossing as bytes.
+    assert_exportable::<crate::trust_graph::StrengthFfi>();
+    assert_exportable::<crate::trust_graph::TrustGraphOpRecord>();
     // identity (D0027 §2.2): the capability-token record carries only
     // PUBLIC pubkeys + scope strings + the expiry (no secret; the
     // op-identity key signs in StrongBox, never crossing as bytes).

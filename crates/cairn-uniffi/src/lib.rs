@@ -151,7 +151,10 @@ pub use recovery::{
 pub use storage::{StorageHandle, StrongBoxKeyMaterial};
 pub use tor::{NetworkStateFfi, TorControlConfig, TorTransportHandle};
 pub use transparency::{SigsumClientHandle, SigsumLogConfig, TreeHeadRecord};
-pub use trust_graph::{QuarantineStatusFfi, trust_graph_verify_and_classify};
+pub use trust_graph::{
+    QuarantineStatusFfi, StrengthFfi, TrustGraphHandle, TrustGraphOpRecord,
+    trust_graph_verify_and_classify,
+};
 
 // UniFFI scaffolding entrypoint per D0027 §5 / D0020 §3.1. Generates
 // the FFI scaffolding the Kotlin bindings bind against. Gated on the

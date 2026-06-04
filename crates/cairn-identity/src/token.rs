@@ -301,6 +301,49 @@ impl CapabilityToken {
             token: self.clone(),
         })
     }
+
+    /// Sign this token with an **external** issuer signer (Android
+    /// `StrongBox`, where the private key never enters the process —
+    /// D0020 §3.4 / D0035 §4).
+    ///
+    /// `sign_fn` receives the `COSE_Sign1` signing input (the RFC 9052
+    /// §4.4 `Sig_structure` bytes, bound to the capability-token
+    /// [`DOMAIN_TAG`]) and must return the 64-byte Ed25519 signature the
+    /// issuer key produces over **exactly** those bytes. This is the
+    /// hardware counterpart to [`Self::sign`]; because `finalize` is
+    /// `signing_input` + an in-process sign + assemble, the two paths
+    /// produce **byte-identical** envelopes for the same key. In the
+    /// collapsed v1 identity (D0035 §1) the issuer == the device key, so
+    /// the same `StrongBox` device key that signs trust-graph ops also
+    /// signs this self-issued token.
+    ///
+    /// # Errors
+    ///
+    /// - [`IdentityError::CanonicalEncode`] from encoding the token
+    ///   payload or building the signing input (or if the returned
+    ///   signature is not 64 bytes).
+    /// - Whatever `sign_fn` returns on signer failure (callers map their
+    ///   hardware error to [`IdentityError::ExternalSignerFailed`]).
+    pub fn sign_external<F>(&self, sign_fn: F) -> Result<SignedCapabilityToken, IdentityError>
+    where
+        F: FnOnce(&[u8]) -> Result<Vec<u8>, IdentityError>,
+    {
+        let payload = self.to_canonical_cbor()?;
+        let builder = Sign1Builder::new()
+            .with_payload(payload)
+            .with_external_aad(DOMAIN_TAG.to_vec());
+        // signing_input() borrows; finalize_with_signature() consumes —
+        // the builder MUST NOT be mutated between the two (it is not).
+        let signing_input = builder.signing_input().map_err(IdentityError::from)?;
+        let signature = sign_fn(&signing_input)?;
+        let envelope = builder
+            .finalize_with_signature(&signature)
+            .map_err(IdentityError::from)?;
+        Ok(SignedCapabilityToken {
+            envelope,
+            token: self.clone(),
+        })
+    }
 }
 
 /// A ``COSE_Sign1``-wrapped capability token with a verified payload.
@@ -417,6 +460,37 @@ mod tests {
         let recovered =
             SignedCapabilityToken::from_bytes(&bytes, &issuer_sk.verifying_key()).unwrap();
         assert_eq!(recovered.token(), &token);
+    }
+
+    #[test]
+    fn external_signer_path_matches_in_process() {
+        // The external-signer path (StrongBox counterpart, D0035 §4) must
+        // produce a byte-identical envelope to the in-process sign for the
+        // same key — and the externally-signed token must verify.
+        let (issuer_sk, _device_sk, token) = make_token();
+        let in_process = token.sign(&issuer_sk).unwrap();
+        let external = token
+            .sign_external(|tbs| {
+                issuer_sk
+                    .sign(tbs)
+                    .map(|sig| sig.to_bytes().to_vec())
+                    .map_err(|_| IdentityError::ExternalSignerFailed)
+            })
+            .unwrap();
+
+        let in_process_bytes = in_process.encode(false).unwrap();
+        let external_bytes = external.encode(false).unwrap();
+        assert_eq!(in_process_bytes, external_bytes);
+        assert!(
+            SignedCapabilityToken::from_bytes(&external_bytes, &issuer_sk.verifying_key()).is_ok()
+        );
+    }
+
+    #[test]
+    fn external_signer_failure_propagates() {
+        let (_issuer_sk, _device_sk, token) = make_token();
+        let result = token.sign_external(|_tbs| Err(IdentityError::ExternalSignerFailed));
+        assert!(matches!(result, Err(IdentityError::ExternalSignerFailed)));
     }
 
     #[test]

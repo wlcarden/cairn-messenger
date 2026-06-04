@@ -261,10 +261,29 @@ impl From<TrustGraphError> for CairnFfiError {
             | TrustGraphError::InvalidPubkeyLength { .. }
             | TrustGraphError::InvalidPubkey
             | TrustGraphError::UnknownOpType { .. }
+            | TrustGraphError::UnknownStrength { .. }
             | TrustGraphError::MissingRequiredField { .. }
             | TrustGraphError::IntegerOutOfRange => Self::MalformedData,
-            // Forward-compat only: a future #[non_exhaustive] variant this
-            // build does not yet map. All CURRENT variants are explicit above.
+            // A hardware-signer failure when minting (D0035 §4) + forward-compat
+            // for a future #[non_exhaustive] variant: an environment/internal
+            // fault, not an authenticity failure of received data. The mint path
+            // (`TrustGraphHandle`) preserves the original callback `CairnFfiError`
+            // directly, so `ExternalSignerFailed` only reaches here if raised
+            // outside that path.
+            _ => Self::UnmappedInternal,
+        }
+    }
+}
+
+impl From<cairn_trust_graph::StoreError> for CairnFfiError {
+    fn from(err: cairn_trust_graph::StoreError) -> Self {
+        use cairn_trust_graph::StoreError;
+        match err {
+            // Delegate to the existing typed-error facades so the
+            // storage-vs-decode/encode distinction maps consistently.
+            StoreError::Storage(e) => Self::from(e),
+            StoreError::Decode(e) | StoreError::Encode(e) => Self::from(e),
+            // Forward-compat: a future #[non_exhaustive] store variant.
             _ => Self::UnmappedInternal,
         }
     }
@@ -286,7 +305,9 @@ impl From<IdentityError> for CairnFfiError {
             | IdentityError::InvalidPubkeyLength { .. }
             | IdentityError::InvalidPubkey
             | IdentityError::ExpiryOutOfRange => Self::MalformedData,
-            // Forward-compat only (IdentityError is #[non_exhaustive]).
+            // Forward-compat + a hardware-signer failure signing the self-token
+            // (D0035 §4); the mint path preserves the original callback error,
+            // so `ExternalSignerFailed` only reaches here if raised outside it.
             _ => Self::UnmappedInternal,
         }
     }

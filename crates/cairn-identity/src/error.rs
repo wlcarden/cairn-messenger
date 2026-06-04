@@ -59,6 +59,14 @@ pub enum IdentityError {
     /// no-error-oracle discipline (D0006 / D0018 §1.4).
     #[error("capability-token signature verification failed")]
     SignatureVerifyFailed,
+    /// An external (hardware) signer failed to produce the issuer-key
+    /// signature when signing a token via
+    /// [`crate::CapabilityToken::sign_external`] — e.g. the Android
+    /// `StrongBox` key is unavailable or the user cancelled biometric
+    /// auth (D0035 §4). Carries no detail per the no-error-oracle
+    /// discipline (D0018 §4.2).
+    #[error("external signer failed to produce the capability-token signature")]
+    ExternalSignerFailed,
     /// The issuer pubkey embedded in the decoded payload did not
     /// match the expected issuer pubkey supplied by the caller.
     ///
