@@ -173,6 +173,11 @@ fun ChatScreen(vm: MessagingViewModel) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CairnTopBar(ui: UiState, torStatus: String, vm: MessagingViewModel) {
+    if (ui is UiState.Conversation) {
+        // The open conversation gets its own chat app bar (back + contact + verify).
+        ChatAppBar(ui, vm)
+        return
+    }
     val colors = TopAppBarDefaults.topAppBarColors(
         containerColor = CairnTeal,
         titleContentColor = Color.White,
@@ -634,18 +639,19 @@ private fun InvitingView(state: UiState.Inviting, vm: MessagingViewModel) {
     }
 }
 
+/**
+ * The open conversation's app bar (Stage 3): back · monogram + name + trust ·
+ * Verify (when not verified) · overflow (rename / delete). Replaces the old
+ * cramped inline header row; holds the verify / rename / delete dialogs.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ChatView(state: UiState.Conversation, vm: MessagingViewModel) {
-    val messages by vm.messages.collectAsStateWithLifecycle()
-    var draft by remember { mutableStateOf("") }
-    var showVerify by remember { mutableStateOf(false) }
+private fun ChatAppBar(state: UiState.Conversation, vm: MessagingViewModel) {
     var menuOpen by remember { mutableStateOf(false) }
+    var showVerify by remember { mutableStateOf(false) }
     var showRename by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
     var verifyScanError by remember { mutableStateOf<String?>(null) }
-
-    // Scan the peer's key QR and confirm it equals the pinned key (D0006 §70).
-    // CaptureActivity handles the camera-permission prompt itself.
     val verifyScanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
         val scanned = result.contents
         if (!scanned.isNullOrBlank()) {
@@ -668,92 +674,124 @@ private fun ChatView(state: UiState.Conversation, vm: MessagingViewModel) {
             },
         )
     }
-    Column(Modifier.fillMaxSize()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { vm.backToContacts() }) {
-                Text(
-                    "‹ Contacts",
-                    modifier = Modifier.semantics { contentDescription = "Back to contacts" },
-                )
+
+    TopAppBar(
+        navigationIcon = {
+            IconButton(onClick = { vm.backToContacts() }) {
+                Icon(painterResource(R.drawable.ic_back), contentDescription = "Back to contacts")
             }
-            Column(Modifier.weight(1f)) {
-                Text(
-                    "${state.displayName} · ${state.peerKeyHex.take(12)}…",
-                    style = MaterialTheme.typography.labelMedium,
-                )
-                TrustBadge(state.trust)
+        },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Monogram(state.displayName, state.peerKeyHex)
+                Spacer(Modifier.size(10.dp))
+                Column {
+                    Text(
+                        state.displayName,
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        chatTrustLabel(state.trust),
+                        color = Color.White.copy(alpha = 0.85f),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
             }
+        },
+        actions = {
             if (state.trust != Trust.VERIFIED) {
-                TextButton(onClick = { showVerify = true }) { Text("Verify") }
+                TextButton(onClick = { showVerify = true }) { Text("Verify", color = Color.White) }
             }
             Box {
-                TextButton(onClick = { menuOpen = true }) {
-                    Text("⋮", modifier = Modifier.semantics { contentDescription = "More options" })
+                IconButton(onClick = { menuOpen = true }) {
+                    Text(
+                        "⋮",
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.semantics { contentDescription = "More options" },
+                    )
                 }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
                         text = { Text("Rename") },
-                        onClick = {
-                            menuOpen = false
-                            showRename = true
-                        },
+                        onClick = { menuOpen = false; showRename = true },
                     )
                     DropdownMenuItem(
                         text = { Text("Delete contact") },
-                        onClick = {
-                            menuOpen = false
-                            showDelete = true
-                        },
+                        onClick = { menuOpen = false; showDelete = true },
                     )
                 }
             }
-        }
+        },
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = CairnTeal,
+            titleContentColor = Color.White,
+            navigationIconContentColor = Color.White,
+            actionIconContentColor = Color.White,
+        ),
+    )
+
+    if (showVerify) {
+        VerifyDialog(
+            state,
+            scanError = verifyScanError,
+            onScan = onVerifyScan,
+            onConfirmManual = {
+                vm.markCurrentVerified()
+                showVerify = false
+            },
+            onDismiss = {
+                showVerify = false
+                verifyScanError = null
+            },
+        )
+    }
+    if (showRename) {
+        RenameDialog(
+            current = state.displayName,
+            onConfirm = {
+                vm.renameCurrentContact(it)
+                showRename = false
+            },
+            onDismiss = { showRename = false },
+        )
+    }
+    if (showDelete) {
+        AlertDialog(
+            onDismissRequest = { showDelete = false },
+            title = { Text("Delete ${state.displayName}?") },
+            text = {
+                Text(
+                    "This removes the contact from your list. Your message " +
+                        "history records are not purged.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.deleteCurrentContact()
+                    showDelete = false
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } },
+        )
+    }
+}
+
+/** Compact trust label for the chat app bar (the colour-coded badge is on the list). */
+private fun chatTrustLabel(trust: Trust): String = when (trust) {
+    Trust.VERIFIED -> "✓ Verified"
+    Trust.UNVERIFIED -> "Unverified — tap Verify"
+    Trust.KEY_CHANGED -> "⛔ Key changed"
+}
+
+@Composable
+private fun ChatView(state: UiState.Conversation, vm: MessagingViewModel) {
+    val messages by vm.messages.collectAsStateWithLifecycle()
+    var draft by remember { mutableStateOf("") }
+    Column(Modifier.fillMaxSize()) {
         if (state.trust == Trust.KEY_CHANGED) {
-            KeyChangedBanner(onReverify = { showVerify = true })
-        }
-        if (showVerify) {
-            VerifyDialog(
-                state,
-                scanError = verifyScanError,
-                onScan = onVerifyScan,
-                onConfirmManual = {
-                    vm.markCurrentVerified()
-                    showVerify = false
-                },
-                onDismiss = {
-                    showVerify = false
-                    verifyScanError = null
-                },
-            )
-        }
-        if (showRename) {
-            RenameDialog(
-                current = state.displayName,
-                onConfirm = {
-                    vm.renameCurrentContact(it)
-                    showRename = false
-                },
-                onDismiss = { showRename = false },
-            )
-        }
-        if (showDelete) {
-            AlertDialog(
-                onDismissRequest = { showDelete = false },
-                title = { Text("Delete ${state.displayName}?") },
-                text = {
-                    Text(
-                        "This removes the contact from your list. Your message " +
-                            "history records are not purged.",
-                    )
-                },
-                confirmButton = {
-                    TextButton(onClick = {
-                        vm.deleteCurrentContact()
-                        showDelete = false
-                    }) { Text("Delete") }
-                },
-                dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } },
-            )
+            KeyChangedBanner()
         }
         val listState = rememberLazyListState()
         val scope = rememberCoroutineScope()
@@ -931,7 +969,7 @@ private fun VerifyDialog(
  * red; the user re-verifies (or leaves) rather than silently trusting on.
  */
 @Composable
-private fun KeyChangedBanner(onReverify: () -> Unit) {
+private fun KeyChangedBanner() {
     Card(
         Modifier
             .fillMaxWidth()
@@ -948,12 +986,10 @@ private fun KeyChangedBanner(onReverify: () -> Unit) {
             Text(
                 "They may have re-paired on a new device — or someone may be " +
                     "intercepting your messages. Do not trust this conversation " +
-                    "until you re-verify.",
+                    "until you re-verify (tap Verify above).",
                 color = Color.White,
                 style = MaterialTheme.typography.bodySmall,
             )
-            Spacer(Modifier.height(8.dp))
-            OutlinedButton(onClick = onReverify) { Text("Re-verify") }
         }
     }
 }
