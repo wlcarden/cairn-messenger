@@ -13,10 +13,10 @@ import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.util.Log
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -38,7 +38,7 @@ import uniffi.cairn_uniffi.messagingFfiTwoPartySelftest
  * foreground-service priority (D0026 §12) so the bundled Tor + the recv loop
  * survive backgrounding — without it the process is reaped within minutes.
  */
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     private val viewModel: MessagingViewModel by viewModels()
 
@@ -141,6 +141,9 @@ class MainActivity : ComponentActivity() {
      *   --es delete "1"               → delete the open contact
      *   --es verifyscan "<peerHex>"   → verify by a scanned peer key (match → verified)
      *   --es simkeymismatch "1"       → simulate a recv key mismatch (downgrade + banner)
+     *   --es quickenroll "<pass>"     → enroll quick unlock (shows the BiometricPrompt)
+     *   --es quickunlock "1"          → quick-unlock prompt (decrypt → unlock)
+     *   --es quickdisable "1"         → delete the wrapped passphrase + Keystore key
      *
      * One-link pairing (D0026 §12): the inviter no longer needs the peer's key
      * up front — it learns the peer from the first envelope (TOFU) — so `create`
@@ -206,6 +209,31 @@ class MainActivity : ComponentActivity() {
         intent.getStringExtra("simkeymismatch")?.let {
             Log.i(TAG, "driver: simulateKeyMismatch")
             viewModel.simulateKeyMismatch()
+        }
+        // Quick-unlock (D0029) driver hooks. The biometric/credential AUTH itself
+        // can't be satisfied over adb on hardware (D0029 §7), so these drive the
+        // automatable parts: the prompt presenting (screenshot) + blob lifecycle.
+        intent.getStringExtra("quickenroll")?.let { pass ->
+            Log.i(TAG, "driver: quickEnroll")
+            QuickUnlock.enroll(this, pass.toByteArray()) { ok, err ->
+                Log.i(TAG, "QUICKENROLL: ok=$ok err=$err")
+            }
+        }
+        intent.getStringExtra("quickunlock")?.let {
+            Log.i(TAG, "driver: quickUnlock")
+            QuickUnlock.unlock(
+                this,
+                onPassphrase = { pp ->
+                    Log.i(TAG, "QUICKUNLOCK: decrypted ${pp.size} bytes")
+                    viewModel.unlock(String(pp))
+                },
+                onError = { Log.w(TAG, "QUICKUNLOCK error: $it") },
+            )
+        }
+        intent.getStringExtra("quickdisable")?.let {
+            Log.i(TAG, "driver: quickDisable")
+            QuickUnlock.disable(filesDir)
+            Log.i(TAG, "QUICKDISABLE: enrolled=${QuickUnlock.isEnrolled(filesDir)}")
         }
         // Two-party loopback selftest (D0026 §12): runs BOTH peers in this one
         // process over the bundled Tor, proving the full envelope round-trip

@@ -62,7 +62,12 @@ sealed interface UiState {
     data object Welcome : UiState
 
     /** Before unlock: ask for the passphrase (set it on [firstLaunch]). */
-    data class Locked(val firstLaunch: Boolean, val error: String?) : UiState
+    data class Locked(
+        val firstLaunch: Boolean,
+        val error: String?,
+        /** A wrapped-passphrase blob exists → offer "Unlock with fingerprint" (D0029). */
+        val quickUnlockEnrolled: Boolean = false,
+    ) : UiState
 
     /** Bringing up the encrypted session + bundled Tor. */
     data object Starting : UiState
@@ -78,7 +83,11 @@ sealed interface UiState {
     ) : UiState
 
     /** Your own identity: key QR + fingerprint (reached from the app bar). */
-    data class Identity(val myKeyHex: String) : UiState
+    data class Identity(
+        val myKeyHex: String,
+        /** Whether quick unlock is enrolled (to offer turning it off, D0029). */
+        val quickUnlockEnrolled: Boolean = false,
+    ) : UiState
 
     /** The add-a-contact screen (invite / scan / paste), behind the FAB. */
     data class AddContact(val myKeyHex: String) : UiState
@@ -144,8 +153,16 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         // store yet) sets the passphrase; later launches must match it.
         val storeExists = java.io.File(getApplication<Application>().filesDir, "store.db").exists()
         _ui.value =
-            if (storeExists) UiState.Locked(firstLaunch = false, error = null) else UiState.Welcome
+            if (storeExists) {
+                UiState.Locked(firstLaunch = false, error = null, quickUnlockEnrolled = quickUnlockEnrolled())
+            } else {
+                UiState.Welcome
+            }
     }
+
+    /** A wrapped-passphrase blob exists on disk → quick unlock is enrolled (D0029). */
+    private fun quickUnlockEnrolled(): Boolean =
+        QuickUnlock.isEnrolled(getApplication<Application>().filesDir)
 
     /** Welcome → passphrase setup: the user tapped "Get started" (C4 onboarding). */
     fun beginSetup() {
@@ -158,7 +175,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
      * wrong passphrase is rejected (the canary fails to decrypt) and returns to
      * the lock screen with an error.
      */
-    fun unlock(passphrase: String) {
+    fun unlock(passphrase: String, onUnlocked: (() -> Unit)? = null) {
         if (passphrase.isEmpty() || session != null) return
         val firstLaunch = (ui.value as? UiState.Locked)?.firstLaunch ?: false
         _ui.value = UiState.Starting
@@ -177,9 +194,17 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 // release logcat (debug keeps it for the test harnesses).
                 if (BuildConfig.DEBUG) Log.i(TAG, "MY_PUBKEY=$myHex")
                 showContacts()
+                // Session up + passphrase known-correct: let the caller enroll
+                // quick unlock now, while it still holds the passphrase (D0029) —
+                // so the passphrase is never retained in this ViewModel.
+                onUnlocked?.invoke()
             } catch (e: Exception) {
                 Log.w(TAG, "unlock failed: ${e.message}")
-                _ui.value = UiState.Locked(firstLaunch, error = "Could not unlock — ${e.message}")
+                _ui.value = UiState.Locked(
+                    firstLaunch,
+                    error = "Could not unlock — ${e.message}",
+                    quickUnlockEnrolled = quickUnlockEnrolled(),
+                )
             }
         }
     }
@@ -215,7 +240,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Show the user's own identity screen (key QR + fingerprint). */
     fun showIdentity() {
-        _ui.value = UiState.Identity(myHex)
+        _ui.value = UiState.Identity(myHex, quickUnlockEnrolled = quickUnlockEnrolled())
     }
 
     /** Show the add-a-contact screen (invite / scan / paste). */

@@ -166,6 +166,11 @@ tasks.withType<Test>().configureEach {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
+    // Opt-in biometric / device-credential quick unlock (D0029). BiometricPrompt
+    // needs a FragmentActivity (MainActivity extends it); fragment is pulled
+    // transitively but pinned explicitly so the superclass can't silently regress.
+    implementation("androidx.biometric:biometric:1.1.0")
+    implementation("androidx.fragment:fragment-ktx:1.6.2")
     // === Bundled C-Tor engine (D0020 §2.2) ===
     // tor-android ships libtor.so per-ABI (abiFilters keeps arm64-v8a) +
     // org.torproject.jni.TorService; jtorctl is the Java tor control-port

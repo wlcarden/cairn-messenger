@@ -34,6 +34,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -75,6 +76,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
@@ -122,7 +124,7 @@ fun ChatScreen(vm: MessagingViewModel) {
 
                 is UiState.ContactList -> ContactListView(state, vm)
 
-                is UiState.Identity -> IdentityView(state)
+                is UiState.Identity -> IdentityView(state, vm)
 
                 is UiState.AddContact -> AddContactView(vm)
 
@@ -287,9 +289,14 @@ private const val MIN_PASSPHRASE = 8
 
 @Composable
 private fun LockScreen(state: UiState.Locked, vm: MessagingViewModel) {
+    val context = LocalContext.current
+    val activity = context as? FragmentActivity
     var pass by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
     var reveal by remember { mutableStateOf(false) }
+    var enrollQuick by remember { mutableStateOf(false) }
+    // The device can satisfy a Class-3 biometric or the lockscreen credential.
+    val quickAvailable = remember(activity) { activity != null && QuickUnlock.isAvailable(activity) }
     val transform = if (reveal) VisualTransformation.None else PasswordVisualTransformation()
     val tooShort = pass.length < MIN_PASSPHRASE
     val mismatch = state.firstLaunch && confirm.isNotEmpty() && pass != confirm
@@ -321,6 +328,27 @@ private fun LockScreen(state: UiState.Locked, vm: MessagingViewModel) {
             textAlign = TextAlign.Center,
             style = MaterialTheme.typography.bodySmall,
         )
+        val act = activity
+        // Quick unlock (D0029): a one-tap fingerprint / screen-lock unlock that
+        // decrypts the stored passphrase. Shown only when a wrapped blob exists.
+        if (state.quickUnlockEnrolled && act != null) {
+            Button(
+                onClick = {
+                    QuickUnlock.unlock(
+                        act,
+                        onPassphrase = { pp -> vm.unlock(String(pp)) },
+                        onError = { msg -> Toast.makeText(context, msg, Toast.LENGTH_LONG).show() },
+                    )
+                },
+                modifier = Modifier.padding(top = 20.dp),
+            ) { Text("Unlock with fingerprint or screen lock") }
+            Text(
+                "or enter your passphrase",
+                Modifier.padding(top = 12.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         OutlinedTextField(
             value = pass,
             onValueChange = { pass = it },
@@ -378,8 +406,44 @@ private fun LockScreen(state: UiState.Locked, vm: MessagingViewModel) {
                 style = MaterialTheme.typography.bodySmall,
             )
         }
+        if (quickAvailable && !state.quickUnlockEnrolled) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Checkbox(checked = enrollQuick, onCheckedChange = { enrollQuick = it })
+                Text(
+                    "Unlock with fingerprint or screen lock next time",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
         Button(
-            onClick = { vm.unlock(pass) },
+            onClick = {
+                // Enroll only AFTER a successful unlock, with the known-correct
+                // passphrase still in hand (D0029) — never retained in the VM.
+                val onUnlocked: (() -> Unit)? =
+                    if (enrollQuick && act != null) {
+                        {
+                            QuickUnlock.enroll(act, pass.toByteArray()) { ok, err ->
+                                Toast.makeText(
+                                    context,
+                                    if (ok) {
+                                        "Quick unlock enabled"
+                                    } else {
+                                        err ?: "Couldn't enable quick unlock"
+                                    },
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            }
+                        }
+                    } else {
+                        null
+                    }
+                vm.unlock(pass, onUnlocked)
+            },
             enabled = canSubmit,
             modifier = Modifier.padding(top = 20.dp),
         ) { Text(if (state.firstLaunch) "Create & unlock" else "Unlock") }
@@ -488,7 +552,7 @@ private fun Monogram(name: String, keyHex: String) {
 
 /** The user's own identity: a scannable QR of their key + the fingerprint. */
 @Composable
-private fun IdentityView(state: UiState.Identity) {
+private fun IdentityView(state: UiState.Identity, vm: MessagingViewModel) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     Column(
@@ -534,6 +598,32 @@ private fun IdentityView(state: UiState.Identity) {
             },
             modifier = Modifier.padding(top = 12.dp),
         ) { Text("Copy key") }
+        // Quick unlock on/off (D0029). Enabling happens at the lock screen (the
+        // passphrase is in hand there); here we only offer to turn it OFF, which
+        // deletes the wrapped blob + the Keystore key — reverting to the
+        // strongest posture (no key material on disk).
+        if (state.quickUnlockEnrolled) {
+            Spacer(Modifier.height(28.dp))
+            HorizontalDivider(Modifier.fillMaxWidth())
+            Spacer(Modifier.height(12.dp))
+            Text("Quick unlock is on", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "This device can open Cairn with your fingerprint or screen lock. " +
+                    "Your passphrase still works and stays your only recovery.",
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            OutlinedButton(
+                onClick = {
+                    QuickUnlock.disable(context.filesDir)
+                    vm.showIdentity()
+                    Toast.makeText(context, "Quick unlock turned off", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.padding(top = 12.dp),
+            ) { Text("Turn off quick unlock") }
+        }
     }
 }
 
