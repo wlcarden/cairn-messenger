@@ -74,6 +74,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
@@ -485,19 +486,20 @@ private fun ContactListView(state: UiState.ContactList, vm: MessagingViewModel) 
         } else {
             Spacer(Modifier.height(4.dp))
             state.contacts.forEach { contact ->
-                ContactRow(
-                    contact = contact,
-                    unread = state.unread[contact.peerKeyHex] ?: 0,
-                    onClick = { vm.openContact(contact) },
-                )
+                ContactRow(contact = contact, onClick = { vm.openContact(contact) })
             }
         }
     }
 }
 
-/** A single conversation row: monogram avatar · name + trust · unread badge. */
+/**
+ * A single conversation row: monogram · name + last-activity time · last-message
+ * preview (or the trust badge before any message) · unread badge. Rows sort
+ * most-recent-first and persist across restart (the preview/time/unread live in
+ * the encrypted CONTACTS record).
+ */
 @Composable
-private fun ContactRow(contact: Contact, unread: Int, onClick: () -> Unit) {
+private fun ContactRow(contact: Contact, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -508,10 +510,37 @@ private fun ContactRow(contact: Contact, unread: Int, onClick: () -> Unit) {
         Monogram(contact.displayName, contact.peerKeyHex)
         Spacer(Modifier.size(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(contact.displayName, style = MaterialTheme.typography.titleMedium)
-            TrustBadge(contact.trust())
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    contact.displayName,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (contact.lastAtUnix > 0) {
+                    Spacer(Modifier.size(8.dp))
+                    Text(
+                        formatRowTime(contact.lastAtUnix),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (contact.lastPreview.isNotEmpty()) {
+                Text(
+                    contact.lastPreview,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            } else {
+                TrustBadge(contact.trust())
+            }
         }
-        if (unread > 0) {
+        if (contact.unread > 0) {
+            Spacer(Modifier.size(8.dp))
             Box(
                 Modifier
                     .size(22.dp)
@@ -520,7 +549,7 @@ private fun ContactRow(contact: Contact, unread: Int, onClick: () -> Unit) {
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    if (unread > 9) "9+" else "$unread",
+                    if (contact.unread > 9) "9+" else "${contact.unread}",
                     color = MaterialTheme.colorScheme.onPrimary,
                     style = MaterialTheme.typography.labelSmall,
                 )
@@ -1330,6 +1359,18 @@ private fun formatDay(tsUnix: Long): String {
         dayKey(nowSec) -> "Today"
         dayKey(nowSec - 86_400) -> "Yesterday"
         else -> dayLabelFmt.format(Date(tsUnix * 1000))
+    }
+}
+
+private val rowDateFmt = SimpleDateFormat("MMM d", Locale.getDefault())
+
+/** Compact conversation-row timestamp: today → HH:mm, yesterday → "Yesterday", else date. */
+private fun formatRowTime(tsUnix: Long): String {
+    val nowSec = System.currentTimeMillis() / 1000
+    return when (dayKey(tsUnix)) {
+        dayKey(nowSec) -> timeFmt.format(Date(tsUnix * 1000))
+        dayKey(nowSec - 86_400) -> "Yesterday"
+        else -> rowDateFmt.format(Date(tsUnix * 1000))
     }
 }
 

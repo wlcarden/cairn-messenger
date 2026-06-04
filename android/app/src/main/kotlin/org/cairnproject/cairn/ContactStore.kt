@@ -33,6 +33,12 @@ data class Contact(
      * interception) downgrades [verified]. Null = never verified.
      */
     val verifiedKeyHex: String? = null,
+    /** Last message's text (truncated) for the conversation-list preview. */
+    val lastPreview: String = "",
+    /** Unix-seconds of the last message — drives row recency sort + the time. */
+    val lastAtUnix: Long = 0,
+    /** Unread count (incremented on recv while not open; cleared on open). */
+    val unread: Int = 0,
 )
 
 /**
@@ -45,11 +51,11 @@ data class Contact(
  */
 class ContactStore(private val storage: StorageHandle) {
 
-    /** All saved contacts, most-recently-paired first. */
+    /** All saved contacts, most-recent-activity first (else pairing time). */
     fun list(): List<Contact> =
         storage.listRecords(CATEGORY)
             .mapNotNull { recordId -> decode(recordId.toHex(), storage.get(CATEGORY, recordId)) }
-            .sortedByDescending { it.pairedAtUnix }
+            .sortedByDescending { maxOf(it.lastAtUnix, it.pairedAtUnix) }
 
     /** The contact for [peerKeyHex], or null if not paired. */
     fun get(peerKeyHex: String): Contact? =
@@ -63,10 +69,36 @@ class ContactStore(private val storage: StorageHandle) {
             .put("at", contact.pairedAtUnix)
             .put("v", contact.verified)
             .apply { contact.verifiedKeyHex?.let { put("vk", it) } }
+            .put("lp", contact.lastPreview)
+            .put("la", contact.lastAtUnix)
+            .put("ur", contact.unread)
             .toString()
             .toByteArray()
         runCatching { storage.put(CATEGORY, contact.peerKeyHex.fromHex(), payload) }
             .onFailure { Log.w(TAG, "contact save failed: ${it.message}") }
+    }
+
+    /**
+     * Record the latest message for [peerKeyHex] (preview + time), optionally
+     * bumping the unread count (a message that arrived while not in view). A
+     * no-op if the contact isn't saved. Newlines are flattened + the preview is
+     * truncated so the row stays a single legible line.
+     */
+    fun recordActivity(peerKeyHex: String, preview: String, atUnix: Long, bumpUnread: Boolean) {
+        val c = get(peerKeyHex) ?: return
+        save(
+            c.copy(
+                lastPreview = preview.replace('\n', ' ').take(PREVIEW_MAX),
+                lastAtUnix = atUnix,
+                unread = if (bumpUnread) c.unread + 1 else c.unread,
+            ),
+        )
+    }
+
+    /** Clear a contact's unread count (on open). No-op if already zero / absent. */
+    fun clearUnread(peerKeyHex: String) {
+        val c = get(peerKeyHex) ?: return
+        if (c.unread != 0) save(c.copy(unread = 0))
     }
 
     /**
@@ -95,6 +127,9 @@ class ContactStore(private val storage: StorageHandle) {
                 pairedAtUnix = o.optLong("at", 0),
                 verified = verified,
                 verifiedKeyHex = verifiedKey,
+                lastPreview = o.optString("lp", ""),
+                lastAtUnix = o.optLong("la", 0),
+                unread = o.optInt("ur", 0),
             )
         }.getOrNull()
     }
@@ -104,5 +139,8 @@ class ContactStore(private val storage: StorageHandle) {
 
         /** Must match `cairn_storage::categories::CONTACTS`. */
         const val CATEGORY = "contacts"
+
+        /** Max stored preview length — keeps the row a single line + bounds storage. */
+        const val PREVIEW_MAX = 120
     }
 }

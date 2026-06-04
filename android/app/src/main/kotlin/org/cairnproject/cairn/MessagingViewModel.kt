@@ -75,11 +75,11 @@ sealed interface UiState {
     /** Home: the list of saved conversations. */
     data class ContactList(
         val myKeyHex: String,
+        /** Contacts, most-recent-activity first; each carries its own preview +
+         *  time + unread count (persisted in the CONTACTS record). */
         val contacts: List<Contact>,
         /** A non-fatal error (e.g. a malformed pasted invitation) shown inline. */
         val error: String? = null,
-        /** Per-contact unread counts (peer key hex → count). */
-        val unread: Map<String, Int> = emptyMap(),
     ) : UiState
 
     /** Your own identity: key QR + fingerprint (reached from the app bar). */
@@ -145,7 +145,6 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     private var pairingJob: Job? = null
     private var myHex: String = ""
     private val msgIdSeq = AtomicLong(0)
-    private val unread = mutableMapOf<String, Int>()
 
     init {
         // Gate everything behind an unlock passphrase: the at-rest encryption
@@ -213,7 +212,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     private fun showContacts(error: String? = null) {
         val list = runCatching { contacts?.list() ?: emptyList() }.getOrDefault(emptyList())
         Log.i(TAG, "contacts: ${list.size}")
-        _ui.value = UiState.ContactList(myHex, list, error, unread.toMap())
+        _ui.value = UiState.ContactList(myHex, list, error)
         ensureReceiving()
     }
 
@@ -389,7 +388,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         val peer = runCatching { contact.peerKeyHex.fromHex() }.getOrNull() ?: return
         peerKeyRaw = peer
         connectionId = contact.connId
-        unread.remove(contact.peerKeyHex)
+        runCatching { contacts?.clearUnread(contact.peerKeyHex) }
         _messages.value = emptyList()
         viewModelScope.launch {
             val hist = withContext(Dispatchers.IO) {
@@ -456,6 +455,8 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         _messages.update {
             it + ChatMessage(id, mine = true, text = text, tsUnix = now, status = SendStatus.SENDING)
         }
+        // Update the conversation-list preview/time for this contact (my message).
+        runCatching { contacts?.recordActivity(peer.toHex(), "You: $text", now, bumpUnread = false) }
         viewModelScope.launch {
             try {
                 s.handle.send(connId, peer, text.toByteArray())
@@ -651,11 +652,14 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         val cur = _ui.value as? UiState.Conversation
         if (appForeground && cur?.peerKeyHex == contact.peerKeyHex) {
             _messages.update { it + ChatMessage(msgIdSeq.getAndIncrement(), false, text, tsUnix) }
+            // Visible conversation: update the preview/time but don't bump unread.
+            runCatching { contacts?.recordActivity(contact.peerKeyHex, text, tsUnix, bumpUnread = false) }
         } else {
-            unread[contact.peerKeyHex] = (unread[contact.peerKeyHex] ?: 0) + 1
+            // Not in view: update the preview/time + bump the persisted unread.
+            runCatching { contacts?.recordActivity(contact.peerKeyHex, text, tsUnix, bumpUnread = true) }
             Log.i(TAG, "notify: new message from ${contact.peerKeyHex.take(12)}")
             Notifications.postNewMessage(getApplication<Application>(), contact.peerKeyHex)
-            // Refresh the home list so the unread badge updates live.
+            // Refresh the home list so the preview + unread badge update live.
             if (_ui.value is UiState.ContactList) showContacts()
         }
     }
