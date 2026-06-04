@@ -17,6 +17,7 @@ import javax.crypto.Mac
 import javax.crypto.SecretKey
 import javax.crypto.SecretKeyFactory
 import uniffi.cairn_uniffi.AttestationCertificate
+import uniffi.cairn_uniffi.AttestationResultRecord
 import uniffi.cairn_uniffi.CairnFfiException
 import uniffi.cairn_uniffi.DemoEd25519Signer
 import uniffi.cairn_uniffi.HardwareKeySigner
@@ -26,6 +27,7 @@ import uniffi.cairn_uniffi.SidecarEndpointConfig
 import uniffi.cairn_uniffi.SimplexAdapterHandle
 import uniffi.cairn_uniffi.StorageHandle
 import uniffi.cairn_uniffi.StrongBoxKeyMaterial
+import uniffi.cairn_uniffi.verifyDeviceKeyAttestation
 
 /**
  * DEMO identity + session bootstrap for the chat UI.
@@ -93,6 +95,76 @@ class DemoSigner(private val identity: CairnIdentity) : HardwareKeySigner {
 
     override fun attestationChain(keyAlias: String): List<AttestationCertificate> =
         throw CairnFfiException.MalformedData() // demo: no hardware attestation
+}
+
+/**
+ * The surfaced verdict of the device-key attestation (D0033 §2, Stage 1).
+ *
+ * A small projection of the Rust [AttestationResultRecord] that the
+ * My-Identity screen renders ("Device key: hardware-attested ✓ — TEE" when
+ * [attested], else "unattested"). The advisory verified-boot fields
+ * ([deviceLocked] / [verifiedBootState], D0033 §3) are surfaced but not
+ * asserted in Stage 1.
+ *
+ * Persisted as a unit-separator-delimited string so the verdict survives the
+ * short-lived attestation batch intermediate (D0033 §1): we verify ONCE near
+ * key-generation and reuse the stored verdict thereafter, rather than re-walk a
+ * chain whose intermediate has since expired.
+ */
+data class DeviceAttestation(
+    val attested: Boolean,
+    /** "TEE" | "StrongBox" when [attested]; empty otherwise. */
+    val level: String,
+    /** Advisory verified-boot: locked bootloader. */
+    val deviceLocked: Boolean,
+    /** Advisory verified-boot state ("Verified" | "SelfSigned" | …) or empty. */
+    val verifiedBootState: String,
+    /** Coarse diagnostic tag when not [attested] (DEBUG/diagnostic only). */
+    val failure: String,
+) {
+    /** Encode for persistence (unit-separator delimited). */
+    fun encode(): ByteArray =
+        listOf(
+            if (attested) "1" else "0",
+            level,
+            if (deviceLocked) "1" else "0",
+            verifiedBootState,
+            failure,
+        ).joinToString(FIELD_SEP).toByteArray()
+
+    companion object {
+        private const val FIELD_SEP = ""
+
+        /** A not-attested verdict carrying a coarse [reason] tag. */
+        fun unattested(reason: String) = DeviceAttestation(
+            attested = false,
+            level = "",
+            deviceLocked = false,
+            verifiedBootState = "",
+            failure = reason,
+        )
+
+        /** Project the Rust FFI record into the surfaced verdict. */
+        fun fromRecord(rec: AttestationResultRecord) = DeviceAttestation(
+            attested = rec.attested,
+            level = rec.securityLevel,
+            deviceLocked = rec.deviceLocked,
+            verifiedBootState = rec.verifiedBootState,
+            failure = rec.failure,
+        )
+
+        /** Decode a persisted verdict; malformed input → unattested. */
+        fun decode(bytes: ByteArray): DeviceAttestation {
+            val p = String(bytes).split(FIELD_SEP)
+            return DeviceAttestation(
+                attested = p.getOrNull(0) == "1",
+                level = p.getOrNull(1).orEmpty(),
+                deviceLocked = p.getOrNull(2) == "1",
+                verifiedBootState = p.getOrNull(3).orEmpty(),
+                failure = p.getOrNull(4).orEmpty(),
+            )
+        }
+    }
 }
 
 /**
@@ -206,6 +278,11 @@ class CairnSession private constructor(
     /** The opened encrypted store — backs the contact list + message history. */
     val storage: StorageHandle,
     val handle: SimplexAdapterHandle,
+    /**
+     * The device-key attestation verdict (D0033 §2, Stage 1) — surfaced on
+     * My-Identity. Advisory: a non-attested verdict never blocks the session.
+     */
+    val attestation: DeviceAttestation,
 ) {
     /**
      * Re-key the encrypted store from [old] to [new] (D0030 §3 —
@@ -255,17 +332,25 @@ class CairnSession private constructor(
             val signer: HardwareKeySigner
             val publicKeyRaw: ByteArray
             val keyAlias: String
-            val hardware = KeystoreEd25519Signer.generateOrLoad()
+            val attestation: DeviceAttestation
+            val hardware = KeystoreEd25519Signer.generateOrLoad(filesDir)
             if (hardware != null) {
                 signer = hardware
                 publicKeyRaw = hardware.publicKeyRaw
                 keyAlias = KeystoreEd25519Signer.DEVICE_KEY_ALIAS
                 Log.i(TAG, "CairnSession: HARDWARE device key (${hardware.securityLevel})")
+                // Cryptographically PROVE the device key is hardware-backed +
+                // hardware-generated by verifying its Android Key Attestation
+                // chain in Rust (D0033 §2), rather than trusting the Kotlin
+                // KeyInfo.securityLevel self-report above. Advisory (§4): a
+                // non-attested verdict is recorded + surfaced, never a brick.
+                attestation = resolveDeviceAttestation(storage, hardware)
             } else {
                 val identity = CairnIdentity.generate()
                 signer = DemoSigner(identity)
                 publicKeyRaw = identity.publicKeyRaw
                 keyAlias = DEMO_DEVICE_KEY_ALIAS
+                attestation = DeviceAttestation.unattested("software-key")
                 Log.w(TAG, "CairnSession: SOFTWARE demo device key (hardware key unavailable)")
             }
 
@@ -287,8 +372,57 @@ class CairnSession private constructor(
             )
             val handle = SimplexAdapterHandle(storage, signer, keyAlias, publicKeyRaw, config)
             Log.i(TAG, "CairnSession bootstrapped (${publicKeyRaw.size}-byte op key)")
-            return CairnSession(publicKeyRaw, storage, handle)
+            return CairnSession(publicKeyRaw, storage, handle, attestation)
         }
+
+        /**
+         * Resolve the device-key attestation verdict (D0033 §2, Stage 1).
+         *
+         * Prefers a PERSISTED verdict: per D0033 §1 the attestation chain's
+         * batch intermediate is short-lived (≈2 weeks), so we verify ONCE near
+         * key-generation and reuse the stored verdict thereafter — re-walking
+         * the chain on a later launch would falsely report "expired" for a key
+         * that is genuinely hardware-backed. On the first launch (no stored
+         * verdict) we fetch the live chain + the key's persisted attestation
+         * challenge, verify in Rust, and persist a positive result. Every step
+         * is best-effort (advisory posture, §4): any failure yields an
+         * `unattested` verdict, never an exception that would brick bootstrap.
+         */
+        private fun resolveDeviceAttestation(
+            storage: StorageHandle,
+            hardware: KeystoreEd25519Signer,
+        ): DeviceAttestation {
+            runCatching { storage.get(IDENTITY_CATEGORY, ATTESTATION_ID) }
+                .getOrNull()
+                ?.takeIf { it.isNotEmpty() }
+                ?.let {
+                    val cached = DeviceAttestation.decode(it)
+                    Log.i(TAG, "attestation: using stored verdict (attested=${cached.attested} ${cached.level})")
+                    return cached
+                }
+
+            val verdict = runCatching {
+                val chain = hardware.attestationChain(KeystoreEd25519Signer.DEVICE_KEY_ALIAS)
+                val nowUnix = (System.currentTimeMillis() / 1000L).toULong()
+                val record = verifyDeviceKeyAttestation(chain, hardware.attestationChallenge, nowUnix)
+                DeviceAttestation.fromRecord(record)
+            }.getOrElse {
+                Log.w(TAG, "attestation: chain fetch/verify failed: ${it.message}")
+                DeviceAttestation.unattested("chain-unavailable")
+            }
+
+            if (verdict.attested) {
+                runCatching { storage.put(IDENTITY_CATEGORY, ATTESTATION_ID, verdict.encode()) }
+                Log.i(TAG, "attestation: VERIFIED + persisted (${verdict.level}, vbState=${verifiedBootLabel(verdict)})")
+            } else {
+                Log.w(TAG, "attestation: unattested (${verdict.failure})")
+            }
+            return verdict
+        }
+
+        /** Compact verified-boot label for the persist log line. */
+        private fun verifiedBootLabel(v: DeviceAttestation): String =
+            "${if (v.deviceLocked) "locked" else "unlocked"}/${v.verifiedBootState.ifEmpty { "?" }}"
 
         /**
          * Validate the unlock passphrase against an encrypted canary (D0022):
@@ -339,6 +473,13 @@ class CairnSession private constructor(
 
         /** Record id (in IDENTITY) of the stored random SimpleX DB key (D0030 §2). */
         private val SIMPLEX_DB_KEY_ID = "cairn-simplex-db-key-v1".toByteArray()
+
+        /**
+         * Record id (in IDENTITY) of the persisted device-key attestation
+         * verdict (D0033 §1). `v2` matches the v2 device-key alias minted with
+         * the attestation challenge; a fresh install regenerates both.
+         */
+        private val ATTESTATION_ID = "cairn-device-attestation-v2".toByteArray()
 
         /** Record id + value of the encrypted passphrase canary. */
         private val UNLOCK_CANARY_ID = "cairn-unlock-canary-v1".toByteArray()

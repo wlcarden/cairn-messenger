@@ -632,6 +632,8 @@ private fun IdentityView(state: UiState.Identity, vm: MessagingViewModel) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 4.dp),
         )
+        Spacer(Modifier.height(20.dp))
+        DeviceAttestationSection(state.attestation)
         Spacer(Modifier.height(16.dp))
         Text("Your key", style = MaterialTheme.typography.titleSmall)
         SelectableBlock(state.myKeyHex)
@@ -703,6 +705,70 @@ private fun IdentityView(state: UiState.Identity, vm: MessagingViewModel) {
                     receiptsOn = it
                     vm.setReadReceiptsEnabled(it)
                 },
+            )
+        }
+    }
+}
+
+/**
+ * Device-key attestation surface (D0033 §2). Renders the Rust verifier's
+ * verdict: when attested, the signing key is cryptographically proven (chain →
+ * Google's hardware-attestation root) to have been generated inside this
+ * phone's secure hardware (TEE / StrongBox) and to be non-exportable. When not
+ * attested, messaging still works — the key just isn't hardware-proven
+ * (advisory posture, §4). The verified-boot line (§3) is informational.
+ */
+@Composable
+private fun DeviceAttestationSection(att: DeviceAttestation) {
+    val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        if (att.attested) {
+            Text(
+                "Device key: hardware-attested ✓  —  ${att.level}",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                buildString {
+                    append("This phone proved the signing key was generated inside its ")
+                    append(
+                        if (att.level == "StrongBox") {
+                            "dedicated secure element"
+                        } else {
+                            "secure hardware (TEE)"
+                        },
+                    )
+                    append(" and can never leave it.")
+                    if (att.verifiedBootState.isNotEmpty()) {
+                        append("\nVerified boot: ${att.verifiedBootState}")
+                        append(if (att.deviceLocked) ", bootloader locked." else ".")
+                    }
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = mutedColor,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        } else {
+            Text(
+                "Device key: not hardware-attested",
+                style = MaterialTheme.typography.titleSmall,
+                color = mutedColor,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                "Messaging still works; this key just isn't proven to live in this " +
+                    "phone's secure hardware.",
+                style = MaterialTheme.typography.bodySmall,
+                color = mutedColor,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 4.dp),
             )
         }
     }

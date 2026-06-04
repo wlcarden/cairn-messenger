@@ -64,9 +64,14 @@
 //!   [`CapabilityToken::has_capability`] against the operation type
 //!   they're issuing.
 
+pub mod attestation;
 pub mod capabilities;
 pub mod error;
 pub mod token;
 
+pub use attestation::{
+    AttestationError, AttestationFacts, SecurityLevel, VerifiedBootInfo, VerifiedBootState,
+    verify_key_attestation,
+};
 pub use error::IdentityError;
 pub use token::{CapabilityToken, DOMAIN_TAG, SignedCapabilityToken};

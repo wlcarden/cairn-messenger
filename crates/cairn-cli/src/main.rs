@@ -728,6 +728,17 @@ impl SidecarTransport for FileSidecarTransport {
     async fn recv(&self, _conn: &ConnectionId) -> Result<Vec<u8>, SimplexAdapterError> {
         std::fs::read(&self.wire).map_err(|_| SimplexAdapterError::SidecarUnavailable)
     }
+
+    async fn delete_connection(&self, _conn: &ConnectionId) -> Result<(), SimplexAdapterError> {
+        // The delete-purge queue-teardown half (D0031). On the file wire the
+        // only SMP-side resource is the wire file itself; remove it
+        // best-effort (a missing file is already "torn down").
+        match std::fs::remove_file(&self.wire) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(SimplexAdapterError::SidecarUnavailable),
+        }
+    }
 }
 
 /// Open an in-memory demo store (the `InMemoryKeyProvider` uses reduced

@@ -492,7 +492,9 @@ dependencies = [
  "hex-literal",
  "proptest",
  "rand_core 0.6.4",
+ "rcgen",
  "thiserror 1.0.63",
+ "x509-parser",
  "zeroize",
 ]
 

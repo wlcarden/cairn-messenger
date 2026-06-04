@@ -95,6 +95,11 @@ sealed interface UiState {
         val myKeyHex: String,
         /** Whether quick unlock is enrolled (to offer turning it off, D0029). */
         val quickUnlockEnrolled: Boolean = false,
+        /**
+         * The device-key attestation verdict (D0033 §2): proves in Rust that
+         * the signing key is hardware-backed + hardware-generated. Advisory.
+         */
+        val attestation: DeviceAttestation = DeviceAttestation.unattested("unknown"),
     ) : UiState
 
     /** The add-a-contact screen (invite / scan / paste), behind the FAB. */
@@ -283,7 +288,11 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Show the user's own identity screen (key QR + fingerprint). */
     fun showIdentity() {
-        _ui.value = UiState.Identity(myHex, quickUnlockEnrolled = quickUnlockEnrolled())
+        _ui.value = UiState.Identity(
+            myHex,
+            quickUnlockEnrolled = quickUnlockEnrolled(),
+            attestation = session?.attestation ?: DeviceAttestation.unattested("no-session"),
+        )
     }
 
     /** Show the add-a-contact screen (invite / scan / paste). */

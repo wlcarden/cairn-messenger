@@ -7,9 +7,11 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import android.util.Log
+import java.io.File
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.SecureRandom
 import java.security.Signature
 import java.security.spec.ECGenParameterSpec
 import uniffi.cairn_uniffi.AttestationCertificate
@@ -49,6 +51,13 @@ class KeystoreEd25519Signer private constructor(
     val publicKeyRaw: ByteArray,
     /** "StrongBox" / "TEE" / "software" — the element the key actually landed in. */
     val securityLevel: String,
+    /**
+     * The 32-byte attestation challenge embedded in the key's attestation
+     * certificate at generation (D0033 §1) — passed to the Rust verifier so it
+     * can confirm the leaf cert binds OUR challenge. Empty if the key predates
+     * attestation (a defensive fallback; the v2 alias always has one).
+     */
+    val attestationChallenge: ByteArray,
 ) : HardwareKeySigner {
 
     override fun sign(keyAlias: String, payload: ByteArray): ByteArray {
@@ -89,8 +98,20 @@ class KeystoreEd25519Signer private constructor(
     companion object {
         private const val TAG = "CairnFfi"
 
-        /** The AndroidKeyStore alias for the persistent v1 device key. */
-        const val DEVICE_KEY_ALIAS = "cairn-device-key-ed25519"
+        /**
+         * The AndroidKeyStore alias for the persistent device key. The `-v2`
+         * suffix forces a fresh ATTESTED keygen (D0033 §5 migration): the v1
+         * key was generated without `setAttestationChallenge`, so no real
+         * attestation chain exists for it — a new alias regenerates the key WITH
+         * a challenge (and thus a new operational identity; fresh installs only).
+         */
+        const val DEVICE_KEY_ALIAS = "cairn-device-key-ed25519-v2"
+
+        /** File (under filesDir) holding the device key's attestation challenge. */
+        private const val CHALLENGE_FILE = "device-attest-challenge-v2.bin"
+
+        /** Attestation challenge length (D0033 §1) — a 32-byte freshness nonce. */
+        private const val CHALLENGE_LEN = 32
 
         /** JCA signature algorithm for pure Ed25519 (no external digest). */
         private const val ED25519 = "Ed25519"
@@ -110,6 +131,7 @@ class KeystoreEd25519Signer private constructor(
          *   (v1 will set this; the demo leaves it false so signing is silent).
          */
         fun generateOrLoad(
+            filesDir: File,
             alias: String = DEVICE_KEY_ALIAS,
             requireAuth: Boolean = false,
         ): KeystoreEd25519Signer? {
@@ -119,20 +141,37 @@ class KeystoreEd25519Signer private constructor(
             }
             return try {
                 val ks = loadKeyStore()
+                val challengeFile = File(filesDir, CHALLENGE_FILE)
                 // Self-heal: an existing key generated under earlier params (e.g.
-                // before DIGEST_NONE was authorized) cannot sign — drop + regen.
+                // before DIGEST_NONE was authorized) cannot sign — drop + regen
+                // (and drop its now-stale challenge so a fresh one is minted).
                 if (ks.containsAlias(alias) && !canSign(ks, alias)) {
                     Log.i(TAG, "existing device key cannot sign (stale params) — regenerating")
                     ks.deleteEntry(alias)
+                    challengeFile.delete()
                 }
-                if (!ks.containsAlias(alias)) {
-                    generateKeyPair(alias, requireAuth)
+                val challenge: ByteArray
+                if (ks.containsAlias(alias)) {
+                    // Key exists → its attestation challenge was persisted at
+                    // generation. Empty if the file was removed out-of-band (the
+                    // verifier then can't bind the challenge but still checks the
+                    // chain + KeyMint properties).
+                    challenge = runCatching { challengeFile.readBytes() }.getOrDefault(ByteArray(0))
+                } else {
+                    // Fresh key → mint + persist the attestation challenge, then
+                    // generate the key bound to it (D0033 §1).
+                    challenge = ByteArray(CHALLENGE_LEN).also { SecureRandom().nextBytes(it) }
+                    runCatching { challengeFile.writeBytes(challenge) }
+                    generateKeyPair(alias, requireAuth, challenge)
                 }
                 val pub = ks.getCertificate(alias).publicKey
                 val raw = rawEd25519PublicKey(pub.encoded)
                 val level = securityLevelOf(ks, alias)
-                Log.i(TAG, "hardware device key ready: alias=$alias level=$level pub=${raw.size}B")
-                KeystoreEd25519Signer(raw, level)
+                Log.i(
+                    TAG,
+                    "hardware device key ready: alias=$alias level=$level pub=${raw.size}B challenge=${challenge.size}B",
+                )
+                KeystoreEd25519Signer(raw, level, challenge)
             } catch (e: Exception) {
                 Log.w(
                     TAG,
@@ -157,7 +196,7 @@ class KeystoreEd25519Signer private constructor(
                 false
             }
 
-        private fun generateKeyPair(alias: String, requireAuth: Boolean) {
+        private fun generateKeyPair(alias: String, requireAuth: Boolean, challenge: ByteArray) {
             // The per-MESSAGE device key lives in the TEE, NOT StrongBox (D0020
             // §3.5): StrongBox EC ops are seconds-scale, and many StrongBox impls
             // (e.g. the Pixel's Titan-M2) reject Ed25519 outright ("Unsupported
@@ -172,11 +211,17 @@ class KeystoreEd25519Signer private constructor(
                 // confirmed on-device).
                 .setDigests(KeyProperties.DIGEST_NONE)
                 .setUserAuthenticationRequired(requireAuth)
+                // Attestation (D0033 §1): with a challenge, KeyMint emits the leaf
+                // attestation extension (OID 1.3.6.1.4.1.11129.2.1.17) + the cert
+                // chain to Google's Hardware Attestation Root, so the key's
+                // hardware origin + non-exportability can be VERIFIED Rust-side
+                // (vs the self-reported KeyInfo.securityLevel).
+                .setAttestationChallenge(challenge)
                 .build()
             KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, "AndroidKeyStore")
                 .apply { initialize(spec) }
                 .generateKeyPair()
-            Log.i(TAG, "generated TEE-backed Ed25519 device key (alias=$alias)")
+            Log.i(TAG, "generated TEE-backed Ed25519 device key WITH attestation (alias=$alias)")
         }
 
         /**

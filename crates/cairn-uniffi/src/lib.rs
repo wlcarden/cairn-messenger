@@ -137,7 +137,10 @@ pub mod android_log;
 pub use demo_signer::DemoEd25519Signer;
 pub use error::CairnFfiError;
 pub use hardware::{AttestationCertificate, HardwareKeySigner, HardwarePublicKey, KeyGenSpec};
-pub use identity::{CapabilityTokenRecord, identity_verify_capability_token};
+pub use identity::{
+    AttestationResultRecord, CapabilityTokenRecord, identity_verify_capability_token,
+    verify_device_key_attestation,
+};
 pub use messaging::{
     MessageSentRecord, ReceivedMessageRecord, SidecarEndpointConfig, SimplexAdapterHandle,
 };
