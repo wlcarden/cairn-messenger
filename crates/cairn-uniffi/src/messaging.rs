@@ -511,12 +511,51 @@ impl SimplexAdapterHandle {
             })
             .collect())
     }
+
+    /// Purge ALL local trace of the conversation with `peer_operational_pubkey`
+    /// — the deeper delete-purge run when the user deletes a contact (D0031).
+    /// Deletes both directed `MESSAGES` chains + resets this pair's chain
+    /// cursors, then tears down the SimpleX-side connection/queue over
+    /// `connection_id`. The local history purge is authoritative + happens
+    /// FIRST; the connection teardown is best-effort — a transport failure
+    /// leaves a lingering SMP queue but never un-deletes the already-purged
+    /// history.
+    ///
+    /// # Errors
+    ///
+    /// - [`CairnFfiError::MalformedData`] if `peer_operational_pubkey` is not 32
+    ///   bytes.
+    /// - The facade mapping of any `SimplexAdapterError`:
+    ///   [`CairnFfiError::StorageFailure`] if the `MESSAGES` purge failed (before
+    ///   any teardown), or [`CairnFfiError::SidecarFailure`] if the connection
+    ///   teardown failed (the local history is already purged in that case).
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+    )]
+    pub async fn purge_conversation(
+        &self,
+        connection_id: String,
+        peer_operational_pubkey: Vec<u8>,
+    ) -> Result<(), CairnFfiError> {
+        let peer: [u8; PUBLIC_KEY_LEN] = peer_operational_pubkey
+            .as_slice()
+            .try_into()
+            .map_err(|_| CairnFfiError::MalformedData)?;
+        self.adapter
+            .purge_conversation(&ConnectionId(connection_id), &peer)
+            .await
+            .map_err(CairnFfiError::from)?;
+        Ok(())
+    }
 }
 
 /// On-device FFI self-test (D0026 §12) — boot the in-process `libsimplex`
-/// transport + create an invitation, proving the GHC runtime initialises +
-/// responds **on the device** (the on-device equivalent of the host runtime
-/// proof). Returns the invitation URI on success.
+/// transport + create an invitation.
+///
+/// Proves the GHC runtime initialises + responds **on the device** (the
+/// on-device equivalent of the host runtime proof). Returns the invitation URI
+/// on success.
 ///
 /// `db_path` is an app-private path prefix for the in-process chat DB;
 /// `files_dir` a directory for `CryptoFile` staging (both created if absent).
@@ -601,10 +640,13 @@ pub async fn messaging_ffi_selftest(
     }
 }
 
-/// On-device TWO-PARTY loopback selftest (D0026 §12): boots TWO in-process
-/// `libsimplex` messaging instances + two SOFTWARE Ed25519 identities in THIS
-/// one process, connects them through a public SMP relay over Tor, then sends a
-/// message EACH WAY and verifies the received plaintext + signature.
+/// On-device TWO-PARTY loopback selftest (D0026 §12): two in-process
+/// `libsimplex` instances messaging each other in ONE process.
+///
+/// Boots TWO in-process `libsimplex` messaging instances + two SOFTWARE
+/// Ed25519 identities in THIS one process, connects them through a public SMP
+/// relay over Tor, then sends a message EACH WAY and verifies the received
+/// plaintext + signature.
 ///
 /// This proves the full Cairn envelope round-trip (sign → XFTP `CryptoFile`
 /// send → recv → `COSE_Sign1` verify → sender-binding) end-to-end on-device

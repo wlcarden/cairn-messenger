@@ -460,6 +460,44 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
         Ok(out)
     }
 
+    /// Purge ALL local trace of the conversation with `peer` — the deeper
+    /// delete-purge invoked when the user deletes a contact (D0031).
+    ///
+    /// Deletes BOTH directed `MESSAGES` chains (outgoing `me -> peer` AND
+    /// incoming `peer -> me`), drops this pair's in-memory send + recv chain
+    /// cursors (so a future re-pair with the same operational identity restarts
+    /// at the genesis chain rather than expecting the purged history's last
+    /// cursor), then tears down the SimpleX-side connection/queue over `conn`.
+    ///
+    /// **Ordering is the privacy contract.** The `MESSAGES` purge is the
+    /// irreversible deletion of locally-decryptable plaintext history the user
+    /// asked for, so it happens FIRST + is authoritative. The connection
+    /// teardown is attempted AFTER; a transport failure there is surfaced but
+    /// does NOT undo the history purge — it leaves a lingering SMP queue (a
+    /// retriable resource leak, the pre-D0031 status quo for the queue), never
+    /// readable history.
+    ///
+    /// # Errors
+    ///
+    /// - [`SimplexAdapterError::Storage`] if a `MESSAGES` delete or a chain-cache
+    ///   lock fails (the purge aborts before the teardown).
+    /// - the transport's error from [`SidecarTransport::delete_connection`] (the
+    ///   history is already purged; only the queue teardown failed).
+    pub async fn purge_conversation(
+        &self,
+        conn: &ConnectionId,
+        peer_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
+    ) -> Result<(), SimplexAdapterError> {
+        let me = &self.identity.operational_pubkey;
+        // Both directed chains: incoming (peer -> me) + outgoing (me -> peer).
+        self.purge_direction(peer_operational_pubkey, me)?;
+        self.purge_direction(me, peer_operational_pubkey)?;
+        // Drop the cached cursors so a re-pair restarts at the genesis chain.
+        self.forget_chain_state(peer_operational_pubkey)?;
+        // Best-effort SimpleX-side teardown (SMP queue + conversation).
+        self.transport.delete_connection(conn).await
+    }
+
     /// Walk the contiguous `0..` `MESSAGES` records for one directed
     /// `(sender, recipient)` pair, decoding each into [`HistoryMessage`]s
     /// appended to `out`. Stops at the first missing message number.
@@ -488,6 +526,30 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
                     message_number = message_number.saturating_add(1);
                 }
                 Err(StorageError::RecordNotFound { .. }) => break,
+                Err(e) => return Err(SimplexAdapterError::from(e)),
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete the contiguous `0..` `MESSAGES` records for one directed
+    /// `(sender, recipient)` pair — the purge-walk analog of
+    /// [`Self::collect_direction`] (D0031). Stops at the first message number
+    /// with no stored record: messages are persisted strictly in order (send
+    /// numbers are contiguous; the recv chain-gap check rejects out-of-order
+    /// delivery), so the contiguous `0..` prefix IS the whole chain, and
+    /// [`Storage::delete`] returning `false` (no such row) marks its end.
+    fn purge_direction(
+        &self,
+        sender: &[u8; PUBLIC_KEY_LEN],
+        recipient: &[u8; PUBLIC_KEY_LEN],
+    ) -> Result<(), SimplexAdapterError> {
+        let mut message_number = 0u64;
+        loop {
+            let record_id = message_record_id_for(sender, recipient, message_number);
+            match self.storage.delete(categories::MESSAGES, &record_id) {
+                Ok(true) => message_number = message_number.saturating_add(1),
+                Ok(false) => break,
                 Err(e) => return Err(SimplexAdapterError::from(e)),
             }
         }
@@ -565,6 +627,25 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
         };
         drop(guard);
         Ok(expectation)
+    }
+
+    /// Drop the cached send + recv chain cursors for `peer` (D0031) so a
+    /// subsequent re-pair with the same operational identity restarts at the
+    /// genesis chain (empty `prior_hash`, message 0). Without this the stale
+    /// cursors would still expect the purged history's last
+    /// `prior_envelope_hash`, raising an [`SimplexAdapterError::EnvelopeChainGap`]
+    /// on the first recv after a re-pair (or chaining a new send onto a
+    /// no-longer-persisted prior).
+    fn forget_chain_state(&self, peer: &[u8; PUBLIC_KEY_LEN]) -> Result<(), SimplexAdapterError> {
+        self.send_chains
+            .lock()
+            .map_err(|_| poisoned_chain_error())?
+            .remove(peer);
+        self.recv_chains
+            .lock()
+            .map_err(|_| poisoned_chain_error())?
+            .remove(peer);
+        Ok(())
     }
 }
 
@@ -1039,6 +1120,108 @@ mod tests {
             .unwrap();
         assert_eq!(hist.len(), 1);
         assert_eq!(hist[0].payload, b"real");
+    }
+
+    #[tokio::test]
+    async fn purge_conversation_deletes_both_directions_and_tears_down() {
+        // The deeper delete-purge (D0031): purging alice's conversation with bob
+        // wipes BOTH directed MESSAGES chains from alice's store AND tears down
+        // the SimpleX-side connection — while bob's own store is untouched (the
+        // purge is local to the deleting party).
+        let wire = MockSidecarTransport::new();
+        let alice = make_party_1to1([5u8; 32], wire.clone());
+        let bob = make_party_1to1([6u8; 32], wire.clone());
+        let conn = ConnectionId("c".to_string());
+
+        // A two-way exchange, so alice's store holds an outgoing AND an incoming.
+        alice
+            .adapter
+            .send(&conn, &bob.operational_pubkey, b"a1")
+            .await
+            .unwrap();
+        bob.adapter.recv_learning_sender(&conn).await.unwrap();
+        bob.adapter
+            .send(&conn, &alice.operational_pubkey, b"b1")
+            .await
+            .unwrap();
+        alice
+            .adapter
+            .recv(&conn, &bob.operational_pubkey, &bob.device_vk)
+            .await
+            .unwrap();
+        assert_eq!(
+            alice
+                .adapter
+                .load_message_history(&bob.operational_pubkey)
+                .unwrap()
+                .len(),
+            2,
+            "precondition: alice sees both directions"
+        );
+
+        alice
+            .adapter
+            .purge_conversation(&conn, &bob.operational_pubkey)
+            .await
+            .unwrap();
+
+        assert!(
+            alice
+                .adapter
+                .load_message_history(&bob.operational_pubkey)
+                .unwrap()
+                .is_empty(),
+            "alice's history with bob must be gone after the purge"
+        );
+        // The SimpleX-side teardown reached the transport (best-effort half).
+        assert_eq!(wire.deleted_connections(), vec![conn.clone()]);
+        // Bob's store is untouched — the purge only wipes the deleting side.
+        assert_eq!(
+            bob.adapter
+                .load_message_history(&alice.operational_pubkey)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn purge_conversation_resets_send_chain_to_genesis() {
+        // After a purge, the in-memory chain cursor is dropped AND no MESSAGES
+        // remain to rehydrate from, so a fresh send to the same peer restarts at
+        // the genesis chain (message number 0) — what a clean re-pair needs.
+        let wire = MockSidecarTransport::new();
+        let alice = make_party_1to1([7u8; 32], wire.clone());
+        let bob = make_party_1to1([8u8; 32], wire.clone());
+        let conn = ConnectionId("c".to_string());
+
+        alice
+            .adapter
+            .send(&conn, &bob.operational_pubkey, b"m0")
+            .await
+            .unwrap();
+        let before = alice
+            .adapter
+            .send(&conn, &bob.operational_pubkey, b"m1")
+            .await
+            .unwrap();
+        assert_eq!(before.next_message_number, 2, "chain advanced to 2");
+
+        alice
+            .adapter
+            .purge_conversation(&conn, &bob.operational_pubkey)
+            .await
+            .unwrap();
+
+        let after = alice
+            .adapter
+            .send(&conn, &bob.operational_pubkey, b"again")
+            .await
+            .unwrap();
+        assert_eq!(
+            after.next_message_number, 1,
+            "after purge the send chain restarts at message 0 (genesis)"
+        );
     }
 
     #[tokio::test]

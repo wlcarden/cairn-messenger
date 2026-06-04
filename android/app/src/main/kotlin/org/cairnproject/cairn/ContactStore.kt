@@ -102,9 +102,11 @@ class ContactStore(private val storage: StorageHandle) {
     }
 
     /**
-     * Remove a contact so it no longer lists. The conversation's message
-     * history records (in the MESSAGES category) are left in place — a deeper
-     * purge (history + the libsimplex connection) is a follow-on.
+     * Remove a contact row so it no longer lists. This drops ONLY the CONTACTS
+     * record; the conversation's MESSAGES history + the libsimplex connection
+     * are purged separately by [MessagingViewModel.deleteCurrentContact] via the
+     * messaging handle's deeper delete-purge (D0031), which holds the connId +
+     * peer key needed for the teardown.
      */
     fun delete(peerKeyHex: String) {
         runCatching { storage.delete(CATEGORY, peerKeyHex.fromHex()) }

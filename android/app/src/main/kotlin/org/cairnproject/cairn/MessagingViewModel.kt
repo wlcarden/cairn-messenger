@@ -587,11 +587,39 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         (_ui.value as? UiState.Conversation)?.let { _ui.value = it.copy(displayName = clean) }
     }
 
-    /** Delete the open conversation's contact, then return to the contact list. */
+    /**
+     * Delete the open conversation's contact, then return to the contact list.
+     *
+     * The deeper delete-purge (D0031): beyond removing the contact row, this
+     * cancels the contact's background receive loop, then purges the local
+     * MESSAGES history AND tears down the SimpleX connection/queue via the
+     * messaging handle — off the Main thread, best-effort (a teardown failure
+     * still leaves the history purged + the contact gone). The local history
+     * purge is the authoritative privacy action; the queue teardown is silent
+     * (the peer is not notified).
+     */
     fun deleteCurrentContact() {
         val peerHex = peerKeyRaw?.toHex() ?: return
+        val peer = peerKeyRaw
+        val s = session
+        // The connId to tear down: the saved contact's (preferred) else the open
+        // conversation's. Captured BEFORE backToContacts() nulls peerKeyRaw.
+        val connId = runCatching { contacts?.get(peerHex)?.connId }.getOrNull() ?: connectionId
+        // Stop the background recv loop on this connection — it is being torn down.
+        connId?.let { recvJobs.remove(it)?.cancel() }
+        // Purge local history + tear down the SimpleX queue off the Main thread
+        // (the teardown is a network command); best-effort. The captured locals
+        // outlive backToContacts()'s state reset.
+        if (s != null && peer != null && connId != null) {
+            viewModelScope.launch {
+                runCatching {
+                    withContext(Dispatchers.IO) { s.handle.purgeConversation(connId, peer) }
+                }.onFailure { Log.w(TAG, "purge on delete failed: ${it.message}") }
+            }
+        }
+        // Remove the contact row + leave the conversation immediately.
         runCatching { contacts?.delete(peerHex) }
-        Log.i(TAG, "contact $peerHex deleted")
+        Log.i(TAG, "contact $peerHex deleted (history+connection purge requested)")
         backToContacts()
     }
 

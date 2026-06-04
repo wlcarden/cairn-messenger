@@ -185,6 +185,30 @@ pub(crate) fn cmd_receive_file(file_id: i64) -> String {
     format!("/freceive {file_id}")
 }
 
+/// `/_delete @<contactId> full notify=off` — delete a direct contact: tear
+/// down its SMP queue + SimpleX-side conversation entirely (`ApiDeleteChat`
+/// with `full` mode), the queue-teardown half of Cairn's deeper delete-purge
+/// (D0031). The Cairn-owned plaintext `MESSAGES` history is purged separately +
+/// authoritatively by the adapter (D0026 §3.2); this drops the SimpleX layer's
+/// own connection + chat record.
+///
+/// `notify=off` makes the deletion **silent**: the peer is NOT told they were
+/// removed. That is the privacy default for Cairn (D0031) — removing a contact
+/// must not emit a network signal to them. The `@` prefix is the
+/// direct-contact `ChatRef` (`ChatType::Direct`), the same ref shape
+/// [`cmd_send_file`] addresses; `contact_id` is the [`crate::adapter::ConnectionId`]
+/// string the sidecar assigned at pairing.
+///
+/// Reference-derived from the simploxide-api-types 0.9.0 `ApiDeleteChat` /
+/// `ChatDeleteMode::Full` renderings (`/_delete <chatRef> full[ notify=off]`);
+/// like every command here, live-daemon wire fidelity is the integration-tests
+/// gate (D0026 §12), not a unit-test claim — so the adapter treats a teardown
+/// failure as non-fatal (best-effort), the local history purge being the
+/// authoritative privacy action.
+pub(crate) fn cmd_delete_contact(contact_id: &str) -> String {
+    format!("/_delete @{contact_id} full notify=off")
+}
+
 /// `/network socks=<addr> socks-mode=always host-mode=public` — route the
 /// controller's outbound SMP/XFTP traffic through the bundled-Tor SOCKS proxy
 /// (D0020 §2.2), reaching each relay's CLEARNET address via a Tor exit rather
@@ -492,6 +516,10 @@ mod tests {
             "/_connect 1 simplex:/invitation#abc"
         );
         assert_eq!(cmd_receive_file(42), "/freceive 42");
+        // Deeper delete-purge (D0031): full mode tears down the queue + the
+        // SimpleX-side conversation; notify=off keeps the deletion silent (the
+        // peer is not signalled). `@<id>` is the direct-contact ChatRef.
+        assert_eq!(cmd_delete_contact("7"), "/_delete @7 full notify=off");
         // SOCKS/Tor routing (D0020 §2.2): clearnet-via-Tor host mode so the
         // relay's public address is reached through a Tor exit (not its .onion).
         assert_eq!(

@@ -132,6 +132,17 @@ pub trait SidecarTransport: Sync {
         &self,
         conn: &ConnectionId,
     ) -> impl Future<Output = Result<Vec<u8>, SimplexAdapterError>> + Send;
+
+    /// Tear down the SMP queue + SimpleX-side conversation for `conn` — the
+    /// queue-teardown half of the deeper delete-purge (D0031), invoked when a
+    /// contact is deleted. Best-effort from the caller's view: the adapter
+    /// purges its own `MESSAGES` history FIRST + authoritatively, then calls
+    /// this; a transport failure here leaves a lingering queue (a retriable
+    /// resource leak) but never un-deletes the local history.
+    fn delete_connection(
+        &self,
+        conn: &ConnectionId,
+    ) -> impl Future<Output = Result<(), SimplexAdapterError>> + Send;
 }
 
 // ===================================================================
@@ -709,6 +720,26 @@ pub(crate) mod flow {
         .await
     }
 
+    /// Delete the contact/connection `conn_id` — its SMP queue + SimpleX-side
+    /// conversation — via `ApiDeleteChat` (`/_delete @<id> full notify=off`,
+    /// D0031). Unlike send/recv there is NO follow-up event to await: the
+    /// command's own reply is the only signal, and [`command`] already maps a
+    /// daemon-side error reply to [`SimplexAdapterError::SidecarProtocol`]. The
+    /// caller (the adapter's `purge_conversation`) treats any error as
+    /// non-fatal — the local `MESSAGES` purge is the authoritative privacy
+    /// action, this is best-effort queue cleanup.
+    pub(crate) async fn delete_connection<C: RawChannel>(
+        conn: &Conn<C>,
+        conn_id: &ConnectionId,
+    ) -> Result<(), SimplexAdapterError> {
+        log::info!(
+            "cairn-smp: delete_connection tearing down conn={}",
+            conn_id.0
+        );
+        let _ = command(&conn.chan, protocol::cmd_delete_contact(&conn_id.0)).await?;
+        Ok(())
+    }
+
     /// Read ONE event from the shared stream and route it into `demux` so the
     /// single background drainer serves the recv path (incoming offers/
     /// completions), concurrent send-completion awaits, AND establishment
@@ -1081,6 +1112,11 @@ mod wscore {
             // owns the file read.
             flow::recv_envelope(c, conn).await
         }
+
+        async fn delete_connection(&self, conn: &ConnectionId) -> Result<(), SimplexAdapterError> {
+            let c = self.conn().await?;
+            flow::delete_connection(c, conn).await
+        }
     }
 }
 
@@ -1346,6 +1382,11 @@ mod ffi {
             // routed bytes, so it no longer needs the base path.
             flow::recv_envelope(c, conn).await
         }
+
+        async fn delete_connection(&self, conn: &ConnectionId) -> Result<(), SimplexAdapterError> {
+            let c = self.conn().await?;
+            flow::delete_connection(c, conn).await
+        }
     }
 }
 
@@ -1368,6 +1409,10 @@ struct MockWire {
     queues: HashMap<ConnectionId, VecDeque<Vec<u8>>>,
     /// Next mock connection id.
     next_conn: u64,
+    /// Connections torn down via [`SidecarTransport::delete_connection`], in
+    /// call order — lets a test assert the deeper-purge teardown reached the
+    /// transport (D0031).
+    deleted: Vec<ConnectionId>,
 }
 
 /// An in-memory [`SidecarTransport`] for hermetic tests. Cloning shares the
@@ -1384,6 +1429,16 @@ impl MockSidecarTransport {
     /// A fresh mock with an empty wire.
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    /// The connections torn down via [`SidecarTransport::delete_connection`],
+    /// in call order — used by the adapter's purge tests to assert the
+    /// SimpleX-side teardown was invoked (D0031).
+    pub(crate) fn deleted_connections(&self) -> Vec<ConnectionId> {
+        self.wire
+            .lock()
+            .map(|w| w.deleted.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -1436,6 +1491,19 @@ impl SidecarTransport for MockSidecarTransport {
         let msg = wire.queues.get_mut(conn).and_then(VecDeque::pop_front);
         drop(wire);
         msg.ok_or(SimplexAdapterError::ConnectionNotFound)
+    }
+
+    async fn delete_connection(&self, conn: &ConnectionId) -> Result<(), SimplexAdapterError> {
+        let mut wire = self
+            .wire
+            .lock()
+            .map_err(|_| SimplexAdapterError::SidecarUnavailable)?;
+        // Drop any buffered envelopes for the torn-down connection + record the
+        // teardown so a test can assert it reached the transport (D0031).
+        wire.queues.remove(conn);
+        wire.deleted.push(conn.clone());
+        drop(wire);
+        Ok(())
     }
 }
 
@@ -1729,6 +1797,26 @@ mod demux_tests {
             sent.as_slice(),
             ["/network socks=127.0.0.1:9050 socks-mode=always host-mode=public"]
         );
+    }
+
+    #[tokio::test]
+    async fn delete_connection_issues_delete_command() {
+        // flow::delete_connection (D0031) issues exactly one `/_delete` for the
+        // contact ref, in `full notify=off` mode (queue + conversation teardown,
+        // silent to the peer), and tolerates the cmdOk reply.
+        let dir = std::env::temp_dir().join(format!("cairn-del-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let chan = ScriptChannel {
+            events: AsyncMutex::new(VecDeque::new()),
+            sent: AsyncMutex::new(Vec::new()),
+        };
+        let (conn, chan) = conn_with_drainer(chan, dir.clone());
+        flow::delete_connection(&conn, &ConnectionId("42".to_string()))
+            .await
+            .unwrap();
+        let sent: Vec<String> = chan.sent.lock().await.clone();
+        assert_eq!(sent.as_slice(), ["/_delete @42 full notify=off"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
