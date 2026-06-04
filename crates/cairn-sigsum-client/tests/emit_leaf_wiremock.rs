@@ -93,6 +93,7 @@ fn make_signed_op() -> (SignedTrustGraphOp, SigningKey) {
         1_700_000_000,
         vec![],
         vec![],
+        cairn_trust_graph::Strength::InPerson,
     );
     let signed = SignedTrustGraphOp::sign(op, &device_sk).unwrap();
     (signed, op_identity_sk)

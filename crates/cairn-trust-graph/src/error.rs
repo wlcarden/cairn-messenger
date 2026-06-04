@@ -46,6 +46,13 @@ pub enum TrustGraphError {
         /// The raw integer value observed.
         value: i64,
     },
+    /// The `strength` field (D0006 §4 key 9) carried a value not in the
+    /// v1 enumeration (1..=3).
+    #[error("trust-graph attestation strength {value} is not a v1 strength level")]
+    UnknownStrength {
+        /// The raw integer value observed.
+        value: i64,
+    },
     /// A type-required field is missing for the decoded operation
     /// variant (e.g. `revoked_as_of` missing for a `CompromiseRevoke`).
     #[error("trust-graph op missing type-required field for variant {variant}")]
@@ -63,6 +70,14 @@ pub enum TrustGraphError {
     /// the no-error-oracle discipline (D0006 / D0018 §1.4).
     #[error("trust-graph op signature verification failed")]
     SignatureVerifyFailed,
+    /// An external (hardware) signer failed to produce the device-key
+    /// signature when minting an op via
+    /// [`crate::SignedTrustGraphOp::sign_external`] — e.g. the Android
+    /// `StrongBox` key is unavailable or the user cancelled biometric
+    /// auth (D0035 §4). Carries no detail per the no-error-oracle
+    /// discipline (D0018 §4.2).
+    #[error("external signer failed to produce the device-key signature")]
+    ExternalSignerFailed,
     /// The capability token's subject pubkey did not match the
     /// device pubkey extracted from the operation envelope verifier
     /// flow.

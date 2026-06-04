@@ -262,6 +262,7 @@ mod tests {
             timestamp,
             vec![],
             vec![],
+            crate::Strength::InPerson,
         );
         SignedTrustGraphOp::sign(op, device_sk).unwrap()
     }
@@ -440,6 +441,7 @@ mod tests {
             1_700_000_000,
             vec![],
             vec![],
+            crate::Strength::InPerson,
         );
         let signed = SignedTrustGraphOp::sign(op, &device_sk).unwrap();
 

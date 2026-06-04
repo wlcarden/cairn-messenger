@@ -210,6 +210,7 @@ mod tests {
             1_700_000_000,
             vec![],
             vec![],
+            cairn_trust_graph::Strength::InPerson,
         );
         let signed = SignedTrustGraphOp::sign(op, &device_sk).unwrap();
 
@@ -266,6 +267,7 @@ mod tests {
             1_700_000_000,
             vec![0xAA; 32], // non-empty prior_hash at genesis
             vec![],
+            cairn_trust_graph::Strength::InPerson,
         );
         let signed = SignedTrustGraphOp::sign(op, &device_sk).unwrap();
         let ops = vec![signed];

@@ -232,6 +232,7 @@ mod tests {
             1_700_000_000,
             vec![],
             vec![],
+            cairn_trust_graph::Strength::InPerson,
         );
         let op_bytes = SignedTrustGraphOp::sign(op, &device_sk)
             .unwrap()

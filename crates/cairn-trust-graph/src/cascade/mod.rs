@@ -257,8 +257,10 @@ mod tests {
         let alice = vk(&mut rng);
         let bob = vk(&mut rng);
         let charlie = vk(&mut rng);
-        let attest_1 = TrustGraphOp::new_attest(alice, bob, 100, vec![], vec![]);
-        let attest_2 = TrustGraphOp::new_attest(bob, charlie, 200, vec![], vec![]);
+        let attest_1 =
+            TrustGraphOp::new_attest(alice, bob, 100, vec![], vec![], crate::Strength::InPerson);
+        let attest_2 =
+            TrustGraphOp::new_attest(bob, charlie, 200, vec![], vec![], crate::Strength::InPerson);
         let statuses = compute_quarantine_state(&[&attest_1, &attest_2]);
         assert_eq!(statuses.len(), 2);
         assert_eq!(statuses[0], QuarantineStatus::Active);
@@ -285,7 +287,8 @@ mod tests {
         let alice = vk(&mut rng);
         let bob = vk(&mut rng);
         let charlie = vk(&mut rng);
-        let attest_bob_charlie = TrustGraphOp::new_attest(bob, charlie, 200, vec![], vec![]);
+        let attest_bob_charlie =
+            TrustGraphOp::new_attest(bob, charlie, 200, vec![], vec![], crate::Strength::InPerson);
         let revoke_bob = TrustGraphOp::new_compromise_revoke(alice, bob, 300, vec![], vec![], 150);
         let statuses = compute_quarantine_state(&[&attest_bob_charlie, &revoke_bob]);
         match statuses[0] {
@@ -311,7 +314,8 @@ mod tests {
         let alice = vk(&mut rng);
         let bob = vk(&mut rng);
         let charlie = vk(&mut rng);
-        let attest_bob_charlie = TrustGraphOp::new_attest(bob, charlie, 100, vec![], vec![]);
+        let attest_bob_charlie =
+            TrustGraphOp::new_attest(bob, charlie, 100, vec![], vec![], crate::Strength::InPerson);
         let revoke_bob = TrustGraphOp::new_compromise_revoke(alice, bob, 300, vec![], vec![], 150);
         let statuses = compute_quarantine_state(&[&attest_bob_charlie, &revoke_bob]);
         match statuses[0] {
@@ -334,7 +338,8 @@ mod tests {
         let alice = vk(&mut rng);
         let bob = vk(&mut rng);
         let charlie = vk(&mut rng);
-        let attest = TrustGraphOp::new_attest(bob, charlie, 150, vec![], vec![]);
+        let attest =
+            TrustGraphOp::new_attest(bob, charlie, 150, vec![], vec![], crate::Strength::InPerson);
         let revoke = TrustGraphOp::new_compromise_revoke(alice, bob, 300, vec![], vec![], 150);
         let statuses = compute_quarantine_state(&[&attest, &revoke]);
         assert!(matches!(
@@ -352,7 +357,8 @@ mod tests {
         let alice = vk(&mut rng);
         let bob = vk(&mut rng);
         let charlie = vk(&mut rng);
-        let attest = TrustGraphOp::new_attest(bob, charlie, 200, vec![], vec![]);
+        let attest =
+            TrustGraphOp::new_attest(bob, charlie, 200, vec![], vec![], crate::Strength::InPerson);
         let withdraw = TrustGraphOp::new_withdraw_revoke(alice, bob, 150, vec![], vec![]);
         let statuses = compute_quarantine_state(&[&attest, &withdraw]);
         match statuses[0] {
@@ -375,7 +381,8 @@ mod tests {
         let alice = vk(&mut rng);
         let bob = vk(&mut rng);
         let charlie = vk(&mut rng);
-        let attest = TrustGraphOp::new_attest(bob, charlie, 100, vec![], vec![]);
+        let attest =
+            TrustGraphOp::new_attest(bob, charlie, 100, vec![], vec![], crate::Strength::InPerson);
         let withdraw = TrustGraphOp::new_withdraw_revoke(alice, bob, 150, vec![], vec![]);
         let statuses = compute_quarantine_state(&[&attest, &withdraw]);
         assert_eq!(statuses[0], QuarantineStatus::Active);
@@ -393,7 +400,8 @@ mod tests {
         let bob = vk(&mut rng);
         let charlie = vk(&mut rng);
         let dave = vk(&mut rng);
-        let attest = TrustGraphOp::new_attest(bob, charlie, 200, vec![], vec![]);
+        let attest =
+            TrustGraphOp::new_attest(bob, charlie, 200, vec![], vec![], crate::Strength::InPerson);
         let withdraw = TrustGraphOp::new_withdraw_revoke(alice, bob, 150, vec![], vec![]);
         let compromise = TrustGraphOp::new_compromise_revoke(dave, bob, 300, vec![], vec![], 100);
         let statuses = compute_quarantine_state(&[&attest, &withdraw, &compromise]);
@@ -411,7 +419,8 @@ mod tests {
         let alice = vk(&mut rng);
         let bob = vk(&mut rng);
         let dave = vk(&mut rng);
-        let attest = TrustGraphOp::new_attest(alice, bob, 200, vec![], vec![]);
+        let attest =
+            TrustGraphOp::new_attest(alice, bob, 200, vec![], vec![], crate::Strength::InPerson);
         let revoke = TrustGraphOp::new_compromise_revoke(dave, bob, 300, vec![], vec![], 150);
         let statuses = compute_quarantine_state(&[&attest, &revoke]);
         assert_eq!(statuses[0], QuarantineStatus::Active);
@@ -427,8 +436,15 @@ mod tests {
         let alice = vk(&mut rng);
         let bob = vk(&mut rng);
         let charlie = vk(&mut rng);
-        let re_attest =
-            TrustGraphOp::new_re_attest(bob, charlie, 200, vec![], vec![], b"prior-rev".to_vec());
+        let re_attest = TrustGraphOp::new_re_attest(
+            bob,
+            charlie,
+            200,
+            vec![],
+            vec![],
+            b"prior-rev".to_vec(),
+            crate::Strength::InPerson,
+        );
         let revoke = TrustGraphOp::new_compromise_revoke(alice, bob, 300, vec![], vec![], 150);
         let statuses = compute_quarantine_state(&[&re_attest, &revoke]);
         assert!(matches!(
@@ -484,7 +500,7 @@ mod proptests {
             let alice = SigningKey::generate(&mut rng).verifying_key();
             let bob = SigningKey::generate(&mut rng).verifying_key();
             let charlie = SigningKey::generate(&mut rng).verifying_key();
-            let attest = TrustGraphOp::new_attest(bob, charlie, attest_timestamp, vec![], vec![]);
+            let attest = TrustGraphOp::new_attest(bob, charlie, attest_timestamp, vec![], vec![], crate::Strength::InPerson);
             let revoke = TrustGraphOp::new_compromise_revoke(
                 alice, bob, attest_timestamp.saturating_add(1000), vec![], vec![], revoked_as_of,
             );
@@ -512,8 +528,8 @@ mod proptests {
 
             let pre_t = revoked_as_of.saturating_sub(delta);
             let post_t = revoked_as_of.saturating_add(delta);
-            let attest_pre = TrustGraphOp::new_attest(bob, charlie, pre_t, vec![], vec![]);
-            let attest_post = TrustGraphOp::new_attest(bob, charlie, post_t, vec![], vec![]);
+            let attest_pre = TrustGraphOp::new_attest(bob, charlie, pre_t, vec![], vec![], crate::Strength::InPerson);
+            let attest_post = TrustGraphOp::new_attest(bob, charlie, post_t, vec![], vec![], crate::Strength::InPerson);
 
             let pre_status = compute_quarantine_state(&[&attest_pre, &revoke])[0];
             let post_status = compute_quarantine_state(&[&attest_post, &revoke])[0];
@@ -542,7 +558,7 @@ mod proptests {
             let unrelated_subject = SigningKey::generate(&mut rng).verifying_key();
             // Revoke is about `unrelated_subject`, not Alice — so
             // Alice→Charlie attestation should stay Active.
-            let attest = TrustGraphOp::new_attest(alice, charlie, attest_timestamp, vec![], vec![]);
+            let attest = TrustGraphOp::new_attest(alice, charlie, attest_timestamp, vec![], vec![], crate::Strength::InPerson);
             let unrelated_revoke = TrustGraphOp::new_compromise_revoke(
                 dave, unrelated_subject, 999_999, vec![], vec![], 500_000,
             );

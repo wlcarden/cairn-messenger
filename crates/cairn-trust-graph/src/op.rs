@@ -29,6 +29,9 @@ const KEY_ISSUER_CERT_HASH: i64 = 6;
 const KEY_REVOKED_AS_OF: i64 = 7;
 /// Canonical-CBOR map key for `prior_revocation_ref` (`ReAttest` only).
 const KEY_PRIOR_REVOCATION_REF: i64 = 8;
+/// Canonical-CBOR map key for `strength` (attestation op-types only —
+/// `Attest` / `ReAttest`). D0006 §4 field 9, activated per D0035 §3.
+const KEY_STRENGTH: i64 = 9;
 
 /// Trust-graph operation type discriminator per D0006 §2.
 ///
@@ -96,6 +99,58 @@ impl OpType {
     }
 }
 
+/// Attestation strength per D0006 §4 (field 9) — the verification
+/// provenance of an `Attest` / `ReAttest` operation.
+///
+/// Encoded as a canonical-CBOR `uint` (integer in the range 1..=3),
+/// present **only** for attestation op-types (`null` for revocations,
+/// per D0006 §4). Activated per D0035 §3: it is the durable, signed
+/// record of *how* a key was verified, replacing the Android shell's
+/// transient local `verified` boolean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Strength {
+    /// The subject's key was confirmed face-to-face (e.g. a QR
+    /// safety-number scan in person). The strongest provenance.
+    InPerson,
+    /// The subject's key was confirmed over a separate channel the
+    /// adversary is assumed not to control jointly with the primary
+    /// channel (e.g. reading the safety number aloud over a video
+    /// call).
+    ChannelVerified,
+    /// The subject's key is asserted from first contact (TOFU) with no
+    /// out-of-band check. The weakest provenance; renders as
+    /// unverified.
+    Asserted,
+}
+
+impl Strength {
+    /// Numeric encoding per D0006 §4 field 9.
+    #[must_use]
+    pub const fn as_i64(self) -> i64 {
+        match self {
+            Self::InPerson => 1,
+            Self::ChannelVerified => 2,
+            Self::Asserted => 3,
+        }
+    }
+
+    /// Decode from the wire-format integer value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TrustGraphError::UnknownStrength`] if `value` is not in
+    /// the v1 enumeration (1..=3).
+    pub const fn from_i64(value: i64) -> Result<Self, TrustGraphError> {
+        match value {
+            1 => Ok(Self::InPerson),
+            2 => Ok(Self::ChannelVerified),
+            3 => Ok(Self::Asserted),
+            _ => Err(TrustGraphError::UnknownStrength { value }),
+        }
+    }
+}
+
 /// A trust-graph operation per D0006 §2.
 ///
 /// Construct via the variant-specific helpers
@@ -131,10 +186,14 @@ pub struct TrustGraphOp {
     /// For [`OpType::ReAttest`]: reference (hash) of the revocation
     /// op being healed. Must be present iff `op_type == ReAttest`.
     pub prior_revocation_ref: Option<Vec<u8>>,
+    /// Attestation strength (D0006 §4 field 9). Present iff the op is an
+    /// attestation type (`Attest` / `ReAttest`); `None` for revocations.
+    pub strength: Option<Strength>,
 }
 
 impl TrustGraphOp {
-    /// Construct an `Attest` operation.
+    /// Construct an `Attest` operation. `strength` records how the
+    /// subject's key was verified (D0006 §4 field 9 / D0035 §3).
     #[must_use]
     pub const fn new_attest(
         issuer: VerifyingKey,
@@ -142,6 +201,7 @@ impl TrustGraphOp {
         timestamp: u64,
         prior_hash: Vec<u8>,
         issuer_cert_hash: Vec<u8>,
+        strength: Strength,
     ) -> Self {
         Self {
             op_type: OpType::Attest,
@@ -152,6 +212,7 @@ impl TrustGraphOp {
             issuer_cert_hash,
             revoked_as_of: None,
             prior_revocation_ref: None,
+            strength: Some(strength),
         }
     }
 
@@ -173,6 +234,7 @@ impl TrustGraphOp {
             issuer_cert_hash,
             revoked_as_of: None,
             prior_revocation_ref: None,
+            strength: None,
         }
     }
 
@@ -197,11 +259,14 @@ impl TrustGraphOp {
             issuer_cert_hash,
             revoked_as_of: Some(revoked_as_of),
             prior_revocation_ref: None,
+            strength: None,
         }
     }
 
     /// Construct a `ReAttest` operation. `prior_revocation_ref` is
-    /// the reference (hash) of the revocation op being healed.
+    /// the reference (hash) of the revocation op being healed;
+    /// `strength` records how the re-verification was performed (D0006
+    /// §2 requires fresh verification for a post-compromise re-attest).
     #[must_use]
     pub const fn new_re_attest(
         issuer: VerifyingKey,
@@ -210,6 +275,7 @@ impl TrustGraphOp {
         prior_hash: Vec<u8>,
         issuer_cert_hash: Vec<u8>,
         prior_revocation_ref: Vec<u8>,
+        strength: Strength,
     ) -> Self {
         Self {
             op_type: OpType::ReAttest,
@@ -220,6 +286,7 @@ impl TrustGraphOp {
             issuer_cert_hash,
             revoked_as_of: None,
             prior_revocation_ref: Some(prior_revocation_ref),
+            strength: Some(strength),
         }
     }
 
@@ -271,6 +338,10 @@ impl TrustGraphOp {
             ));
         }
 
+        if let Some(strength) = self.strength {
+            entries.push((Value::Int(KEY_STRENGTH), Value::Int(strength.as_i64())));
+        }
+
         Value::Map(entries).encode().map_err(TrustGraphError::from)
     }
 
@@ -313,6 +384,7 @@ impl TrustGraphOp {
         let mut issuer_cert_hash: Option<Vec<u8>> = None;
         let mut revoked_as_of: Option<u64> = None;
         let mut prior_revocation_ref: Option<Vec<u8>> = None;
+        let mut strength_int: Option<i64> = None;
 
         for (key, value) in entries {
             let CiboriumValue::Integer(key_int_ciborium) = key else {
@@ -379,6 +451,15 @@ impl TrustGraphOp {
                     };
                     prior_revocation_ref = Some(b);
                 }
+                KEY_STRENGTH => {
+                    let CiboriumValue::Integer(v) = value else {
+                        return Err(TrustGraphError::MalformedPayload);
+                    };
+                    strength_int = Some(
+                        i64::try_from(i128::from(v))
+                            .map_err(|_| TrustGraphError::IntegerOutOfRange)?,
+                    );
+                }
                 // Unknown keys forward-compat per D0006 §6.4.
                 _ => {}
             }
@@ -392,30 +473,45 @@ impl TrustGraphOp {
         let prior_hash = prior_hash.ok_or(TrustGraphError::MalformedPayload)?;
         let issuer_cert_hash = issuer_cert_hash.ok_or(TrustGraphError::MalformedPayload)?;
 
-        // Variant-required field presence check.
+        // Decode strength (D0006 §4 key 9); an out-of-range value is a
+        // hard decode error (UnknownStrength), mirroring op_type.
+        let strength = strength_int.map(Strength::from_i64).transpose()?;
+
+        // Variant-required field presence check (D0006 §2 / §4).
+        // `strength` is present iff the op is an attestation type
+        // (Attest / ReAttest) per D0035 §3; this splits the formerly
+        // shared Attest|WithdrawRevoke arm.
         match op_type {
+            OpType::Attest => {
+                if revoked_as_of.is_some() || prior_revocation_ref.is_some() {
+                    return Err(TrustGraphError::MalformedPayload);
+                }
+                if strength.is_none() {
+                    return Err(TrustGraphError::MissingRequiredField { variant: "Attest" });
+                }
+            }
+            OpType::WithdrawRevoke => {
+                if revoked_as_of.is_some() || prior_revocation_ref.is_some() || strength.is_some() {
+                    return Err(TrustGraphError::MalformedPayload);
+                }
+            }
             OpType::CompromiseRevoke => {
                 if revoked_as_of.is_none() {
                     return Err(TrustGraphError::MissingRequiredField {
                         variant: "CompromiseRevoke",
                     });
                 }
-                if prior_revocation_ref.is_some() {
+                if prior_revocation_ref.is_some() || strength.is_some() {
                     return Err(TrustGraphError::MalformedPayload);
                 }
             }
             OpType::ReAttest => {
-                if prior_revocation_ref.is_none() {
+                if prior_revocation_ref.is_none() || strength.is_none() {
                     return Err(TrustGraphError::MissingRequiredField {
                         variant: "ReAttest",
                     });
                 }
                 if revoked_as_of.is_some() {
-                    return Err(TrustGraphError::MalformedPayload);
-                }
-            }
-            OpType::Attest | OpType::WithdrawRevoke => {
-                if revoked_as_of.is_some() || prior_revocation_ref.is_some() {
                     return Err(TrustGraphError::MalformedPayload);
                 }
             }
@@ -456,6 +552,138 @@ impl TrustGraphOp {
             issuer_cert_hash,
             revoked_as_of,
             prior_revocation_ref,
+            strength,
         })
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "tests unwrap known-good fixtures; an unwrap panic IS the failure signal"
+)]
+mod tests {
+    use super::*;
+    use cairn_crypto::ed25519::SigningKey;
+    use rand_core::OsRng;
+
+    fn two_keys() -> (VerifyingKey, VerifyingKey) {
+        let mut rng = OsRng;
+        (
+            SigningKey::generate(&mut rng).verifying_key(),
+            SigningKey::generate(&mut rng).verifying_key(),
+        )
+    }
+
+    #[test]
+    fn strength_as_i64_round_trips() {
+        for s in [
+            Strength::InPerson,
+            Strength::ChannelVerified,
+            Strength::Asserted,
+        ] {
+            assert_eq!(Strength::from_i64(s.as_i64()).unwrap(), s);
+        }
+    }
+
+    #[test]
+    fn unknown_strength_value_rejected() {
+        assert!(matches!(
+            Strength::from_i64(4),
+            Err(TrustGraphError::UnknownStrength { value: 4 })
+        ));
+        assert!(matches!(
+            Strength::from_i64(0),
+            Err(TrustGraphError::UnknownStrength { value: 0 })
+        ));
+    }
+
+    #[test]
+    fn attest_strength_survives_canonical_round_trip() {
+        let (issuer, subject) = two_keys();
+        for s in [
+            Strength::InPerson,
+            Strength::ChannelVerified,
+            Strength::Asserted,
+        ] {
+            let op = TrustGraphOp::new_attest(issuer, subject, 1_700_000_000, vec![], vec![], s);
+            let bytes = op.to_canonical_cbor().unwrap();
+            let decoded = TrustGraphOp::from_canonical_cbor(&bytes).unwrap();
+            assert_eq!(decoded.strength, Some(s));
+            assert_eq!(decoded, op);
+        }
+    }
+
+    #[test]
+    fn re_attest_carries_strength() {
+        let (issuer, subject) = two_keys();
+        let op = TrustGraphOp::new_re_attest(
+            issuer,
+            subject,
+            1_700_000_000,
+            vec![],
+            vec![],
+            b"rev-ref".to_vec(),
+            Strength::ChannelVerified,
+        );
+        let decoded = TrustGraphOp::from_canonical_cbor(&op.to_canonical_cbor().unwrap()).unwrap();
+        assert_eq!(decoded.strength, Some(Strength::ChannelVerified));
+    }
+
+    #[test]
+    fn revocations_carry_no_strength() {
+        let (issuer, subject) = two_keys();
+        let withdraw =
+            TrustGraphOp::new_withdraw_revoke(issuer, subject, 1_700_000_000, vec![], vec![]);
+        assert_eq!(withdraw.strength, None);
+        let decoded =
+            TrustGraphOp::from_canonical_cbor(&withdraw.to_canonical_cbor().unwrap()).unwrap();
+        assert_eq!(decoded.strength, None);
+    }
+
+    #[test]
+    fn attestation_without_strength_rejected_on_decode() {
+        // Build an Attest with strength = None directly (the constructor
+        // forbids this) and confirm decode rejects it per D0035 §3.
+        let (issuer, subject) = two_keys();
+        let bad = TrustGraphOp {
+            op_type: OpType::Attest,
+            issuer,
+            subject,
+            timestamp: 1_700_000_000,
+            prior_hash: vec![],
+            issuer_cert_hash: vec![],
+            revoked_as_of: None,
+            prior_revocation_ref: None,
+            strength: None,
+        };
+        let bytes = bad.to_canonical_cbor().unwrap();
+        assert!(matches!(
+            TrustGraphOp::from_canonical_cbor(&bytes),
+            Err(TrustGraphError::MissingRequiredField { variant: "Attest" })
+        ));
+    }
+
+    #[test]
+    fn revocation_with_strength_rejected_on_decode() {
+        // A WithdrawRevoke that illegally carries a strength must be
+        // rejected — strength is attestation-only (D0006 §4).
+        let (issuer, subject) = two_keys();
+        let bad = TrustGraphOp {
+            op_type: OpType::WithdrawRevoke,
+            issuer,
+            subject,
+            timestamp: 1_700_000_000,
+            prior_hash: vec![],
+            issuer_cert_hash: vec![],
+            revoked_as_of: None,
+            prior_revocation_ref: None,
+            strength: Some(Strength::InPerson),
+        };
+        let bytes = bad.to_canonical_cbor().unwrap();
+        assert!(matches!(
+            TrustGraphOp::from_canonical_cbor(&bytes),
+            Err(TrustGraphError::MalformedPayload)
+        ));
     }
 }

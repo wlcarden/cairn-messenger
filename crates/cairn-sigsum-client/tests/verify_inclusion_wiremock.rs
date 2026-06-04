@@ -205,6 +205,7 @@ fn make_op_and_submitter() -> (SignedTrustGraphOp, SigningKey) {
         1_700_000_000,
         vec![],
         vec![],
+        cairn_trust_graph::Strength::InPerson,
     );
     let signed = SignedTrustGraphOp::sign(op, &device_sk).unwrap();
     let submitter_sk = SigningKey::generate(&mut rng);

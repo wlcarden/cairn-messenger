@@ -55,6 +55,7 @@
 //! | 6 | `issuer_cert_hash` | bstr | Hash of the capability token authorizing this op |
 //! | 7 | `revoked_as_of` | uint | (`CompromiseRevoke` only) Unix-seconds prior-to-this-time considered compromised |
 //! | 8 | `prior_revocation_ref` | bstr | (`ReAttest` only) reference to the revocation being healed |
+//! | 9 | `strength` | uint | (attestation op-types only) 1=in-person, 2=channel-verified, 3=asserted (D0006 §4 / D0035 §3) |
 //!
 //! All fields are canonical-CBOR-encoded per D0018 §2.3 so two
 //! implementations sign byte-identical inputs.
@@ -63,13 +64,15 @@ pub mod cascade;
 pub mod chain;
 pub mod error;
 pub mod op;
+pub mod self_token;
 pub mod signed;
 pub mod store;
 
 pub use cascade::{QuarantineStatus, compute_quarantine_state};
 pub use chain::verify_chain_links;
 pub use error::TrustGraphError;
-pub use op::{OpType, TrustGraphOp};
+pub use op::{OpType, Strength, TrustGraphOp};
+pub use self_token::{self_issued_scopes, self_issued_token};
 pub use signed::{DOMAIN_TAG, PRIOR_HASH_LEN, SignedTrustGraphOp};
 pub use store::{
     RECORD_ID_LEN as STORE_RECORD_ID_LEN, StoreError, TRUST_GRAPH_SCHEMA_VERSION, delete_op,

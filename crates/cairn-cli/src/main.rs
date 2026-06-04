@@ -1246,6 +1246,9 @@ fn cmd_trust_op(
             timestamp,
             prior_hash_bytes,
             cert_hash_bytes,
+            // A CLI-minted op witnesses no in-person ceremony, so the
+            // honest default strength is `asserted` (D0006 §4 / D0035 §3).
+            cairn_trust_graph::Strength::Asserted,
         ),
         OpType::WithdrawRevoke => TrustGraphOp::new_withdraw_revoke(
             issuer_vk,
@@ -1284,6 +1287,7 @@ fn cmd_trust_op(
                 prior_hash_bytes,
                 cert_hash_bytes,
                 prior_ref_bytes,
+                cairn_trust_graph::Strength::Asserted,
             )
         }
         // `OpType` is `#[non_exhaustive]`; unreachable here because the

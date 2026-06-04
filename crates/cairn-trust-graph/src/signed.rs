@@ -77,6 +77,45 @@ impl SignedTrustGraphOp {
         Ok(Self { envelope, op })
     }
 
+    /// Sign `op` with an **external** device signer (Android `StrongBox`,
+    /// where the private key never enters the process — D0020 §3.4 /
+    /// D0035 §4).
+    ///
+    /// `sign_fn` receives the `COSE_Sign1` signing input (the RFC 9052
+    /// §4.4 `Sig_structure` bytes, already bound to the trust-graph
+    /// [`DOMAIN_TAG`]) and must return the 64-byte Ed25519 signature the
+    /// device key produces over **exactly** those bytes. This is the
+    /// hardware counterpart to [`Self::sign`]; because `finalize` is
+    /// documented as `signing_input` + an in-process sign + assemble, the
+    /// two paths produce **byte-identical** envelopes for the same key
+    /// (regression-tested by `external_signer_path_matches_in_process`).
+    ///
+    /// # Errors
+    ///
+    /// - [`TrustGraphError::CanonicalEncode`] / `IntegerOutOfRange` from
+    ///   encoding the op payload or building the signing input.
+    /// - Whatever `sign_fn` returns on signer failure (callers map their
+    ///   hardware error to [`TrustGraphError::ExternalSignerFailed`]).
+    /// - [`TrustGraphError::CanonicalEncode`] if the returned signature is
+    ///   not 64 bytes (the envelope assembler rejects it).
+    pub fn sign_external<F>(op: TrustGraphOp, sign_fn: F) -> Result<Self, TrustGraphError>
+    where
+        F: FnOnce(&[u8]) -> Result<Vec<u8>, TrustGraphError>,
+    {
+        let payload = op.to_canonical_cbor()?;
+        let builder = Sign1Builder::new()
+            .with_payload(payload)
+            .with_external_aad(DOMAIN_TAG.to_vec());
+        // signing_input() borrows; finalize_with_signature() consumes —
+        // the builder MUST NOT be mutated between the two (it is not).
+        let signing_input = builder.signing_input().map_err(TrustGraphError::from)?;
+        let signature = sign_fn(&signing_input)?;
+        let envelope = builder
+            .finalize_with_signature(&signature)
+            .map_err(TrustGraphError::from)?;
+        Ok(Self { envelope, op })
+    }
+
     /// Encode the envelope back to bytes (canonical form). If
     /// `tagged`, wraps with CBOR tag 18.
     ///
@@ -260,6 +299,7 @@ mod tests {
             1_700_000_000,
             vec![],
             b"token-hash-placeholder".to_vec(),
+            crate::Strength::InPerson,
         );
         let signed = SignedTrustGraphOp::sign(op.clone(), &device_sk).unwrap();
         let bytes = signed.encode(false).unwrap();
@@ -331,6 +371,7 @@ mod tests {
             vec![],
             vec![],
             b"prior-revocation-hash".to_vec(),
+            crate::Strength::InPerson,
         );
         let signed = SignedTrustGraphOp::sign(op, &device_sk).unwrap();
         let bytes = signed.encode(false).unwrap();
@@ -387,6 +428,7 @@ mod tests {
             1_700_000_000,
             vec![],
             vec![],
+            crate::Strength::InPerson,
         );
         let signed = SignedTrustGraphOp::sign(op, &device_sk).unwrap();
         let bytes = signed.encode(false).unwrap();
@@ -411,6 +453,7 @@ mod tests {
             1_700_000_000,
             vec![],
             vec![],
+            crate::Strength::InPerson,
         );
         let signed = SignedTrustGraphOp::sign(op, &device_d2_sk).unwrap();
         let bytes = signed.encode(false).unwrap();
@@ -440,6 +483,7 @@ mod tests {
             1_700_000_000,
             vec![],
             vec![],
+            crate::Strength::InPerson,
         );
         let signed = SignedTrustGraphOp::sign(op, &device_sk).unwrap();
         let bytes = signed.encode(false).unwrap();
@@ -536,6 +580,7 @@ mod tests {
             (Value::Int(4), Value::Int(1_700_000_000)),
             (Value::Int(5), Value::Bytes(vec![])),
             (Value::Int(6), Value::Bytes(vec![])),
+            (Value::Int(9), Value::Int(1)), // strength = in-person (required for Attest)
             (Value::Int(99), Value::Text("future-field".to_string())),
         ]);
         let bytes = map.encode().unwrap();
@@ -548,10 +593,70 @@ mod tests {
         let mut rng = OsRng;
         let issuer = SigningKey::generate(&mut rng).verifying_key();
         let subject = SigningKey::generate(&mut rng).verifying_key();
-        let op = TrustGraphOp::new_attest(issuer, subject, 1_700_000_000, vec![], vec![]);
+        let op = TrustGraphOp::new_attest(
+            issuer,
+            subject,
+            1_700_000_000,
+            vec![],
+            vec![],
+            crate::Strength::InPerson,
+        );
         let a = op.to_canonical_cbor().unwrap();
         let b = op.to_canonical_cbor().unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn external_signer_path_matches_in_process() {
+        // The external-signer path (the StrongBox counterpart, D0035 §4)
+        // must produce a byte-identical envelope to the in-process sign
+        // for the same key. Here the "external" signer is the same key
+        // invoked out-of-line via the closure.
+        let mut rng = OsRng;
+        let device_sk = SigningKey::generate(&mut rng);
+        let issuer = SigningKey::generate(&mut rng).verifying_key();
+        let subject = SigningKey::generate(&mut rng).verifying_key();
+        let op = TrustGraphOp::new_attest(
+            issuer,
+            subject,
+            1_700_000_000,
+            vec![],
+            vec![],
+            crate::Strength::InPerson,
+        );
+
+        let in_process = SignedTrustGraphOp::sign(op.clone(), &device_sk).unwrap();
+        let external = SignedTrustGraphOp::sign_external(op, |tbs| {
+            device_sk
+                .sign(tbs)
+                .map(|sig| sig.to_bytes().to_vec())
+                .map_err(|_| TrustGraphError::ExternalSignerFailed)
+        })
+        .unwrap();
+
+        assert_eq!(
+            in_process.encode(false).unwrap(),
+            external.encode(false).unwrap()
+        );
+    }
+
+    #[test]
+    fn external_signer_failure_propagates() {
+        let mut rng = OsRng;
+        let issuer = SigningKey::generate(&mut rng).verifying_key();
+        let subject = SigningKey::generate(&mut rng).verifying_key();
+        let op = TrustGraphOp::new_attest(
+            issuer,
+            subject,
+            1_700_000_000,
+            vec![],
+            vec![],
+            crate::Strength::Asserted,
+        );
+        let result = SignedTrustGraphOp::sign_external(op, |_tbs| {
+            Err(TrustGraphError::ExternalSignerFailed)
+        });
+        assert!(matches!(result, Err(TrustGraphError::ExternalSignerFailed)));
     }
 
     #[test]
@@ -596,6 +701,7 @@ mod tests {
             1_700_000_000,
             vec![],
             vec![],
+            crate::Strength::InPerson,
         );
         let signed = SignedTrustGraphOp::sign(op, &device_sk).unwrap();
 
@@ -625,6 +731,7 @@ mod tests {
             1_700_000_000,
             vec![],
             vec![],
+            crate::Strength::InPerson,
         );
         let signed = SignedTrustGraphOp::sign(op, &device_sk).unwrap();
         let bytes = signed.encode(false).unwrap();

@@ -189,6 +189,7 @@ mod tests {
                 timestamp,
                 prior_hash.clone(),
                 cert_hash.to_vec(),
+                crate::Strength::InPerson,
             );
             let signed = SignedTrustGraphOp::sign(op, &device_sk).unwrap();
             prior_hash = signed.prior_hash_bytes().to_vec();
@@ -246,6 +247,7 @@ mod tests {
             1_700_000_000,
             vec![0u8; 32], // wrong: genesis should have empty prior_hash
             vec![],
+            crate::Strength::InPerson,
         );
         let signed_genesis = SignedTrustGraphOp::sign(bogus_genesis, &device_sk).unwrap();
         let result = verify_chain_links(
@@ -273,6 +275,7 @@ mod tests {
             1_700_000_000,
             vec![],
             vec![],
+            crate::Strength::InPerson,
         );
         let signed_genesis = SignedTrustGraphOp::sign(op_genesis, &device_sk).unwrap();
 
@@ -282,6 +285,7 @@ mod tests {
             1_700_000_100,
             vec![0xAAu8; 32], // wrong: not SHA-256 of signed_genesis.signature
             vec![],
+            crate::Strength::InPerson,
         );
         let signed_followup = SignedTrustGraphOp::sign(op_followup, &device_sk).unwrap();
 
@@ -308,6 +312,7 @@ mod tests {
             1_700_000_000,
             vec![],
             vec![],
+            crate::Strength::InPerson,
         );
         let signed_genesis = SignedTrustGraphOp::sign(op_genesis, &device_sk).unwrap();
 
@@ -318,6 +323,7 @@ mod tests {
             1_700_000_100,
             signed_genesis.prior_hash_bytes().to_vec(),
             vec![],
+            crate::Strength::InPerson,
         );
         let signed_followup = SignedTrustGraphOp::sign(op_followup, &device_sk).unwrap();
 
@@ -342,6 +348,7 @@ mod tests {
             1_700_000_500,
             vec![],
             vec![],
+            crate::Strength::InPerson,
         );
         let signed_genesis = SignedTrustGraphOp::sign(op_genesis, &device_sk).unwrap();
 
@@ -352,6 +359,7 @@ mod tests {
             1_700_000_000, // earlier than genesis
             signed_genesis.prior_hash_bytes().to_vec(),
             vec![],
+            crate::Strength::InPerson,
         );
         let signed_followup = SignedTrustGraphOp::sign(op_followup, &device_sk).unwrap();
 

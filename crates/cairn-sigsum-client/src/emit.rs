@@ -237,6 +237,7 @@ mod tests {
             timestamp,
             vec![],
             vec![],
+            cairn_trust_graph::Strength::InPerson,
         );
         let signed = SignedTrustGraphOp::sign(op, &device_sk).unwrap();
         (signed, op_identity_sk)
