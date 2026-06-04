@@ -3,10 +3,19 @@
 
 package org.cairnproject.cairn
 
+import android.os.Build
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyInfo
+import android.security.keystore.KeyProperties
+import android.security.keystore.StrongBoxUnavailableException
 import android.util.Log
 import java.io.File
+import java.security.KeyStore
 import java.security.SecureRandom
+import javax.crypto.KeyGenerator
 import javax.crypto.Mac
+import javax.crypto.SecretKey
+import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.SecretKeySpec
 import uniffi.cairn_uniffi.AttestationCertificate
 import uniffi.cairn_uniffi.CairnFfiException
@@ -88,13 +97,100 @@ class DemoSigner(private val identity: CairnIdentity) : HardwareKeySigner {
 }
 
 /**
- * Fixed [StrongBoxKeyMaterial] for the demo storage KEK (32 bytes). The real
- * material is StrongBox-attested + device-bound (D0022 §2.2); here it is a
- * constant so the encrypted store opens deterministically for the demo.
+ * Real, device-bound [StrongBoxKeyMaterial] for the storage KEK (D0022 §2.2 /
+ * D0020 §3.4) — replaces the former demo constant. The 32 bytes are an HMAC
+ * computed by a NON-EXPORTABLE AndroidKeyStore HMAC-SHA256 key that lives in
+ * StrongBox (the Pixel's Titan M2) when available, else the TEE; the key never
+ * leaves secure hardware, so the material can only be reproduced on THIS device.
+ *
+ * `cairn-storage` mixes this into every category DEK
+ * (`DEK = HKDF(KEK ‖ material, salt, info=category)`, key_provider.rs), so the
+ * third at-rest factor — device — is now real: a seized encrypted store can't be
+ * decrypted off-device even with the correct passphrase (the StrongBox HMAC is
+ * not reproducible elsewhere). The key requires NO user authentication (the
+ * passphrase is the user factor; this is the device factor), so a normal unlock
+ * needs no biometric prompt, and the material is STABLE across launches (the key
+ * persists) — a changing material would make the store undecryptable.
+ *
+ * **Migration:** a store created under the old demo constant (`0x2A…`) cannot be
+ * opened once this is in force (its DEKs differ) — fresh installs only, the same
+ * caveat the at-rest DB encryption carries (D0026 §12).
+ *
+ * **Consequence (by design):** the at-rest data is device-bound — losing the
+ * device (or its StrongBox key) means the local data is unrecoverable even with
+ * the passphrase. That is the intended defense against off-device brute force;
+ * identity recovery (D0005 Shamir) is a separate concern from local at-rest data.
  */
-class DemoKeyMaterial : StrongBoxKeyMaterial {
-    override fun strongboxMaterial(): ByteArray = ByteArray(32) { 0x2A }
+class StrongBoxStorageKeyMaterial : StrongBoxKeyMaterial {
+    @Volatile private var loggedLevel = false
+
+    override fun strongboxMaterial(): ByteArray = try {
+        Mac.getInstance(MAC_ALG).run {
+            init(materialKey())
+            doFinal(MATERIAL_DOMAIN.toByteArray())
+        }
+    } catch (e: Exception) {
+        Log.e(TAG, "storage StrongBox material unavailable", e)
+        throw CairnFfiException.SidecarFailure()
+    }
+
     override fun isUnlocked(): Boolean = true
+
+    /** Load (or first-launch generate) the non-exportable HMAC material key. */
+    private fun materialKey(): SecretKey {
+        val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+        val key = (ks.getKey(KEY_ALIAS, null) as? SecretKey) ?: generateMaterialKey()
+        if (!loggedLevel) {
+            loggedLevel = true
+            Log.i(TAG, "storage material key securityLevel=${securityLevel(key)}")
+        }
+        return key
+    }
+
+    private fun generateMaterialKey(): SecretKey {
+        fun spec(strongBox: Boolean) = KeyGenParameterSpec.Builder(
+            KEY_ALIAS,
+            KeyProperties.PURPOSE_SIGN,
+        )
+            .setKeySize(256)
+            .setDigests(KeyProperties.DIGEST_SHA256)
+            // No user-auth + no unlocked-device-required: this is the DEVICE
+            // factor, gated by the passphrase, not a second presence gate — so a
+            // normal unlock (and the background recv loop) never needs a prompt.
+            .apply { if (strongBox) setIsStrongBoxBacked(true) }
+            .build()
+        val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_HMAC_SHA256, KEYSTORE)
+        return runCatching { gen.init(spec(strongBox = true)); gen.generateKey() }
+            .getOrElse { e ->
+                Log.w(TAG, "storage material key: StrongBox unavailable (${e.message}) — TEE")
+                gen.init(spec(strongBox = false))
+                gen.generateKey()
+            }
+    }
+
+    /** Authoritative secure-hardware level of [key] (StrongBox / TEE / software). */
+    private fun securityLevel(key: SecretKey): String = runCatching {
+        val info = SecretKeyFactory.getInstance(key.algorithm, KEYSTORE)
+            .getKeySpec(key, KeyInfo::class.java) as KeyInfo
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            when (info.securityLevel) {
+                KeyProperties.SECURITY_LEVEL_STRONGBOX -> "StrongBox"
+                KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> "TEE"
+                else -> "level=${info.securityLevel}"
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            if (info.isInsideSecureHardware) "secure-hardware" else "software"
+        }
+    }.getOrDefault("unknown")
+
+    private companion object {
+        const val TAG = "CairnFfi"
+        const val KEYSTORE = "AndroidKeyStore"
+        const val KEY_ALIAS = "cairn-storage-kek-material-v1"
+        const val MAC_ALG = "HmacSHA256"
+        const val MATERIAL_DOMAIN = "cairn-v1-storage-kek-material"
+    }
 }
 
 /** The bundled-Tor SOCKS endpoint the in-process libsimplex routes through. */
@@ -124,12 +220,13 @@ class CairnSession private constructor(
         fun bootstrap(filesDir: File, passphrase: ByteArray): CairnSession {
             val storage = StorageHandle.open(
                 "${filesDir.absolutePath}/store.db",
-                // The user's unlock passphrase → Argon2id KEK (D0022 §2.2). The
-                // StrongBox-attested material (DemoKeyMaterial) is still a demo
-                // constant (a separate hardening) but the SECRET is now real:
-                // the at-rest encryption is keyed by the user, not a constant.
+                // Two real at-rest factors now (D0022 §2.2): the user's unlock
+                // passphrase → Argon2id KEK, mixed with a device-bound StrongBox
+                // HMAC (StrongBoxStorageKeyMaterial) into each category DEK — so a
+                // seized store needs BOTH the passphrase AND this device's
+                // secure hardware (no longer a demo constant).
                 passphrase,
-                DemoKeyMaterial(),
+                StrongBoxStorageKeyMaterial(),
             )
             // The storage layer does NOT verify the passphrase on open (a wrong
             // passphrase yields a wrong KEK that only fails on a sealed read), so
