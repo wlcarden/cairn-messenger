@@ -155,6 +155,21 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
      * open conversation, so messages arrive + notify in the background (C2).
      */
     private val recvJobs = mutableMapOf<String, Job>()
+
+    /**
+     * connIds whose FIRST recv must re-anchor the chain via `recvLearningSender`
+     * instead of strict `recv` (D0031 re-pair fix). Set by the ACCEPTOR on a
+     * fresh pairing: a re-pair after a one-sided delete leaves the two sides'
+     * `prior_envelope_hash` chains desynced, so the first envelope of a new
+     * pairing won't link to the acceptor's (possibly stale) cursor — the
+     * learning path re-anchors it. The inviter already re-anchors via its
+     * standalone `recvLearningSender`; a RESUME (saved contact, not a fresh
+     * pairing) is NOT added, so it keeps the strict steady-state recv (D0026
+     * §2.3 preserved). Concurrent set: read on the loop's Main dispatcher,
+     * written on the pairing coroutine's Main dispatcher.
+     */
+    private val reanchorFirstRecv: MutableSet<String> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
     private var pairingJob: Job? = null
     private var myHex: String = ""
     private val msgIdSeq = AtomicLong(0)
@@ -362,6 +377,12 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 // recvLearningSender learns our key; then go live.
                 s.handle.send(connId, peer, ByteArray(0))
                 Log.i(TAG, "sent hello so the inviter learns our key")
+                // Re-anchor THIS pairing's first inbound (D0031): on a re-pair
+                // after a one-sided delete, the inviter may send from a chain
+                // we don't link to (it reset; we didn't) — the first recv goes
+                // through recvLearningSender to accept + re-anchor, then steady
+                // recv resumes. The inviter side already re-anchors separately.
+                reanchorFirstRecv.add(connId)
                 goLive(connId, peer, firstInbound = null)
             } catch (e: CancellationException) {
                 throw e
@@ -739,7 +760,31 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 // never hang the UI (would ANR). The state updates below stay on
                 // the loop's Main dispatcher, keeping recvJobs + _ui access
                 // Main-confined (no concurrent ensureReceiving races).
-                val r = withContext(Dispatchers.IO) { s.handle.recv(contact.connId, peer, peer) }
+                // The FIRST recv of a fresh acceptor pairing re-anchors the
+                // chain (D0031) via recvLearningSender; everything else is the
+                // strict steady-state recv (the set membership is read on Main,
+                // before the off-Main recv).
+                val reanchor = reanchorFirstRecv.contains(contact.connId)
+                val r = withContext(Dispatchers.IO) {
+                    if (reanchor) {
+                        s.handle.recvLearningSender(contact.connId)
+                    } else {
+                        s.handle.recv(contact.connId, peer, peer)
+                    }
+                }
+                if (reanchor) {
+                    // Bind the re-learned sender to the peer we paired with: a
+                    // re-anchoring recv accepts the FIRST envelope on the new
+                    // connection, so confirm it is genuinely this contact before
+                    // trusting it (TOFU re-pair safety). Only clear the flag on
+                    // success, so a transient recv error keeps re-anchoring.
+                    if (!r.senderOperationalPubkey.contentEquals(peer)) {
+                        Log.e(TAG, "re-anchor: sender != expected peer on ${contact.peerKeyHex.take(12)}")
+                        onPeerKeyMismatch(contact.peerKeyHex)
+                        break
+                    }
+                    reanchorFirstRecv.remove(contact.connId)
+                }
                 failures = 0
                 // A read receipt (D0032): empty payload + readUpTo set. Apply it to
                 // the OPEN conversation's read-status (only when our setting is on —

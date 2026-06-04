@@ -130,6 +130,63 @@ told) is not asserted between two cooperating phones; the validated parts are th
 local purge + the daemon-accepted teardown, consistent with the project's
 integration-test verification boundary for SMP wire behaviour.
 
+## 6. Follow-up (2026-06-04): re-pair-after-one-sided-delete chain re-anchor
+
+§1's `forget_chain_state` reset only the **deleter's** chain to genesis. The
+read-receipts validation surfaced the other half: after a **one-sided** delete (A
+purges B; B does NOT purge A), the two sides' `prior_envelope_hash` chains are
+asymmetric — A is genesis, B stays advanced (its cursor rehydrates from B's
+retained `MESSAGES`, D0026 §3.2). On a re-pair this desyncs **both** directions:
+
+1. B's pairing hello chains from B's stale (advanced) send cursor, so A's
+   `recv_learning_sender` raised `EnvelopeChainGap` → **A never completed the
+   re-pair** (the reported "re-adding a deleted contact silently fails to
+   connect").
+2. After connecting, A's genesis-restarted SENDs (A purged → empty
+   `prior_envelope_hash`) did not link to B's stale steady-state recv chain → the
+   A→B direction would have **silently dropped**.
+
+**Fix — re-anchor the chain, only on the pairing handshake.** The first envelope
+of a (re-)pairing has no prior to link against, so `recv_learning_sender` now
+runs a re-anchoring tail (`finish_recv_reanchor`) that accepts the envelope
+regardless of its `prior_envelope_hash` and anchors the recv chain to it
+(persisting at the receiver's CURRENT position, so the non-deleter **appends** to
+its retained history, never overwrites). Steady-state `recv` keeps the strict
+chain-gap check — so the D0026 §2.3 stolen-key-detection property is **fully
+preserved for the ongoing conversation** (a forger cannot trigger a mid-stream
+re-anchor; re-anchoring only happens on an explicit pairing handshake, after which
+manual key re-verification, D0006 §70, is the human check). The Android shell
+routes **both** sides' first recv of a fresh pairing through the learning path:
+the inviter already does (to learn the acceptor); the acceptor now adds its new
+connId to a `reanchorFirstRecv` set so its first `receiveLoop` recv re-anchors
+(binding the re-learned sender to the expected peer), then resumes strict `recv`.
+A **resume** (saved contact, not a fresh pairing) is never added, so it keeps the
+strict steady-state recv.
+
+**Why not the one-line shared-tail relaxation.** Relaxing the shared `finish_recv`
+to accept a genesis-prior "restart" mid-stream would fix both directions in ~5
+lines, but it would hand a stolen-key forger the exact escape hatch §2.3 closes
+(send a `prior=empty` envelope → masked as a re-pair). Confining the re-anchor to
+the handshake path avoids that.
+
+**Host gates:** `cargo fmt` + clippy `-D warnings` + a new
+`repair_after_one_sided_delete_round_trips_both_directions` test (full two-way
+round-trip after a one-sided purge) alongside the unchanged
+`out_of_chain_envelope_surfaces_chain_gap` (still asserts steady-state `recv`
+rejects an empty-prior orphan — the §2.3 property, now proven preserved) + the
+aarch64 APK build.
+
+**On-device (two Pixel 6 / GrapheneOS over bundled Tor):** the full reported
+repro. A↔B paired and exchanged a message each way (the acceptor's re-anchoring
+first recv is the live-path regression — B received A's message with no gap),
+then A deleted B one-sided (`contacts: 0`). On the **re-pair** (A re-invites, B
+re-accepts while still holding A with advanced chains), A's logcat showed
+`LEARNED` + `CONNECTED` with **no `EnvelopeChainGap`** — the exact failure before
+the fix — and **both directions then flowed**: B received A's genesis-restarted
+send (`RECV len=10`, Direction 2 / the symmetric fix) and A received B's reply
+(`RECV len=10`). Before the fix, A never completed the re-pair (the reported "fails
+to connect"), and even had it connected, A→B would have silently dropped.
+
 ## Cross-references
 
 - [D0026 — cairn-simplex-adapter](D0026-cairn-simplex-adapter.md) — §3.2 the

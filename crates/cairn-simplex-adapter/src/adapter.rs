@@ -434,21 +434,37 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
     /// sender**, learning the sender's operational identity from the envelope
     /// itself (TOFU on first contact, D0026 §12).
     ///
-    /// The inviter-side counterpart to [`Self::recv`]: after sharing a one-time
-    /// invitation, the inviter cannot know the acceptor's key until the first
-    /// envelope arrives. This verifies the `COSE_Sign1` against the key embedded
-    /// in the envelope (the 1:1-demo operational==device key, D0028 — see
-    /// [`verify_envelope_learning_sender`] for the security posture + the
-    /// op≠device safety argument), then runs the same chain-check / persist /
-    /// advance tail keyed on the **learned** sender.
+    /// The pairing-handshake counterpart to [`Self::recv`]: after sharing a
+    /// one-time invitation, the inviter cannot know the acceptor's key until
+    /// the first envelope arrives. This verifies the `COSE_Sign1` against the
+    /// key embedded in the envelope (the 1:1-demo operational==device key,
+    /// D0028 — see [`verify_envelope_learning_sender`] for the security posture
+    /// and the op≠device safety argument), then **re-anchors** the recv chain
+    /// to this envelope keyed on the **learned** sender.
+    ///
+    /// ## Re-anchor, not chain-check (D0031 re-pair fix)
+    ///
+    /// Unlike steady-state [`Self::recv`], this does NOT enforce the
+    /// `prior_envelope_hash` link. The first envelope of a (re-)pairing has no
+    /// prior to link against: on a fresh pairing the receiver's recv chain is
+    /// genesis (nothing to compare), and on a **re-pair after a one-sided
+    /// delete** (D0031) one side reset its chain while the other did not — so
+    /// the handshake envelope legitimately carries a `prior_envelope_hash` that
+    /// does not match the receiver's (stale or genesis) cursor. This path
+    /// anchors the recv chain to whatever this envelope is; steady-state
+    /// [`Self::recv`] keeps the strict chain-gap check, so the D0026 §2.3
+    /// stolen-key-detection property is preserved for the ONGOING conversation
+    /// (a forger cannot trigger a mid-stream re-anchor — re-anchoring only
+    /// happens on an explicit pairing handshake, after which manual key
+    /// verification, D0006 §70, is the human check). The persist position is
+    /// the receiver's current recv-chain number, so the non-deleting side
+    /// APPENDS to its retained history (never overwrites).
     ///
     /// # Errors
     ///
     /// - the transport's error on `recv`.
     /// - [`SimplexAdapterError::EnvelopeSignatureVerifyFailed`] — bad
     ///   signature/AAD, or (always) an op≠device envelope.
-    /// - [`SimplexAdapterError::EnvelopeChainGap`] — the
-    ///   `prior_envelope_hash` did not link to this sender's recv chain.
     /// - [`SimplexAdapterError::Storage`] — persisting failed, or a chain
     ///   mutex was poisoned.
     pub async fn recv_learning_sender(
@@ -458,14 +474,18 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
         let cose = self.transport.recv(conn).await?;
         let envelope = verify_envelope_learning_sender(&cose)?;
         let learned_sender = envelope.sender_operational_pubkey;
-        self.finish_recv(&learned_sender, &envelope, &cose)
+        self.finish_recv_reanchor(&learned_sender, &envelope, &cose)
     }
 
-    /// Shared recv tail (D0026 §3.2): check the `prior_envelope_hash` against
-    /// `sender`'s recv chain, strip padding, persist under the
-    /// `(sender, me, message_number)` record id, and advance the chain. `sender`
-    /// is the expected peer in [`Self::recv`] and the learned peer in
-    /// [`Self::recv_learning_sender`]; the envelope is already verified.
+    /// Steady-state recv tail (D0026 §3.2): enforce the `prior_envelope_hash`
+    /// link against `sender`'s recv chain (the §2.3 gap/substitution detector),
+    /// then persist + advance. The strict path used by [`Self::recv`].
+    ///
+    /// # Errors
+    ///
+    /// [`SimplexAdapterError::EnvelopeChainGap`] if the envelope's
+    /// `prior_envelope_hash` does not link to the last observed envelope;
+    /// otherwise as [`Self::persist_and_advance_recv`].
     fn finish_recv(
         &self,
         sender: &[u8; PUBLIC_KEY_LEN],
@@ -481,7 +501,39 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
                 observed_message_number: message_number,
             });
         }
+        self.persist_and_advance_recv(sender, envelope, cose, message_number)
+    }
 
+    /// Pairing-handshake recv tail (D0031): persist + advance WITHOUT the
+    /// `prior_envelope_hash` link check — re-anchoring the recv chain to this
+    /// envelope. Used ONLY by [`Self::recv_learning_sender`] (the first
+    /// envelope of a (re-)pairing); see that method's "Re-anchor" note for why
+    /// this does not weaken the steady-state §2.3 property.
+    fn finish_recv_reanchor(
+        &self,
+        sender: &[u8; PUBLIC_KEY_LEN],
+        envelope: &MessageEnvelope,
+        cose: &[u8],
+    ) -> Result<ReceivedMessage, SimplexAdapterError> {
+        // Anchor at the receiver's CURRENT recv position (genesis for the side
+        // that purged, or its retained high-water for the side that did not) so
+        // the non-deleting side appends to its history rather than overwriting.
+        let (_expected_prior, message_number) = self.recv_chain_state(sender)?;
+        self.persist_and_advance_recv(sender, envelope, cose, message_number)
+    }
+
+    /// Shared recv tail: strip padding (key 7), persist the verified envelope
+    /// under the `(sender, me, message_number)` record id, and advance the recv
+    /// chain to this envelope's `next_prior_envelope_hash`. The envelope is
+    /// already verified; the chain decision (strict vs. re-anchor) was made by
+    /// the caller.
+    fn persist_and_advance_recv(
+        &self,
+        sender: &[u8; PUBLIC_KEY_LEN],
+        envelope: &MessageEnvelope,
+        cose: &[u8],
+        message_number: u64,
+    ) -> Result<ReceivedMessage, SimplexAdapterError> {
         // Padding is a separate envelope field (D0026 §2.1 key 7); the
         // payload field is already clean.
         let payload = envelope.payload.clone();
@@ -1319,6 +1371,119 @@ mod tests {
             after.next_message_number, 1,
             "after purge the send chain restarts at message 0 (genesis)"
         );
+    }
+
+    #[tokio::test]
+    async fn repair_after_one_sided_delete_round_trips_both_directions() {
+        // The D0031 re-pair desync: A deletes B (purge → A's chains reset to
+        // genesis), B keeps its advanced chains. On re-pair the handshake
+        // envelopes carry priors that don't link to the other side's cursor —
+        // but the pairing path (`recv_learning_sender`) re-anchors, so BOTH
+        // directions flow again. Each side's FIRST recv of a (re-)pairing goes
+        // through `recv_learning_sender` (the inviter to learn; the acceptor to
+        // re-anchor); steady-state `recv` stays strict (proven separately by
+        // `out_of_chain_envelope_surfaces_chain_gap`).
+        let wire = MockSidecarTransport::new();
+        let alice = make_party_1to1([20u8; 32], wire.clone());
+        let bob = make_party_1to1([21u8; 32], wire.clone());
+        let conn1 = ConnectionId("pair-1".to_string());
+
+        // --- Original pairing: advance BOTH chains a few steps. ---
+        // B (acceptor) sends the hello; A (inviter) learns + anchors.
+        bob.adapter
+            .send(&conn1, &alice.operational_pubkey, b"")
+            .await
+            .unwrap();
+        let learned = alice.adapter.recv_learning_sender(&conn1).await.unwrap();
+        assert_eq!(learned.sender_operational_pubkey, bob.operational_pubkey);
+        // A → B content; B's first recv (acceptor) re-anchors on it.
+        alice
+            .adapter
+            .send(&conn1, &bob.operational_pubkey, b"a-hi")
+            .await
+            .unwrap();
+        let b0 = bob.adapter.recv_learning_sender(&conn1).await.unwrap();
+        assert_eq!(b0.payload, b"a-hi");
+        // Steady both ways → advance the chains further.
+        bob.adapter
+            .send(&conn1, &alice.operational_pubkey, b"b-yo")
+            .await
+            .unwrap();
+        alice
+            .adapter
+            .recv(&conn1, &bob.operational_pubkey, &bob.device_vk)
+            .await
+            .unwrap();
+        alice
+            .adapter
+            .send(&conn1, &bob.operational_pubkey, b"a-2")
+            .await
+            .unwrap();
+        bob.adapter
+            .recv(&conn1, &alice.operational_pubkey, &alice.device_vk)
+            .await
+            .unwrap();
+
+        // --- A deletes B (one-sided): purge resets A's chains + history;
+        //     B keeps everything (its chains stay advanced via rehydration). ---
+        alice
+            .adapter
+            .purge_conversation(&conn1, &bob.operational_pubkey)
+            .await
+            .unwrap();
+
+        // --- RE-PAIR on a fresh connection. A = inviter (genesis), B = acceptor
+        //     (still advanced). ---
+        let conn2 = ConnectionId("pair-2".to_string());
+        // B's hello chains from B's STALE (advanced) send cursor → non-empty prior.
+        bob.adapter
+            .send(&conn2, &alice.operational_pubkey, b"")
+            .await
+            .unwrap();
+        // Direction 1 (the reported bug): BEFORE the fix this raised
+        // EnvelopeChainGap (A's genesis recv ≠ B's stale prior). The re-anchor
+        // accepts it.
+        let relearned = alice.adapter.recv_learning_sender(&conn2).await.unwrap();
+        assert_eq!(
+            relearned.sender_operational_pubkey, bob.operational_pubkey,
+            "A re-learns B on re-pair (no chain gap)"
+        );
+
+        // Direction 2 (the symmetric residual): A sends genesis content
+        // (purged). B's first recv of the re-pair re-anchors (acceptor learning
+        // path) — accepts despite B's stale recv chain. BEFORE the fix B's
+        // steady recv raised EnvelopeChainGap here → A→B silently dropped.
+        alice
+            .adapter
+            .send(&conn2, &bob.operational_pubkey, b"again-1")
+            .await
+            .unwrap();
+        let b_re = bob.adapter.recv_learning_sender(&conn2).await.unwrap();
+        assert_eq!(b_re.payload, b"again-1", "A→B flows after re-anchor");
+
+        // --- Steady-state both ways now LINK strictly (the re-anchor set both
+        //     sides' cursors); no further re-anchor needed. ---
+        alice
+            .adapter
+            .send(&conn2, &bob.operational_pubkey, b"again-2")
+            .await
+            .unwrap();
+        let b_s = bob
+            .adapter
+            .recv(&conn2, &alice.operational_pubkey, &alice.device_vk)
+            .await
+            .unwrap();
+        assert_eq!(b_s.payload, b"again-2", "A→B steady links after re-pair");
+        bob.adapter
+            .send(&conn2, &alice.operational_pubkey, b"b-reply")
+            .await
+            .unwrap();
+        let a_s = alice
+            .adapter
+            .recv(&conn2, &bob.operational_pubkey, &bob.device_vk)
+            .await
+            .unwrap();
+        assert_eq!(a_s.payload, b"b-reply", "B→A steady links after re-pair");
     }
 
     #[tokio::test]
