@@ -16,7 +16,6 @@ import javax.crypto.KeyGenerator
 import javax.crypto.Mac
 import javax.crypto.SecretKey
 import javax.crypto.SecretKeyFactory
-import javax.crypto.spec.SecretKeySpec
 import uniffi.cairn_uniffi.AttestationCertificate
 import uniffi.cairn_uniffi.CairnFfiException
 import uniffi.cairn_uniffi.DemoEd25519Signer
@@ -263,12 +262,12 @@ class CairnSession private constructor(
                 socksProxy = BUNDLED_TOR_SOCKS,
                 // At-rest encryption (D0006 §3.5 / D0022 §2.2): opens the
                 // in-process libsimplex chat DB with SQLCipher (queue secrets +
-                // message metadata AES-encrypted on disk). The key is derived
-                // from the SAME user passphrase as the storage KEK but
-                // DOMAIN-SEPARATED (HMAC, distinct from the Argon2id KEK path) so
-                // the two layers never share a key. NB a DB created under one
-                // passphrase cannot be opened with another (fresh installs only).
-                dbKey = deriveDbKey(passphrase),
+                // message metadata AES-encrypted on disk). The key is a RANDOM
+                // value stored inside cairn-storage (D0030 §2) — readable only
+                // once the passphrase-gated storage is unlocked, but STABLE across
+                // a passphrase change, so change-passphrase re-keys storage alone
+                // and never rekeys this DB (fresh installs only).
+                dbKey = simplexDbKey(storage),
                 maxRetries = 3.toUByte(),
             )
             val handle = SimplexAdapterHandle(storage, signer, keyAlias, publicKeyRaw, config)
@@ -301,22 +300,30 @@ class CairnSession private constructor(
         }
 
         /**
-         * The SQLCipher DB key, DOMAIN-SEPARATED from the storage KEK: HMAC-
-         * SHA256 keyed by the passphrase over a fixed domain tag, hex-encoded
-         * (SQLCipher applies its own PBKDF2 to the result). Ties the DB key to
-         * the user passphrase without reusing the Argon2id storage-KEK path.
+         * The SQLCipher DB key for the in-process libsimplex chat DB — a RANDOM
+         * 32-byte key generated once and STORED inside cairn-storage (D0030 §2),
+         * not derived from the passphrase. Reading it requires the unlocked
+         * storage (so it stays passphrase-gated, transitively), but its value is
+         * STABLE across a passphrase change — so `change_passphrase` re-keys
+         * cairn-storage alone and never touches the libsimplex DB. Hex-encoded
+         * (SQLCipher applies its own PBKDF2). First launch mints + persists it.
          */
-        private fun deriveDbKey(passphrase: ByteArray): String {
-            val mac = Mac.getInstance("HmacSHA256")
-            mac.init(SecretKeySpec(passphrase, "HmacSHA256"))
-            return mac.doFinal(SIMPLEX_DB_KEY_DOMAIN.toByteArray()).toHex()
+        private fun simplexDbKey(storage: StorageHandle): String {
+            runCatching { storage.get(IDENTITY_CATEGORY, SIMPLEX_DB_KEY_ID) }
+                .getOrNull()
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { return it.toHex() }
+            val fresh = ByteArray(32).also { SecureRandom().nextBytes(it) }
+            storage.put(IDENTITY_CATEGORY, SIMPLEX_DB_KEY_ID, fresh)
+            Log.i(TAG, "simplex db key: minted + stored (first launch)")
+            return fresh.toHex()
         }
 
         /** Must match `cairn_storage::categories::IDENTITY`. */
         private const val IDENTITY_CATEGORY = "identity"
 
-        /** Domain tag separating the SQLCipher DB key from the storage KEK. */
-        private const val SIMPLEX_DB_KEY_DOMAIN = "cairn-v1-simplex-db-key"
+        /** Record id (in IDENTITY) of the stored random SimpleX DB key (D0030 §2). */
+        private val SIMPLEX_DB_KEY_ID = "cairn-simplex-db-key-v1".toByteArray()
 
         /** Record id + value of the encrypted passphrase canary. */
         private val UNLOCK_CANARY_ID = "cairn-unlock-canary-v1".toByteArray()
