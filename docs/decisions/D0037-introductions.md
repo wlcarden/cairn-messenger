@@ -239,6 +239,15 @@ queue). No partial state leaves a dangling connection.
   provenance. (This also closes the 3-party display gap D0036 left open.)
   Reconcile D0036 §7 / D0034 §7 / design brief §5.2 / status.
 
+  The **protocol semantics are already proven in process** by
+  `three_party_introduction_yields_symmetric_provenance` (cairn-uniffi): three
+  in-memory identities run the full Request → Response → Deliver exchange through
+  the real codec + `build_vouch` / `ingest_vouch`, the invitation relays intact,
+  and both endpoints' `provenance_for` returns Bob. This is transport-free (so it
+  is immune to the libsimplex-on-emulator recv crash, D0026), which narrows
+  Stage 3 to validating the **real SimpleX/Tor transport integration** of an
+  already-proven protocol — not the protocol itself.
+
 Each stage is its own host-gate-clean, propose-commit unit.
 
 ## Reversibility

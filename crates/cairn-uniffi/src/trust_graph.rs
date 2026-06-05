@@ -1150,4 +1150,127 @@ mod tests {
         assert!(alice_handle.ingest_vouch(bob_key, vouch).is_err());
         assert!(alice_handle.provenance_for(carol_key).unwrap().is_empty());
     }
+
+    // === Introductions (D0037 §3) ===
+
+    /// The full three-party introduction at the trust-graph + codec layer — the
+    /// protocol semantics Stage 3 validates on three devices, proven here in
+    /// process (no transport, so it is immune to the libsimplex-on-emulator recv
+    /// crash). Bob introduces Carol ↔ Alice; BOTH new contacts end up carrying
+    /// Bob's named provenance, closing D0036's 3-party display gap (D0037 §7).
+    ///
+    /// Exercises the real surface end to end: `build_vouch` both directions, the
+    /// real `encode`/`decode_introduction_message` for all three message kinds
+    /// with the vouch nested inside, the invitation relayed intact through the
+    /// broker, `ingest_vouch` both directions, and `provenance_for`.
+    #[test]
+    fn three_party_introduction_yields_symmetric_provenance() {
+        let mut rng = OsRng;
+        let bob = SigningKey::generate(&mut rng);
+        let bob_key = bob.verifying_key().to_bytes().to_vec();
+        let carol = SigningKey::generate(&mut rng);
+        let carol_key = carol.verifying_key().to_bytes().to_vec();
+        let alice = SigningKey::generate(&mut rng);
+        let alice_key = alice.verifying_key().to_bytes().to_vec();
+        let bob_handle = handle_for(bob);
+        let carol_handle = handle_for(carol);
+        let alice_handle = handle_for(alice);
+
+        // Bob is the introducer: he has verified BOTH parties in person. (Carol
+        // is the minter — the introducer's open contact; Alice the acceptor.)
+        bob_handle
+            .attest(carol_key.clone(), StrengthFfi::InPerson, 1_700_000_000)
+            .unwrap();
+        bob_handle
+            .attest(alice_key.clone(), StrengthFfi::InPerson, 1_700_000_050)
+            .unwrap();
+
+        // 1. Bob → Carol: a Request naming Alice, carrying Bob's vouch FOR Alice.
+        let request = IntroductionMessageRecord {
+            kind: IntroductionKindFfi::Request,
+            peer_key: alice_key.clone(),
+            vouch: Some(bob_handle.build_vouch(alice_key.clone()).unwrap()),
+            invite_uri: None,
+            accept: None,
+        };
+        let request_bytes = encode_introduction_message(request).unwrap();
+
+        // 2. Carol decodes + (on approve) ingests Bob's vouch for Alice.
+        let carol_in = decode_introduction_message(request_bytes).unwrap();
+        assert_eq!(carol_in.kind, IntroductionKindFfi::Request);
+        assert_eq!(carol_in.peer_key, alice_key);
+        carol_handle
+            .ingest_vouch(bob_key.clone(), carol_in.vouch.unwrap())
+            .unwrap();
+        let carol_prov = carol_handle.provenance_for(alice_key.clone()).unwrap();
+        assert_eq!(carol_prov.len(), 1, "Carol sees Alice via Bob");
+        assert_eq!(carol_prov[0].voucher_operational_pubkey, bob_key);
+        assert_eq!(carol_prov[0].strength, StrengthFfi::InPerson);
+
+        // 2b. Carol mints a one-time invitation (opaque at this layer) + accepts.
+        let response = IntroductionMessageRecord {
+            kind: IntroductionKindFfi::Response,
+            peer_key: alice_key,
+            vouch: None,
+            invite_uri: Some("cairn://invite?k=carol&u=opaque".to_string()),
+            accept: Some(true),
+        };
+        let response_bytes = encode_introduction_message(response).unwrap();
+
+        // 3. Bob decodes Carol's Response + relays a Deliver to Alice, carrying
+        //    his vouch FOR Carol + Carol's invitation (relayed intact).
+        let bob_in = decode_introduction_message(response_bytes).unwrap();
+        assert_eq!(bob_in.kind, IntroductionKindFfi::Response);
+        assert_eq!(bob_in.accept, Some(true));
+        let deliver = IntroductionMessageRecord {
+            kind: IntroductionKindFfi::Deliver,
+            peer_key: carol_key.clone(),
+            vouch: Some(bob_handle.build_vouch(carol_key.clone()).unwrap()),
+            invite_uri: bob_in.invite_uri,
+            accept: None,
+        };
+        let deliver_bytes = encode_introduction_message(deliver).unwrap();
+
+        // 4. Alice decodes + (on connect) ingests Bob's vouch for Carol.
+        let alice_in = decode_introduction_message(deliver_bytes).unwrap();
+        assert_eq!(alice_in.kind, IntroductionKindFfi::Deliver);
+        assert_eq!(alice_in.peer_key, carol_key);
+        assert_eq!(
+            alice_in.invite_uri.as_deref(),
+            Some("cairn://invite?k=carol&u=opaque"),
+            "the minter's invitation relays through the broker intact",
+        );
+        alice_handle
+            .ingest_vouch(bob_key.clone(), alice_in.vouch.unwrap())
+            .unwrap();
+        let alice_prov = alice_handle.provenance_for(carol_key).unwrap();
+        assert_eq!(alice_prov.len(), 1, "Alice sees Carol via Bob");
+        assert_eq!(alice_prov[0].voucher_operational_pubkey, bob_key);
+        assert_eq!(alice_prov[0].strength, StrengthFfi::InPerson);
+
+        // The symmetric outcome (D0037 §7): BOTH new contacts carry the SAME
+        // introducer's named provenance — the 3-party display gap D0036 left.
+        assert_eq!(
+            carol_prov[0].voucher_operational_pubkey,
+            alice_prov[0].voucher_operational_pubkey,
+        );
+    }
+
+    /// A declining Response carries `accept = false` and NO invitation — the
+    /// introducee refused (D0037 §2: consent is the point), so the broker has
+    /// nothing to relay. The encode/decode preserves the refusal faithfully.
+    #[test]
+    fn declined_introduction_response_carries_no_invitation() {
+        let response = IntroductionMessageRecord {
+            kind: IntroductionKindFfi::Response,
+            peer_key: vec![3u8; PUBLIC_KEY_LEN],
+            vouch: None,
+            invite_uri: None,
+            accept: Some(false),
+        };
+        let decoded =
+            decode_introduction_message(encode_introduction_message(response).unwrap()).unwrap();
+        assert_eq!(decoded.accept, Some(false));
+        assert!(decoded.invite_uri.is_none());
+    }
 }
