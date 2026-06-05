@@ -36,7 +36,7 @@
 //! provisioning.
 
 use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, VerifyingKey};
-use cairn_recovery::{SignedMasterAttestation, reconstruct_and_attest};
+use cairn_recovery::{SignedMasterAttestation, decode_card, reconstruct_and_attest};
 use cairn_shamir::{COMMITMENT_LEN, Commitment, SECRET_LEN, Share};
 use zeroize::Zeroizing;
 
@@ -58,6 +58,27 @@ pub struct ShareRecord {
     pub value: Vec<u8>,
 }
 
+/// A decoded paper recovery card (D0038 §4): one Shamir share plus its recovery
+/// header.
+///
+/// The header (the commitment + master pubkey) makes each card self-contained, so
+/// the shell collects a threshold of cards and calls
+/// [`recovery_reconstruct_and_attest`] without a separate header step.
+///
+/// All values are PUBLIC-or-transportable: the share is below the reconstruction
+/// threshold (reveals nothing about the master seed); the commitment + master
+/// pubkey are public.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+pub struct RecoveryCardRecord {
+    /// The Shamir share this card carries.
+    pub share: ShareRecord,
+    /// The BLAKE3 commit-of-secret the threshold reconstructs against (32 bytes).
+    pub commitment: Vec<u8>,
+    /// The master Ed25519 public key (32 bytes) — the reconstruction verifier.
+    pub master_pubkey: Vec<u8>,
+}
+
 /// Public fields of a verified master attestation (D0027 §2.2) — hop #3
 /// of the identity chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +91,35 @@ pub struct MasterAttestationRecord {
     pub operational_identity: Vec<u8>,
     /// Unix-seconds when the attestation was issued.
     pub timestamp_unix_seconds: u64,
+}
+
+/// Decode a paper recovery-card text (`CAIRN-RECOVERY-…`, D0038 §4) into its
+/// share and recovery header.
+///
+/// The shell scans/types one of these per card, collects a threshold, then calls
+/// [`recovery_reconstruct_and_attest`]. Pure codec — no secret generation, no
+/// RNG; split/provisioning stays a CLI ceremony (D0038 §2).
+///
+/// # Errors
+///
+/// [`CairnFfiError::MalformedData`] for a wrong/absent label, a non-base64 or
+/// wrong-length body, an unknown magic/version, a zero share id, or a checksum
+/// mismatch (a mistyped card).
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+)]
+pub fn recovery_decode_card(card_text: String) -> Result<RecoveryCardRecord, CairnFfiError> {
+    let card = decode_card(&card_text).map_err(CairnFfiError::from)?;
+    Ok(RecoveryCardRecord {
+        share: ShareRecord {
+            id: card.id,
+            value: card.value.to_vec(),
+        },
+        commitment: card.commitment.to_vec(),
+        master_pubkey: card.master.to_vec(),
+    })
 }
 
 /// Reconstruct the master seed from a threshold of shares and attest a
@@ -230,6 +280,57 @@ mod tests {
         assert_eq!(record.master, master_pubkey);
         assert_eq!(record.operational_identity, new_op);
         assert_eq!(record.timestamp_unix_seconds, 1_700_000_000);
+    }
+
+    #[test]
+    fn decode_card_round_trips_and_drives_reconstruction() {
+        use cairn_recovery::{RecoveryCard, encode_card};
+        let (records, commitment, master_pubkey) = split_master();
+
+        // Encode each share as a paper card (the facilitator's CLI form).
+        let cards: Vec<String> = records
+            .iter()
+            .map(|r| {
+                let card = RecoveryCard {
+                    id: r.id,
+                    value: r.value.clone().try_into().unwrap(),
+                    commitment: commitment.clone().try_into().unwrap(),
+                    master: master_pubkey.clone().try_into().unwrap(),
+                };
+                encode_card(&card)
+            })
+            .collect();
+
+        // One card decodes back to its share + header across the FFI.
+        let decoded = recovery_decode_card(cards[0].clone()).unwrap();
+        assert_eq!(decoded.share, records[0]);
+        assert_eq!(decoded.commitment, commitment);
+        assert_eq!(decoded.master_pubkey, master_pubkey);
+
+        // The decoded cards drive the FULL recovery: 3 cards → reconstruct +
+        // attest → verify against the recovered master.
+        let shares: Vec<ShareRecord> = cards[..3]
+            .iter()
+            .map(|c| recovery_decode_card(c.clone()).unwrap().share)
+            .collect();
+        let new_op = SigningKey::generate(&mut OsRng)
+            .verifying_key()
+            .to_bytes()
+            .to_vec();
+        let att =
+            recovery_reconstruct_and_attest(shares, commitment, new_op.clone(), 1_700_000_000)
+                .unwrap();
+        let rec = recovery_verify_master_attestation(att, master_pubkey.clone()).unwrap();
+        assert_eq!(rec.master, master_pubkey);
+        assert_eq!(rec.operational_identity, new_op);
+    }
+
+    #[test]
+    fn decode_card_rejects_garbage() {
+        assert_eq!(
+            recovery_decode_card("not a recovery card".to_string()).unwrap_err(),
+            CairnFfiError::MalformedData
+        );
     }
 
     #[test]

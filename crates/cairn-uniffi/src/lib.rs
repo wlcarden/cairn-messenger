@@ -145,8 +145,8 @@ pub use messaging::{
     MessageSentRecord, ReceivedMessageRecord, SidecarEndpointConfig, SimplexAdapterHandle,
 };
 pub use recovery::{
-    MasterAttestationRecord, ShareRecord, recovery_reconstruct_and_attest,
-    recovery_verify_master_attestation,
+    MasterAttestationRecord, RecoveryCardRecord, ShareRecord, recovery_decode_card,
+    recovery_reconstruct_and_attest, recovery_verify_master_attestation,
 };
 pub use storage::{StorageHandle, StrongBoxKeyMaterial};
 pub use tor::{NetworkStateFfi, TorControlConfig, TorTransportHandle};
