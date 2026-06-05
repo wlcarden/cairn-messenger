@@ -250,6 +250,42 @@ queue). No partial state leaves a dangling connection.
 
 Each stage is its own host-gate-clean, propose-commit unit.
 
+## 11. Adversarial review (2026-06-05)
+
+A six-lens adversarial review (consent bypass, broker/relay abuse, trust/provenance
+integrity, metadata exposure, wire/crypto soundness, state/liveness) with per-finding
+adversarial verification returned **6 confirmed** findings (11 refuted — mostly
+restatements of by-design behaviour the authenticated envelope already covers, e.g.
+the `peer_key`↔vouch-subject binding and CBOR malleability). Disposition:
+
+- **F1 (HIGH, fixed).** The consent gate was UI-only: `handleDriverExtras`
+  (`MainActivity`) drove the introduction approve/connect actuators with no
+  `BuildConfig.DEBUG` guard on an `exported="true"` activity, so a co-installed app
+  or adb could bypass consent and force an ingest + pair. The whole driver surface
+  (which also covers unlock/send/delete/change-passphrase) is now DEBUG-only.
+  Production has no path through it (invites use the paste UI; no deep-link filter).
+- **F2 (low, fixed).** `IntroductionConsentDialog` asserted "X vouches for this
+  person" unconditionally; now gated on a vouch actually being attached.
+- **F5 (low, fixed).** The relay gate (`pendingOutgoingIntroductions`) was consumed
+  before the Deliver shipped; now consumed on a genuine decline or after a
+  successful relay, and kept on transport failure so the introduction is recoverable.
+- **F6 (low, fixed).** The inbound consent queue was unbounded and deduped ignoring
+  the vouch/invite; now capped (`MAX_PENDING_INTRODUCTIONS`) and a same-key re-send
+  replaces the stale entry (a fresh invitation supersedes rather than being shadowed).
+- **F4 (low, fixed).** `approveIntroduction` was an untracked coroutine with an
+  unbounded `recvLearningSender`; now tracked as `pairingJob` (cancellable) with a
+  bounded hello wait (`INTRO_HELLO_TIMEOUT_MS`).
+- **F3 (low, partially fixed; deep fix deferred).** `awaitConnection` pops one
+  global FIFO with no invitation binding, so a concurrent manual pair + introduction
+  approval can cross-bind peers. The mismatch is now a **hard failure** (abort, don't
+  pair the wrong party) instead of "pairing anyway" — the verifier confirmed no
+  provenance forgery results (provenance keys on the signed `op.subject`, not the
+  connection). The deep fix (correlate `await_connection` to the specific
+  invitation at the transport) is a **deferred** transport change tracked for Stage 3
+  / a future unit. **Also deferred:** tearing down an orphaned minted invitation on a
+  never-completed approval needs an FFI `delete_connection` (only `purge_conversation`
+  exists today) — a minor server-side resource leak until then.
+
 ## Reversibility
 
 - **Introducer-initiated** is extensible to requester-initiated additively (one

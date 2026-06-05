@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import uniffi.cairn_uniffi.CairnFfiException
 import uniffi.cairn_uniffi.IntroductionKindFfi
 import uniffi.cairn_uniffi.IntroductionMessageRecord
@@ -1009,11 +1010,21 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     private fun onIntroductionResponse(responder: Contact, msg: IntroductionMessageRecord) {
         val minterHex = responder.peerKeyHex
         val acceptorHex = msg.peerKey.toHex()
-        if (!pendingOutgoingIntroductions.remove(minterHex to acceptorHex)) {
+        val gateKey = minterHex to acceptorHex
+        // Gate: only act on a Response for an introduction WE brokered (so an
+        // unsolicited Response cannot weaponize this device as a relay). PEEK
+        // membership here; the gate is CONSUMED only once the outcome is known
+        // (a genuine decline, or a Deliver that actually shipped) — not eagerly,
+        // so a transport blip on the relay stays recoverable (D0037 review F5).
+        if (!pendingOutgoingIntroductions.contains(gateKey)) {
             Log.w(TAG, "introduction Response not pending (ignored): ${minterHex.take(12)} -> ${acceptorHex.take(12)}")
             return
         }
         if (msg.accept != true || msg.inviteUri == null) {
+            // The authenticated minter declined → the introduction is over; the
+            // gate is spent. (Only the minter can produce this — the sender is
+            // COSE-authenticated — so it is a genuine decline, not a spoof.)
+            pendingOutgoingIntroductions.remove(gateKey)
             Log.i(TAG, "introduction declined by ${responder.displayName}")
             return
         }
@@ -1040,8 +1051,15 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                     val bytes = encodeIntroductionMessage(deliver)
                     handle.sendIntroduction(acceptor.connId, acceptorKey, bytes)
                 }
-            }.onSuccess { Log.i(TAG, "introduction: relayed Deliver to ${acceptor.displayName}") }
-                .onFailure { Log.w(TAG, "introduction: Deliver relay failed: ${it.message}") }
+            }.onSuccess {
+                // Consume the gate only AFTER the Deliver shipped, so a relay
+                // failure leaves the introduction recoverable (the minter can
+                // re-approve and the re-sent Response re-drives it) (F5).
+                pendingOutgoingIntroductions.remove(gateKey)
+                Log.i(TAG, "introduction: relayed Deliver to ${acceptor.displayName}")
+            }.onFailure {
+                Log.w(TAG, "introduction: Deliver relay failed, gate kept for retry: ${it.message}")
+            }
         }
     }
 
@@ -1085,7 +1103,9 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         val handle = s.handle
         val introducerKey = runCatching { p.introducerKeyHex.fromHex() }.getOrNull() ?: return
         val peerKey = runCatching { p.peerKeyHex.fromHex() }.getOrNull() ?: return
-        viewModelScope.launch {
+        // Track the approval as the pairing job so cancelPairing can reach it and
+        // it is not an untracked, uncancellable coroutine (D0037 review F4).
+        pairingJob = viewModelScope.launch {
             if (!awaitTor()) return@launch
             // Ingest the introducer's vouch for the peer FIRST, so the new
             // contact carries provenance the moment it pairs (D0036 reuse).
@@ -1110,13 +1130,27 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 Log.i(TAG, "introduction: approved + sent invitation to ${p.introducerName}")
                 // Await the peer connecting (soft liveness, D0037 §4); the first
-                // envelope re-anchors via recvLearningSender, then pair.
+                // envelope re-anchors via recvLearningSender, then pair. recv is
+                // unbounded, so bound the hello wait (F4) — a peer who connects but
+                // never sends the hello must not park this coroutine forever.
                 val connId = withContext(Dispatchers.IO) { handle.awaitConnection() }
-                val first = withContext(Dispatchers.IO) { handle.recvLearningSender(connId) }
-                if (!first.senderOperationalPubkey.contentEquals(peerKey)) {
-                    Log.w(TAG, "introduction: connected peer != expected acceptor; pairing anyway by learned key")
+                val first = withTimeoutOrNull(INTRO_HELLO_TIMEOUT_MS) {
+                    withContext(Dispatchers.IO) { handle.recvLearningSender(connId) }
                 }
-                goLive(connId, first.senderOperationalPubkey, firstInbound = first.payload)
+                if (first == null) {
+                    Log.w(TAG, "introduction: acceptor connected but sent no hello in time; aborting")
+                    return@launch
+                }
+                // Hard-fail if the connected peer is not the expected acceptor (F3):
+                // do NOT bind the wrong peer onto this introduction (which would
+                // mislabel them as introduced-by/vouched). A concurrent manual pair
+                // popping the shared connect queue, or a redeemed-by-other invite,
+                // surfaces here — abort rather than pair the wrong party.
+                if (!first.senderOperationalPubkey.contentEquals(peerKey)) {
+                    Log.w(TAG, "introduction: connected peer != expected acceptor; aborting (not pairing the wrong party)")
+                    return@launch
+                }
+                goLive(connId, peerKey, firstInbound = first.payload)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1171,7 +1205,22 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         _pendingIntroductions.value.firstOrNull()?.let { declineIntroduction(it) }
 
     private fun enqueueIntroduction(p: PendingIntroduction) {
-        _pendingIntroductions.update { cur -> if (p in cur) cur else cur + p }
+        _pendingIntroductions.update { cur ->
+            // REPLACE any existing prompt with the same (kind, introducer, peer)
+            // so a re-sent message's fresh vouch/invitation supersedes a stale one
+            // (D0037 review F6) instead of being shadowed by the first arrival.
+            val deduped = cur.filterNot { it == p }
+            // BOUND the queue (F6): beyond the cap, drop the new prompt (a flood of
+            // distinct attacker-chosen peer_keys can't grow state without limit).
+            // A replacement always fits (deduped shrank), so only genuinely-new
+            // prompts at the cap are dropped.
+            if (deduped.size >= MAX_PENDING_INTRODUCTIONS) {
+                Log.w(TAG, "introduction queue full ($MAX_PENDING_INTRODUCTIONS); dropping prompt from ${p.introducerKeyHex.take(12)}")
+                deduped
+            } else {
+                deduped + p
+            }
+        }
     }
 
     private fun dequeueIntroduction(p: PendingIntroduction) {
@@ -1419,6 +1468,22 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         const val TOR_WAIT_MS = 200_000
         const val MAX_RECV_FAILURES = 12
         const val RECV_RETRY_MS = 5_000L
+
+        /**
+         * Cap on outstanding inbound introduction consent prompts (D0037 review
+         * F6), so a verified-but-hostile contact cannot flood Requests (each a
+         * distinct attacker-chosen `peer_key`) to grow memory/UI state without
+         * bound. Generous for honest use; far below an abuse volume.
+         */
+        const val MAX_PENDING_INTRODUCTIONS = 16
+
+        /**
+         * Bound on the minter's wait for the acceptor's first (hello) envelope
+         * AFTER they connect to the minted invite (D0037 review F4). `recv` itself
+         * is unbounded; without this a peer who SMP-connects but never sends the
+         * hello would park the approval coroutine indefinitely.
+         */
+        const val INTRO_HELLO_TIMEOUT_MS = 60_000L
 
         /** SharedPreferences for non-sensitive UI settings (D0032 read receipts). */
         const val PREFS = "cairn-prefs"

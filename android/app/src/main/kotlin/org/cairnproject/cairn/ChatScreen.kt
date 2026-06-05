@@ -217,12 +217,17 @@ private fun IntroductionConsentDialog(p: PendingIntroduction, vm: MessagingViewM
                         "${p.introducerName} introduced you to “${p.peerName}”, who agreed to connect."
                     },
                 )
-                Spacer(Modifier.size(8.dp))
-                Text(
-                    "${p.introducerName} vouches for this person — they'll appear in your " +
-                        "contacts as vouched by ${p.introducerName}.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                // Only claim a vouch when one is actually attached (D0037 review
+                // F2): a Deliver/Request may carry no vouch (or ingest may fail),
+                // and informed consent must not rest on an unsubstantiated claim.
+                if (p.vouch != null) {
+                    Spacer(Modifier.size(8.dp))
+                    Text(
+                        "${p.introducerName} vouches for this person — they'll appear in your " +
+                            "contacts as vouched by ${p.introducerName}.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
                 if (isApprove) {
                     Spacer(Modifier.size(8.dp))
                     Text(

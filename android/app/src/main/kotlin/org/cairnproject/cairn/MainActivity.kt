@@ -156,8 +156,20 @@ class MainActivity : FragmentActivity() {
      * One-link pairing (D0026 §12): the inviter no longer needs the peer's key
      * up front — it learns the peer from the first envelope (TOFU) — so `create`
      * takes no key. The acceptor still gets the inviter's key from the blob.
+     *
+     * SECURITY (D0037 adversarial review F1): these hooks drive security-sensitive
+     * actions WITHOUT the in-app consent/auth UI — unlock, send, delete, change
+     * passphrase, and the D0037 introduction approve/connect (which mint + pair +
+     * mutate the trust graph). `MainActivity` is `exported="true"` (a LAUNCHER
+     * entry), so in a RELEASE build any co-installed app — or transient adb — could
+     * `am start` it with these extras and bypass every consent gate. The entire
+     * surface is therefore gated to DEBUG builds only; the test harness runs debug
+     * APKs, and production has no path through here (invites use the paste UI, not
+     * an intent extra — there is no deep-link intent-filter).
      */
     private fun handleDriverExtras(intent: Intent) {
+        // Test-only automation surface — NEVER reachable in a release build.
+        if (!BuildConfig.DEBUG) return
         intent.getStringExtra("unlock")?.let {
             Log.i(TAG, "driver: unlock")
             viewModel.unlock(it)
