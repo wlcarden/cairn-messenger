@@ -66,7 +66,7 @@ attestations." This decision makes verification mint that attestation.
 | **Persistence + surfacing**    | Ops persist via the trust-graph store (reachable from Kotlin); the 3-state badge is driven by `verify_and_classify` over the **real stored chain**, not the local bool (§5)                                                                                                       |
 | **Revocation**                 | `WithdrawRevoke` (clean break) + `CompromiseRevoke` (cascade-quarantine) issuable from the contact UI; the cascade classifier already exists (§6)                                                                                                                                 |
 | **What defers**                | Master/operational hierarchy + Shamir master recovery (D0005/D0006 §3); transitive **introductions** + `rotation` op (D0006 §4 op-types not implemented); cross-device attestation exchange over the wire; group-membership provenance (D0034); auto-mint-`asserted`-on-pair (§7) |
-| **Staging**                    | **Stage 1** Rust core (schema + external-signer + self-token) ✓, **Stage 2** uniffi mint + persistence ✓, **Stage 3a** Kotlin mint-on-verify + two-Pixel validation ✓, **Stage 3b** badge re-point + revocation UI (deferred) (§8)                                                |
+| **Staging**                    | **Stage 1** Rust core (schema + external-signer + self-token) ✓, **Stage 2** uniffi mint + persistence ✓, **Stage 3a** Kotlin mint-on-verify + two-Pixel validation ✓, **Stage 3b** badge strength + revocation UI + two-Pixel validation ✓ (§8)                                  |
 
 ## 1. Identity model: self-rooted on the v1 single key
 
@@ -228,13 +228,24 @@ Mirrors the staged units before it (D0030, D0033):
   persisted to the trust-graph category; a cold restart + re-verify then chained
   on the persisted op. The trust graph is **activated** — verification now
   produces a durable signed record, not a local boolean.
-- **Stage 3b — badge re-point + revocation (deferred).** Re-point the 3-state
-  badge from the local bool to chain-driven classification (`load_and_classify`),
-  preserving the `KEY_CHANGED` MITM signal via `verifiedKeyHex`; add the
-  withdraw/compromise revocation UI. Split out (the §5 re-point) because the badge
-  becomes an async storage+crypto call per contact and the `KEY_CHANGED`
-  interaction needs deliberate handling; reconcile D0034 §9, design brief §5.2,
-  status when it lands.
+- **Stage 3b — badge strength + revocation (LANDED 2026-06-04).** The badge is
+  re-pointed to the chain as a **synchronous projection**: the `Contact` record
+  gains a `verifiedStrength` mutated in lockstep with the chain (set on verify,
+  cleared on revoke). Because v1 is single-device (D0007) the projection cannot
+  desync from the chain, so the badge stays a fast synchronous read while
+  faithfully reflecting the durable record — a live per-render
+  `load_and_classify` is a multi-device follow-on, not needed here. The header
+  trust label now distinguishes **in-person** from **channel-verified** (the §5
+  strength surfacing), and the contact overflow menu gains **Revoke
+  verification** (`withdraw_revoke`) + **Mark compromised** (`compromise_revoke`),
+  each minting a durable revocation op + downgrading the badge (reversible by
+  re-verifying). The `KEY_CHANGED` MITM signal is preserved unchanged
+  (`verifiedKeyHex`). **Two-Pixel proof:** A logged
+  `revoked … (compromise=false) -> 32B record` (withdraw), B logged
+  `revoked … (compromise=true) -> 32B record` (compromise), and the header
+  rendered `✓ Verified in person`. Still deferred: a live chain-derived badge
+  (multi-device), D0034 §9 / design-brief §5.2 / status reconciliation
+  (left for the master-hierarchy unit).
 
 Each stage is its own host-gate-clean, propose-commit unit.
 

@@ -141,6 +141,7 @@ class MainActivity : FragmentActivity() {
      *   --es delete "1"               → delete the open contact
      *   --es readreceipts "on|off"   → toggle read receipts (D0032; off by default)
      *   --es verifyscan "<peerHex>"   → verify by a scanned peer key (match → verified)
+     *   --es revoke "withdraw|compromise" → revoke the open contact's verification (D0035 §6)
      *   --es simkeymismatch "1"       → simulate a recv key mismatch (downgrade + banner)
      *   --es quickenroll "<pass>"     → enroll quick unlock (shows the BiometricPrompt)
      *   --es quickunlock "1"          → quick-unlock prompt (decrypt → unlock)
@@ -212,6 +213,11 @@ class MainActivity : FragmentActivity() {
         intent.getStringExtra("verifyscan")?.let {
             Log.i(TAG, "driver: confirmVerificationByScan")
             viewModel.confirmVerificationByScan(it)
+        }
+        intent.getStringExtra("revoke")?.let {
+            val compromise = it == "compromise"
+            Log.i(TAG, "driver: revokeCurrentContact(compromise=$compromise)")
+            viewModel.revokeCurrentContact(compromise)
         }
         intent.getStringExtra("simkeymismatch")?.let {
             Log.i(TAG, "driver: simulateKeyMismatch")

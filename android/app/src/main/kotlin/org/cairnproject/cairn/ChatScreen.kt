@@ -944,7 +944,7 @@ private fun ChatAppBar(state: UiState.Conversation, vm: MessagingViewModel) {
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Text(
-                        chatTrustLabel(state.trust),
+                        chatTrustLabel(state.trust, state.verifiedStrength),
                         color = Color.White.copy(alpha = 0.85f),
                         style = MaterialTheme.typography.labelSmall,
                     )
@@ -969,6 +969,19 @@ private fun ChatAppBar(state: UiState.Conversation, vm: MessagingViewModel) {
                         text = { Text("Rename") },
                         onClick = { menuOpen = false; showRename = true },
                     )
+                    // Revocation (D0035 §6) — only meaningful once verified. Both
+                    // mint a durable revocation op + downgrade the badge; reversible
+                    // by re-verifying. "Mark compromised" triggers the cascade.
+                    if (state.trust == Trust.VERIFIED) {
+                        DropdownMenuItem(
+                            text = { Text("Revoke verification") },
+                            onClick = { menuOpen = false; vm.revokeCurrentContact(compromise = false) },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Mark compromised") },
+                            onClick = { menuOpen = false; vm.revokeCurrentContact(compromise = true) },
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text("Delete contact") },
                         onClick = { menuOpen = false; showDelete = true },
@@ -1031,8 +1044,14 @@ private fun ChatAppBar(state: UiState.Conversation, vm: MessagingViewModel) {
 }
 
 /** Compact trust label for the chat app bar (the colour-coded badge is on the list). */
-private fun chatTrustLabel(trust: Trust): String = when (trust) {
-    Trust.VERIFIED -> "✓ Verified"
+private fun chatTrustLabel(trust: Trust, verifiedStrength: String? = null): String = when (trust) {
+    // Show HOW the key was verified (D0035 §5) — in-person is stronger than a
+    // safety number compared over a separate channel.
+    Trust.VERIFIED -> when (verifiedStrength) {
+        "IN_PERSON" -> "✓ Verified in person"
+        "CHANNEL_VERIFIED" -> "✓ Verified over a channel"
+        else -> "✓ Verified"
+    }
     Trust.UNVERIFIED -> "Unverified — tap Verify"
     Trust.KEY_CHANGED -> "⛔ Key changed"
 }

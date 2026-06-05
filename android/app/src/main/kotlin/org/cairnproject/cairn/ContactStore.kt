@@ -33,6 +33,15 @@ data class Contact(
      * interception) downgrades [verified]. Null = never verified.
      */
     val verifiedKeyHex: String? = null,
+    /**
+     * The [StrengthFfi] name of the durable trust-graph attestation minted when
+     * the user verified this contact (D0035 §3 — `IN_PERSON` for a QR scan,
+     * `CHANNEL_VERIFIED` for a manual safety-number compare). A synchronous
+     * projection of the chain: set on verify, cleared on revoke. Null = never
+     * verified (or a legacy record predating activation). Drives the
+     * strength-aware trust label.
+     */
+    val verifiedStrength: String? = null,
     /** Last message's text (truncated) for the conversation-list preview. */
     val lastPreview: String = "",
     /** Unix-seconds of the last message — drives row recency sort + the time. */
@@ -69,6 +78,7 @@ class ContactStore(private val storage: StorageHandle) {
             .put("at", contact.pairedAtUnix)
             .put("v", contact.verified)
             .apply { contact.verifiedKeyHex?.let { put("vk", it) } }
+            .apply { contact.verifiedStrength?.let { put("vs", it) } }
             .put("lp", contact.lastPreview)
             .put("la", contact.lastAtUnix)
             .put("ur", contact.unread)
@@ -129,6 +139,7 @@ class ContactStore(private val storage: StorageHandle) {
                 pairedAtUnix = o.optLong("at", 0),
                 verified = verified,
                 verifiedKeyHex = verifiedKey,
+                verifiedStrength = o.optString("vs", "").ifEmpty { null },
                 lastPreview = o.optString("lp", ""),
                 lastAtUnix = o.optLong("la", 0),
                 unread = o.optInt("ur", 0),

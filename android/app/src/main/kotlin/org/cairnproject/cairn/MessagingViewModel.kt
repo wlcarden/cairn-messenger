@@ -119,6 +119,12 @@ sealed interface UiState {
         val displayName: String,
         /** Verification state of the peer key, surfaced as the trust badge. */
         val trust: Trust,
+        /**
+         * The verification strength ([StrengthFfi] name) when [trust] is
+         * `VERIFIED` — distinguishes in-person from channel-verified in the
+         * trust label (D0035 §5). Null otherwise.
+         */
+        val verifiedStrength: String? = null,
     ) : UiState
 
     /** A fatal bootstrap/transport error. */
@@ -459,6 +465,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 contact.peerKeyHex,
                 contact.displayName,
                 trust = contact.trust(),
+                verifiedStrength = contact.verifiedStrength.takeIf { contact.trust() == Trust.VERIFIED },
             )
             // Opening unread messages = reading them → ack the peer (D0032), but
             // only if read receipts are enabled (off by default, reciprocal).
@@ -662,11 +669,55 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     private fun persistVerified(peerHex: String, strength: StrengthFfi): Boolean {
         val store = contacts ?: return false
         val existing = runCatching { store.get(peerHex) }.getOrNull() ?: return false
-        val updated = existing.copy(verified = true, verifiedKeyHex = peerHex)
+        val updated = existing.copy(
+            verified = true,
+            verifiedKeyHex = peerHex,
+            verifiedStrength = strength.name,
+        )
         if (runCatching { store.save(updated) }.isFailure) return false
-        (_ui.value as? UiState.Conversation)?.let { _ui.value = it.copy(trust = Trust.VERIFIED) }
+        (_ui.value as? UiState.Conversation)?.let {
+            _ui.value = it.copy(trust = Trust.VERIFIED, verifiedStrength = strength.name)
+        }
         mintAttestation(strength)
         return true
+    }
+
+    /**
+     * Revoke this contact's verification (D0035 §6): clear the local verified
+     * projection (the badge downgrades to UNVERIFIED immediately — the safe
+     * direction) and mint a durable revocation op off-Main, best-effort. A
+     * `compromise` revoke records a security incident (cascade quarantine,
+     * `revoked_as_of = now`); otherwise it is a clean withdrawal. Reversible by
+     * re-verifying (a new attestation).
+     */
+    fun revokeCurrentContact(compromise: Boolean) {
+        val peerHex = peerKeyRaw?.toHex() ?: return
+        val subject = peerKeyRaw ?: return
+        contacts?.let { store ->
+            runCatching { store.get(peerHex) }.getOrNull()?.let { c ->
+                runCatching { store.save(c.copy(verified = false, verifiedStrength = null)) }
+            }
+        }
+        (_ui.value as? UiState.Conversation)?.let {
+            _ui.value = it.copy(trust = Trust.UNVERIFIED, verifiedStrength = null)
+        }
+        val tg = session?.trustGraph ?: return
+        val now = System.currentTimeMillis() / 1000L
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    if (compromise) {
+                        tg.compromiseRevoke(subject, now.toULong(), now.toULong())
+                    } else {
+                        tg.withdrawRevoke(subject, now.toULong())
+                    }
+                }
+            }.onSuccess {
+                Log.i(TAG, "trust-graph: revoked ${peerHex.take(12)} (compromise=$compromise) -> ${it.recordId.size}B record")
+            }.onFailure {
+                Log.w(TAG, "trust-graph: revoke ${peerHex.take(12)} failed (best-effort): ${it.message}")
+            }
+        }
     }
 
     /**
