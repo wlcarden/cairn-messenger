@@ -49,6 +49,7 @@
 //!   collected through that flow.
 
 pub mod attestation;
+pub mod card;
 pub mod error;
 pub mod peer_store;
 
@@ -56,6 +57,7 @@ pub use attestation::{
     DOMAIN_TAG, ISSUER_CERT_HASH_LEN, MasterAttestation, SignedMasterAttestation,
     reconstruct_and_attest,
 };
+pub use card::{MASTER_PUBKEY_LEN, RecoveryCard, decode_card, encode_card};
 pub use error::RecoveryError;
 pub use peer_store::{
     HeldShare, PeerRecord, PeerStoreError, RECORD_ID_LEN as PEER_STORE_RECORD_ID_LEN,

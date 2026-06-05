@@ -71,7 +71,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, SEED_LEN, SigningKey, VerifyingKey};
 use cairn_envelope::cose_sign1::{CoseSign1, Sign1Builder};
 use cairn_identity::{CapabilityToken, SignedCapabilityToken};
-use cairn_recovery::{SignedMasterAttestation, reconstruct_and_attest};
+use cairn_recovery::{RecoveryCard, SignedMasterAttestation, encode_card, reconstruct_and_attest};
 use cairn_shamir::{COMMITMENT_LEN, Commitment, SECRET_LEN, Share, reconstruct, split};
 use cairn_simplex_adapter::{
     ConnectionId, Invitation, LocalIdentity, RetryBudget, SidecarTransport, SimplexAdapter,
@@ -1090,6 +1090,35 @@ fn cmd_split_seed(
         COMMITMENT_LEN,
         commitment_path.display()
     );
+
+    // D0038 §4: also emit a self-contained recovery CARD per share — the
+    // print/QR form the app scans/types at recovery. Each card carries its
+    // share, the commitment, and the master public key (derived from the seed),
+    // so ANY threshold of cards reconstructs without a separate header. The
+    // card text goes to a `<prefix>-card-NN.txt` file and to stdout (for
+    // QR-encoding); the diagnostics stay on stderr.
+    let master = SigningKey::from_seed(&seed_bytes)
+        .verifying_key()
+        .to_bytes();
+    let commitment_bytes = commitment.to_bytes();
+    for share in &shares {
+        let card = RecoveryCard {
+            id: share.id(),
+            value: *share.bytes(),
+            commitment: commitment_bytes,
+            master,
+        };
+        let text = encode_card(&card);
+        let card_path = PathBuf::from(format!("{prefix_str}-card-{:02}.txt", share.id()));
+        std::fs::write(&card_path, &text)
+            .with_context(|| format!("failed to write recovery card to {}", card_path.display()))?;
+        eprintln!(
+            "Wrote recovery card id={} to {}",
+            share.id(),
+            card_path.display()
+        );
+        println!("{text}");
+    }
 
     eprintln!("Split complete: {threshold} of {num_shares} shares required for reconstruction");
     Ok(())

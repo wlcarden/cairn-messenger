@@ -25,6 +25,12 @@ cairn-storage = { path = "../cairn-storage" }
 # === CBOR (D0018 §2.1) — used for decoding attestation payload bytes ===
 ciborium = { workspace = true }
 
+# === Paper-share recovery-card codec (D0038 §4) ===
+# base64url for the card text form; blake3 for the per-card transcription
+# checksum (a truncated-hash integrity check, not a security primitive).
+base64 = { workspace = true }
+blake3 = { workspace = true }
+
 # === SHA-256 for issuer_cert_hash construction per D0006 §7 ===
 sha2 = { workspace = true }
 
