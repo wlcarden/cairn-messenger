@@ -76,6 +76,14 @@ pub const fn assert_v1_carrier_types_exportable() {
     // trust_graph provenance (D0036 §6): the vouch record carries only the
     // PUBLIC voucher pubkey + the strength discriminant.
     assert_exportable::<crate::trust_graph::VouchProvenanceRecord>();
+    // trust_graph introductions (D0037 §5): the kind enum is a plain
+    // discriminant; the introduction record carries only PUBLIC values (the
+    // peer's op pubkey, the introducer's vouch bytes which are themselves
+    // PUBLIC signed-op COSE, an opaque one-time pairing invitation, + a
+    // boolean consent). No secret crosses; the device key signs the carrying
+    // envelope in StrongBox.
+    assert_exportable::<crate::trust_graph::IntroductionKindFfi>();
+    assert_exportable::<crate::trust_graph::IntroductionMessageRecord>();
     // identity (D0027 §2.2): the capability-token record carries only
     // PUBLIC pubkeys + scope strings + the expiry (no secret; the
     // op-identity key signs in StrongBox, never crossing as bytes).

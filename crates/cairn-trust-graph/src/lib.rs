@@ -63,6 +63,7 @@
 pub mod cascade;
 pub mod chain;
 pub mod error;
+pub mod introduction;
 pub mod op;
 pub mod self_token;
 pub mod signed;
@@ -72,6 +73,9 @@ pub mod vouch;
 pub use cascade::{QuarantineStatus, compute_quarantine_state};
 pub use chain::verify_chain_links;
 pub use error::TrustGraphError;
+pub use introduction::{
+    IntroductionKind, IntroductionMessage, decode_introduction, encode_introduction,
+};
 pub use op::{OpType, Strength, TrustGraphOp};
 pub use self_token::{self_issued_scopes, self_issued_token};
 pub use signed::{DOMAIN_TAG, PRIOR_HASH_LEN, SignedTrustGraphOp};

@@ -16,11 +16,14 @@
 //! | 7   | `padding`                        | bstr           | Per D0026 §4 size-bin padding |
 //! | 8   | `read_up_to`                     | uint           | OPTIONAL (D0032) — present only on a read-receipt envelope; the cumulative message-number high-water the sender has read |
 //! | 9   | `vouch`                          | bstr           | OPTIONAL (D0036) — present only on a provenance-vouch envelope; canonical-CBOR `{op_chain, token}` the sender shares |
+//! | 10  | `introduction`                   | bstr           | OPTIONAL (D0037) — present only on an introduction control envelope; canonical-CBOR `{kind, peer_key, vouch?, invite_uri?, accept?}` carrying one of the three dual-consent introduction messages |
 //!
-//! Key 8 (`read_up_to`) is **omitted** on a normal content envelope, so
-//! content envelopes encode byte-identically to the pre-D0032 schema — the
+//! Keys 8–10 are each **omitted** on a normal content envelope, so content
+//! envelopes encode byte-identically to the pre-D0032 schema — the
 //! `prior_envelope_hash` chain (and persisted history) is undisturbed. A
-//! read receipt is an empty-`payload` envelope carrying only key 8 (D0032 §2).
+//! read receipt is an empty-`payload` envelope carrying only key 8 (D0032 §2);
+//! a vouch is an empty-`payload` envelope carrying only key 9 (D0036 §5); an
+//! introduction is an empty-`payload` envelope carrying only key 10 (D0037 §5).
 //!
 //! ## Signing model
 //!
@@ -65,6 +68,7 @@ const KEY_PAYLOAD: i64 = 6;
 const KEY_PADDING: i64 = 7;
 const KEY_READ_UP_TO: i64 = 8;
 const KEY_VOUCH: i64 = 9;
+const KEY_INTRODUCTION: i64 = 10;
 
 /// Produces the device-key Ed25519 signature over a Cairn message
 /// envelope's COSE `Sig_structure` (D0006 §9 hop #1).
@@ -153,6 +157,14 @@ pub struct MessageEnvelope {
     /// envelope, in which case key 9 is OMITTED — content + read-receipt
     /// envelopes stay byte-identical to the pre-D0036 schema.
     pub vouch: Option<Vec<u8>>,
+    /// OPTIONAL introduction control message per D0026 §2.1 key 10 (D0037).
+    ///
+    /// `Some(bytes)` ONLY on an introduction control envelope (empty `payload`):
+    /// the canonical-CBOR type-discriminated introduction message
+    /// (request / response / deliver) the introducer brokers a connection with.
+    /// `None` on every other envelope, in which case key 10 is OMITTED — all
+    /// prior envelope kinds stay byte-identical to the pre-D0037 schema.
+    pub introduction: Option<Vec<u8>>,
 }
 
 impl MessageEnvelope {
@@ -200,6 +212,14 @@ impl MessageEnvelope {
         if let Some(vouch) = &self.vouch {
             entries.push((Value::Int(KEY_VOUCH), Value::Bytes(vouch.clone())));
         }
+        // Key 10 (introduction) is OPTIONAL (D0037): appended after key 9 only
+        // when present, so non-introduction envelopes stay byte-identical.
+        if let Some(introduction) = &self.introduction {
+            entries.push((
+                Value::Int(KEY_INTRODUCTION),
+                Value::Bytes(introduction.clone()),
+            ));
+        }
         Value::Map(entries)
             .encode()
             .map_err(|_| SimplexAdapterError::EnvelopeDecodeFailed)
@@ -230,6 +250,7 @@ impl MessageEnvelope {
         let mut padding: Option<Vec<u8>> = None;
         let mut read_up_to: Option<u64> = None;
         let mut vouch: Option<Vec<u8>> = None;
+        let mut introduction: Option<Vec<u8>> = None;
 
         for (key, value) in entries {
             let CiboriumValue::Integer(key_int_ciborium) = key else {
@@ -271,6 +292,14 @@ impl MessageEnvelope {
                     };
                     vouch = Some(b);
                 }
+                // Optional introduction control message (D0037); absent on
+                // non-introduction envelopes, where it stays None.
+                KEY_INTRODUCTION => {
+                    let CiboriumValue::Bytes(b) = value else {
+                        return Err(SimplexAdapterError::EnvelopeDecodeFailed);
+                    };
+                    introduction = Some(b);
+                }
                 _ => {} // forward-compat per D0006 §6.4
             }
         }
@@ -287,6 +316,7 @@ impl MessageEnvelope {
             padding: padding.ok_or(SimplexAdapterError::EnvelopeDecodeFailed)?,
             read_up_to,
             vouch,
+            introduction,
         })
     }
 
@@ -521,6 +551,7 @@ mod tests {
             padding: vec![0xAA; 200], // pads to 256 bucket with envelope overhead
             read_up_to: None,
             vouch: None,
+            introduction: None,
         };
         (envelope, device_sk, recipient_op_sk)
     }
@@ -548,6 +579,29 @@ mod tests {
         assert_eq!(
             recovered.vouch.as_deref(),
             Some(b"vouch-cbor-bytes".as_ref())
+        );
+        assert_eq!(recovered, envelope);
+    }
+
+    #[test]
+    fn introduction_field_round_trips_and_is_omitted_when_none() {
+        // A non-introduction envelope omits key 10 entirely (byte-identical to
+        // the pre-D0037 schema), and an introduction envelope round-trips the
+        // bytes (D0037 §5).
+        let (mut envelope, _, _) = make_envelope();
+        let without = envelope.to_canonical_cbor().unwrap();
+
+        envelope.introduction = Some(b"introduction-cbor-bytes".to_vec());
+        let with = envelope.to_canonical_cbor().unwrap();
+        assert_ne!(
+            without, with,
+            "key 10 must change the encoding when present"
+        );
+
+        let recovered = MessageEnvelope::from_canonical_cbor(&with).unwrap();
+        assert_eq!(
+            recovered.introduction.as_deref(),
+            Some(b"introduction-cbor-bytes".as_ref())
         );
         assert_eq!(recovered, envelope);
     }

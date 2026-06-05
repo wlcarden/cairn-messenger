@@ -41,8 +41,9 @@ use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, VerifyingKey};
 use cairn_identity::IdentityError;
 use cairn_storage::Storage;
 use cairn_trust_graph::{
-    OpType, SignedTrustGraphOp, Strength, TrustGraphError, TrustGraphOp, compute_quarantine_state,
-    decode_vouch, encode_vouch, initialize_schema, load_all_ops_chronological, load_chain_for_pair,
+    IntroductionKind, IntroductionMessage, OpType, SignedTrustGraphOp, Strength, TrustGraphError,
+    TrustGraphOp, compute_quarantine_state, decode_introduction, decode_vouch, encode_introduction,
+    encode_vouch, initialize_schema, load_all_ops_chronological, load_chain_for_pair,
     self_issued_token, store_signed_op, verify_chain_links,
 };
 
@@ -238,6 +239,39 @@ impl From<Strength> for StrengthFfi {
     }
 }
 
+/// FFI mirror of [`cairn_trust_graph::IntroductionKind`] (D0037 §3) — which of
+/// the three consent-gated introduction handshake messages a blob carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Enum))]
+pub enum IntroductionKindFfi {
+    /// Introducer → introducee: "do you consent to meet `peer_key`?"
+    Request,
+    /// Introducee → introducer: the consent decision (+ invitation on accept).
+    Response,
+    /// Introducer → the other introducee: "they consented" (+ vouch + invite).
+    Deliver,
+}
+
+impl IntroductionKindFfi {
+    const fn to_domain(self) -> IntroductionKind {
+        match self {
+            Self::Request => IntroductionKind::Request,
+            Self::Response => IntroductionKind::Response,
+            Self::Deliver => IntroductionKind::Deliver,
+        }
+    }
+}
+
+impl From<IntroductionKind> for IntroductionKindFfi {
+    fn from(kind: IntroductionKind) -> Self {
+        match kind {
+            IntroductionKind::Request => Self::Request,
+            IntroductionKind::Response => Self::Response,
+            IntroductionKind::Deliver => Self::Deliver,
+        }
+    }
+}
+
 /// The outcome of minting a trust-graph op (D0035 §4): the storage record
 /// id it was persisted under + the signed op bytes (so the shell can
 /// re-classify or display the op without a reload).
@@ -263,6 +297,89 @@ pub struct VouchProvenanceRecord {
     pub voucher_operational_pubkey: Vec<u8>,
     /// The strength at which the voucher attested the subject.
     pub strength: StrengthFfi,
+}
+
+/// FFI mirror of [`cairn_trust_graph::IntroductionMessage`] (D0037 §5): one
+/// decoded introduction handshake message the shell assembles (to send) or
+/// inspects (on receive).
+///
+/// The optional fields are populated per [`kind`](Self::kind): a Request/Deliver
+/// carries [`vouch`](Self::vouch); an accepting Response/Deliver carries
+/// [`invite_uri`](Self::invite_uri); a Response carries [`accept`](Self::accept).
+/// Authentication of the *sender* is the transport's `COSE_Sign1` envelope; the
+/// per-kind consent + nested-vouch ingest is the shell's orchestration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+pub struct IntroductionMessageRecord {
+    /// Which of the three handshake messages this is.
+    pub kind: IntroductionKindFfi,
+    /// 32-byte operational pubkey of the third party being introduced.
+    pub peer_key: Vec<u8>,
+    /// The introducer's vouch for `peer_key` (`build_vouch` bytes), present on
+    /// Request + Deliver.
+    pub vouch: Option<Vec<u8>>,
+    /// The one-time pairing invitation, present on an accepting Response +
+    /// Deliver.
+    pub invite_uri: Option<String>,
+    /// The consent decision, present on a Response.
+    pub accept: Option<bool>,
+}
+
+/// Encode an [`IntroductionMessageRecord`] to its canonical-CBOR wire bytes for
+/// the message-envelope key-10 field (D0037 §5), inverse of
+/// [`decode_introduction_message`].
+///
+/// # Errors
+///
+/// - [`CairnFfiError::MalformedData`] if `peer_key` is not exactly 32 bytes.
+/// - Encode failure from the canonical encoder (unreachable for valid inputs).
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+)]
+pub fn encode_introduction_message(
+    record: IntroductionMessageRecord,
+) -> Result<Vec<u8>, CairnFfiError> {
+    let peer_key: [u8; PUBLIC_KEY_LEN] = record
+        .peer_key
+        .as_slice()
+        .try_into()
+        .map_err(|_| CairnFfiError::MalformedData)?;
+    let msg = IntroductionMessage {
+        kind: record.kind.to_domain(),
+        peer_key,
+        vouch: record.vouch,
+        invite_uri: record.invite_uri,
+        accept: record.accept,
+    };
+    encode_introduction(&msg).map_err(CairnFfiError::from)
+}
+
+/// Decode the canonical-CBOR wire bytes from a received message-envelope key-10
+/// field (D0037 §5) into an [`IntroductionMessageRecord`], inverse of
+/// [`encode_introduction_message`].
+///
+/// # Errors
+///
+/// [`CairnFfiError::MalformedData`] for any CBOR / schema structural error (not
+/// a map, missing/mistyped key, unknown kind, wrong-length `peer_key`).
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+)]
+pub fn decode_introduction_message(
+    introduction_bytes: Vec<u8>,
+) -> Result<IntroductionMessageRecord, CairnFfiError> {
+    let msg = decode_introduction(&introduction_bytes).map_err(CairnFfiError::from)?;
+    Ok(IntroductionMessageRecord {
+        kind: IntroductionKindFfi::from(msg.kind),
+        peer_key: msg.peer_key.to_vec(),
+        vouch: msg.vouch,
+        invite_uri: msg.invite_uri,
+        accept: msg.accept,
+    })
 }
 
 /// v1 self-issued capability tokens carry no explicit expiry (D0035 §4):
@@ -729,6 +846,45 @@ mod tests {
         let (expected, token, op) = single_genesis_attest();
         let statuses = trust_graph_verify_and_classify(vec![op], token, expected).unwrap();
         assert_eq!(statuses, vec![QuarantineStatusFfi::Active]);
+    }
+
+    #[test]
+    fn introduction_record_round_trips_through_ffi_codec() {
+        // The FFI wrapper maps Vec<u8> peer_key ↔ [u8; 32] + the kind enum, and
+        // preserves the optional vouch/invite/accept fields (D0037 §5).
+        let record = IntroductionMessageRecord {
+            kind: IntroductionKindFfi::Deliver,
+            peer_key: vec![9u8; PUBLIC_KEY_LEN],
+            vouch: Some(b"introducer-vouch".to_vec()),
+            invite_uri: Some("https://pairing.example/invite#one-time".to_string()),
+            accept: None,
+        };
+        let bytes = encode_introduction_message(record.clone()).unwrap();
+        let recovered = decode_introduction_message(bytes).unwrap();
+        assert_eq!(recovered, record);
+    }
+
+    #[test]
+    fn encode_introduction_rejects_wrong_length_peer_key() {
+        let record = IntroductionMessageRecord {
+            kind: IntroductionKindFfi::Request,
+            peer_key: vec![0u8; 16], // not 32 bytes
+            vouch: Some(b"v".to_vec()),
+            invite_uri: None,
+            accept: None,
+        };
+        assert_eq!(
+            encode_introduction_message(record).unwrap_err(),
+            CairnFfiError::MalformedData
+        );
+    }
+
+    #[test]
+    fn decode_introduction_rejects_garbage() {
+        assert_eq!(
+            decode_introduction_message(vec![0xFF, 0xFF, 0xFF]).unwrap_err(),
+            CairnFfiError::MalformedData
+        );
     }
 
     #[test]

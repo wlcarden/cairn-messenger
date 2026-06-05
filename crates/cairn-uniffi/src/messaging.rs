@@ -203,6 +203,12 @@ pub struct ReceivedMessageRecord {
     /// `TrustGraphHandle::ingest_vouch` (the sender is already authenticated by
     /// the envelope signature), NOT to the message list. `None` otherwise.
     pub vouch: Option<Vec<u8>>,
+    /// `Some(bytes)` if this is an introduction control message (D0037): the
+    /// canonical-CBOR introduction blob the sender sent. The caller routes it to
+    /// `decode_introduction` + the dual-consent flow (the sender is already
+    /// authenticated by the envelope signature), NOT to the message list. `None`
+    /// otherwise.
+    pub introduction: Option<Vec<u8>>,
 }
 
 /// One persisted message in a conversation's history (D0026 §3.2).
@@ -463,6 +469,7 @@ impl SimplexAdapterHandle {
             received_at_unix: received.received_at_unix,
             read_up_to: received.read_up_to,
             vouch: received.vouch,
+            introduction: received.introduction,
         })
     }
 
@@ -504,6 +511,7 @@ impl SimplexAdapterHandle {
             received_at_unix: received.received_at_unix,
             read_up_to: received.read_up_to,
             vouch: received.vouch,
+            introduction: received.introduction,
         })
     }
 
@@ -655,6 +663,49 @@ impl SimplexAdapterHandle {
             .map_err(|_| CairnFfiError::MalformedData)?;
         self.adapter
             .send_vouch(&ConnectionId(connection_id), &recipient, &vouch_bytes)
+            .await
+            .map_err(CairnFfiError::from)?;
+        Ok(())
+    }
+
+    /// Send an **introduction control message** to `recipient_operational_pubkey`
+    /// over `connection_id` (D0037 §5): `introduction_bytes` is the canonical-CBOR
+    /// blob from `encode_introduction_message` (carrying one of the three
+    /// dual-consent handshake messages). An empty-payload, signed + chained
+    /// envelope carrying envelope key 10 — the recipient decodes + routes it to
+    /// the consent flow (the envelope signature already authenticates this
+    /// sender).
+    ///
+    /// WHICH message + WHETHER to send it is the shell's consent-gated
+    /// orchestration (D0037 §3) — the handle only provides the mechanism.
+    ///
+    /// # Errors
+    ///
+    /// - [`CairnFfiError::MalformedData`] if `recipient_operational_pubkey` is
+    ///   not 32 bytes.
+    /// - The facade mapping of any `SimplexAdapterError`
+    ///   ([`CairnFfiError::SidecarFailure`] when the sidecar is unreachable,
+    ///   [`CairnFfiError::StorageFailure`] on a persist failure).
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+    )]
+    pub async fn send_introduction(
+        &self,
+        connection_id: String,
+        recipient_operational_pubkey: Vec<u8>,
+        introduction_bytes: Vec<u8>,
+    ) -> Result<(), CairnFfiError> {
+        let recipient: [u8; PUBLIC_KEY_LEN] = recipient_operational_pubkey
+            .as_slice()
+            .try_into()
+            .map_err(|_| CairnFfiError::MalformedData)?;
+        self.adapter
+            .send_introduction(
+                &ConnectionId(connection_id),
+                &recipient,
+                &introduction_bytes,
+            )
             .await
             .map_err(CairnFfiError::from)?;
         Ok(())

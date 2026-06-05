@@ -150,6 +150,12 @@ pub struct ReceivedMessage {
     /// (the `me <- sender` envelope already authenticated the sender). `None`
     /// for content + read-receipt messages.
     pub vouch: Option<Vec<u8>>,
+    /// `Some(bytes)` if this is an introduction control message (D0037): the
+    /// canonical-CBOR type-discriminated `{kind, peer_key, vouch?, invite_uri?,
+    /// accept?}` the introducer/introducee sent. The caller decodes + routes it
+    /// to the dual-consent flow (the `me <- sender` envelope already
+    /// authenticated the sender). `None` for every other message kind.
+    pub introduction: Option<Vec<u8>>,
 }
 
 /// One persisted message in a conversation's history per
@@ -308,8 +314,15 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
         recipient_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
         payload: &[u8],
     ) -> Result<MessageSent, SimplexAdapterError> {
-        self.send_envelope_inner(conn, recipient_operational_pubkey, payload, None, None)
-            .await
+        self.send_envelope_inner(
+            conn,
+            recipient_operational_pubkey,
+            payload,
+            None,
+            None,
+            None,
+        )
+        .await
     }
 
     /// Send a **provenance vouch** to `recipient` (D0036): share a verified
@@ -337,6 +350,39 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             &[],
             None,
             Some(vouch_bytes.to_vec()),
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Send an **introduction control message** to `recipient` (D0037): broker
+    /// or respond to a consent-gated introduction between two of this side's
+    /// verified contacts.
+    ///
+    /// `introduction_bytes` is the canonical-CBOR type-discriminated
+    /// `{kind, peer_key, vouch?, invite_uri?, accept?}` structure (built by the
+    /// caller via the `cairn-trust-graph` introduction codec). The message is an
+    /// **empty-payload** Cairn envelope carrying envelope key 10 — a normal
+    /// signed + chained envelope on the `me -> recipient` direction, so it
+    /// inherits device-signature authentication + chain integrity (D0037 §5).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::send`] (transport, sign, storage, or a poisoned chain mutex).
+    pub async fn send_introduction(
+        &self,
+        conn: &ConnectionId,
+        recipient_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
+        introduction_bytes: &[u8],
+    ) -> Result<(), SimplexAdapterError> {
+        self.send_envelope_inner(
+            conn,
+            recipient_operational_pubkey,
+            &[],
+            None,
+            None,
+            Some(introduction_bytes.to_vec()),
         )
         .await?;
         Ok(())
@@ -376,13 +422,16 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             &[],
             Some(read_up_to),
             None,
+            None,
         )
         .await?;
         Ok(())
     }
 
-    /// Shared send tail for [`Self::send`] (content, `read_up_to = None`) and
-    /// [`Self::send_read_receipt`] (empty payload, `read_up_to = Some`): build →
+    /// Shared send tail for [`Self::send`] (content, all control fields `None`),
+    /// [`Self::send_read_receipt`] (empty payload, `read_up_to = Some`),
+    /// [`Self::send_vouch`] (empty payload, `vouch = Some`), and
+    /// [`Self::send_introduction`] (empty payload, `introduction = Some`): build →
     /// sign → transport → persist → advance the `me -> recipient` send chain.
     async fn send_envelope_inner(
         &self,
@@ -391,6 +440,7 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
         payload: &[u8],
         read_up_to: Option<u64>,
         vouch: Option<Vec<u8>>,
+        introduction: Option<Vec<u8>>,
     ) -> Result<MessageSent, SimplexAdapterError> {
         let (prior_hash, message_number) = self.send_chain_state(recipient_operational_pubkey)?;
 
@@ -407,6 +457,7 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             padding,
             read_up_to,
             vouch,
+            introduction,
         };
         let cose = envelope.sign_with(self.identity.device_signer.as_ref())?;
 
@@ -598,6 +649,9 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             // A vouch (D0036) carries key 9 + an empty payload; the caller routes
             // a `Some` to verify+ingest, not to the message list.
             vouch: envelope.vouch.clone(),
+            // An introduction (D0037) carries key 10 + an empty payload; the
+            // caller routes a `Some` to the dual-consent flow, not the list.
+            introduction: envelope.introduction.clone(),
         })
     }
 

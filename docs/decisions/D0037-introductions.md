@@ -199,11 +199,22 @@ queue). No partial state leaves a dangling connection.
 
 ## 10. Staging + validation
 
-- **Stage 1 — Rust + FFI.** The key-10 introduction field + the three-message
-  codec (`cairn-trust-graph`); the orchestration on the handle
-  (`send_introduce_request`, the response→relay step, `accept_introduction`
-  wrapping `accept_invitation`), reusing `build_vouch` / `ingest_vouch` /
-  `create_invitation` / `accept_invitation`. Host gates + the aarch64 APK build.
+- **Stage 1 — Rust + FFI.** _(Landed.)_ Three layers. (a) The key-10
+  `introduction` envelope field in `cairn-simplex-adapter`, mirroring the key-9
+  vouch (optional, omitted-when-None, an empty-payload control message inheriting
+  the `COSE_Sign1` device signature), with `send_introduction` and
+  `ReceivedMessage.introduction` on the adapter. (b) The three-message codec in
+  `cairn-trust-graph`: `IntroductionKind` (Request, Response, Deliver),
+  `IntroductionMessage`, and `encode_introduction` / `decode_introduction`. (c) The
+  FFI surface in `cairn-uniffi`: `IntroductionKindFfi`, `IntroductionMessageRecord`,
+  the `encode_introduction_message` / `decode_introduction_message` free functions,
+  `SimplexAdapterHandle::send_introduction`, and `ReceivedMessageRecord.introduction`,
+  with the never-export gate extended. The **per-message consent orchestration**
+  (which message to send, when, gated on the user's approve/decline) lives in
+  Stage 2's Kotlin shell where the consent UI is — not baked into Rust convenience
+  methods — reusing the existing `build_vouch`, `ingest_vouch`, `create_invitation`,
+  and `accept_invitation`. Host gates, workspace tests, and the aarch64 APK build
+  are all clean.
 - **Stage 2 — Kotlin.** The **"Introduce … to …"** initiator (extends the vouch
   picker); **Carol's** approve/decline surface; **Alice's** connect/decline
   surface; contact-from-introduction (provenance + "introduced by" from genesis);

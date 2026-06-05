@@ -152,8 +152,9 @@ pub use storage::{StorageHandle, StrongBoxKeyMaterial};
 pub use tor::{NetworkStateFfi, TorControlConfig, TorTransportHandle};
 pub use transparency::{SigsumClientHandle, SigsumLogConfig, TreeHeadRecord};
 pub use trust_graph::{
-    QuarantineStatusFfi, StrengthFfi, TrustGraphHandle, TrustGraphOpRecord, VouchProvenanceRecord,
-    trust_graph_verify_and_classify,
+    IntroductionKindFfi, IntroductionMessageRecord, QuarantineStatusFfi, StrengthFfi,
+    TrustGraphHandle, TrustGraphOpRecord, VouchProvenanceRecord, decode_introduction_message,
+    encode_introduction_message, trust_graph_verify_and_classify,
 };
 
 // UniFFI scaffolding entrypoint per D0027 §5 / D0020 §3.1. Generates
