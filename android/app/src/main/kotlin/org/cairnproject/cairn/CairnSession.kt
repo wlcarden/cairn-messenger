@@ -26,6 +26,7 @@ import uniffi.cairn_uniffi.KeyGenSpec
 import uniffi.cairn_uniffi.SidecarEndpointConfig
 import uniffi.cairn_uniffi.SimplexAdapterHandle
 import uniffi.cairn_uniffi.StorageHandle
+import uniffi.cairn_uniffi.TrustGraphHandle
 import uniffi.cairn_uniffi.StrongBoxKeyMaterial
 import uniffi.cairn_uniffi.verifyDeviceKeyAttestation
 
@@ -279,6 +280,14 @@ class CairnSession private constructor(
     val storage: StorageHandle,
     val handle: SimplexAdapterHandle,
     /**
+     * The trust-graph write surface (D0035 §4): mints signed, persisted,
+     * cascade-revocable attestations when the user verifies a contact. Shares
+     * this session's storage + StrongBox device signer. The trust graph is
+     * activated here — verification now produces a durable signed record, not
+     * just a local boolean.
+     */
+    val trustGraph: TrustGraphHandle,
+    /**
      * The device-key attestation verdict (D0033 §2, Stage 1) — surfaced on
      * My-Identity. Advisory: a non-attested verdict never blocks the session.
      */
@@ -371,8 +380,13 @@ class CairnSession private constructor(
                 maxRetries = 3.toUByte(),
             )
             val handle = SimplexAdapterHandle(storage, signer, keyAlias, publicKeyRaw, config)
+            // Trust-graph write surface (D0035 §4). Shares the unlocked store +
+            // the same StrongBox device signer (the collapsed v1 identity:
+            // operational == device key, D0035 §1) — a stateless callback both
+            // handles can drive. Initializes the trust-graph category schema.
+            val trustGraph = TrustGraphHandle(storage, signer, keyAlias, publicKeyRaw)
             Log.i(TAG, "CairnSession bootstrapped (${publicKeyRaw.size}-byte op key)")
-            return CairnSession(publicKeyRaw, storage, handle, attestation)
+            return CairnSession(publicKeyRaw, storage, handle, trustGraph, attestation)
         }
 
         /**

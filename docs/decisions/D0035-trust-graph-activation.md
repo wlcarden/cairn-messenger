@@ -66,7 +66,7 @@ attestations." This decision makes verification mint that attestation.
 | **Persistence + surfacing**    | Ops persist via the trust-graph store (reachable from Kotlin); the 3-state badge is driven by `verify_and_classify` over the **real stored chain**, not the local bool (§5)                                                                                                       |
 | **Revocation**                 | `WithdrawRevoke` (clean break) + `CompromiseRevoke` (cascade-quarantine) issuable from the contact UI; the cascade classifier already exists (§6)                                                                                                                                 |
 | **What defers**                | Master/operational hierarchy + Shamir master recovery (D0005/D0006 §3); transitive **introductions** + `rotation` op (D0006 §4 op-types not implemented); cross-device attestation exchange over the wire; group-membership provenance (D0034); auto-mint-`asserted`-on-pair (§7) |
-| **Staging**                    | **Stage 1** Rust core (schema + external-signer + self-token), **Stage 2** uniffi mint + persistence, **Stage 3** Kotlin flows + two-Pixel validation (§8)                                                                                                                        |
+| **Staging**                    | **Stage 1** Rust core (schema + external-signer + self-token) ✓, **Stage 2** uniffi mint + persistence ✓, **Stage 3a** Kotlin mint-on-verify + two-Pixel validation ✓, **Stage 3b** badge re-point + revocation UI (deferred) (§8)                                                |
 
 ## 1. Identity model: self-rooted on the v1 single key
 
@@ -216,9 +216,25 @@ Mirrors the staged units before it (D0030, D0033):
   exports over the external signer + the trust-graph store; self-token bootstrap +
   persist; confirm the store category is in the uniffi allow-list. Host gates +
   aarch64 APK build.
-- **Stage 3 — Kotlin flows + on-device.** QR-verify mints `in-person`; badges from
-  the real chain; revocation UI; **two-Pixel validation** (the artifact is the
-  oracle); reconcile docs (D0034 §9 dependency, design brief §5.2, status).
+- **Stage 3a — Kotlin mint-on-verify + on-device (LANDED 2026-06-04).**
+  `CairnSession` constructs a `TrustGraphHandle` alongside the adapter (shared
+  store + the same StrongBox device signer); the QR-verify action mints
+  `in-person` (the manual safety-number compare mints `channel-verified`),
+  off-Main + best-effort — the local `verified` bool stays the UX truth, so a
+  signing failure never undoes a verify. **Two-Pixel proof (TEE device keys):**
+  on both Pixels, verifying a contact logged
+  `trust-graph: attested <peer> (IN_PERSON) -> 32B record` — the StrongBox device
+  key signed the self-issued capability token (first use) + the attestation op,
+  persisted to the trust-graph category; a cold restart + re-verify then chained
+  on the persisted op. The trust graph is **activated** — verification now
+  produces a durable signed record, not a local boolean.
+- **Stage 3b — badge re-point + revocation (deferred).** Re-point the 3-state
+  badge from the local bool to chain-driven classification (`load_and_classify`),
+  preserving the `KEY_CHANGED` MITM signal via `verifiedKeyHex`; add the
+  withdraw/compromise revocation UI. Split out (the §5 re-point) because the badge
+  becomes an async storage+crypto call per contact and the `KEY_CHANGED`
+  interaction needs deliberate handling; reconcile D0034 §9, design brief §5.2,
+  status when it lands.
 
 Each stage is its own host-gate-clean, propose-commit unit.
 

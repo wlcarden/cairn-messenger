@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.cairn_uniffi.CairnFfiException
+import uniffi.cairn_uniffi.StrengthFfi
 
 /**
  * Delivery state of an outgoing message (received messages are [SendStatus.NONE]).
@@ -624,7 +625,11 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun markCurrentVerified() {
         val peerHex = peerKeyRaw?.toHex() ?: return
-        if (persistVerified(peerHex)) Log.i(TAG, "contact $peerHex VERIFIED (manual compare)")
+        // Manual safety-number compare = channel-verified (a separate channel),
+        // not the strongest in-person ceremony (D0035 §3).
+        if (persistVerified(peerHex, StrengthFfi.CHANNEL_VERIFIED)) {
+            Log.i(TAG, "contact $peerHex VERIFIED (manual compare)")
+        }
     }
 
     /**
@@ -640,19 +645,50 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
             Log.w(TAG, "verify scan MISMATCH on ${peerHex.take(12)}")
             return false
         }
-        val ok = persistVerified(peerHex)
+        // QR scan checks the key bytes face-to-face = in-person, the strongest
+        // verification provenance (D0035 §3).
+        val ok = persistVerified(peerHex, StrengthFfi.IN_PERSON)
         if (ok) Log.i(TAG, "contact $peerHex VERIFIED by QR scan")
         return ok
     }
 
-    /** Persist verified=true bound to [peerHex] + flip the live badge to green. */
-    private fun persistVerified(peerHex: String): Boolean {
+    /**
+     * Persist verified=true bound to [peerHex] + flip the live badge to green,
+     * then mint a durable signed trust-graph attestation at [strength] (D0035
+     * §4 — activation). The mint is best-effort + off-Main: the local verified
+     * state above is the UX truth, and a StrongBox-signing failure does not undo
+     * it. (Re-pointing the badge onto the chain is Stage 3b.)
+     */
+    private fun persistVerified(peerHex: String, strength: StrengthFfi): Boolean {
         val store = contacts ?: return false
         val existing = runCatching { store.get(peerHex) }.getOrNull() ?: return false
         val updated = existing.copy(verified = true, verifiedKeyHex = peerHex)
         if (runCatching { store.save(updated) }.isFailure) return false
         (_ui.value as? UiState.Conversation)?.let { _ui.value = it.copy(trust = Trust.VERIFIED) }
+        mintAttestation(strength)
         return true
+    }
+
+    /**
+     * Mint a signed [strength] attestation for the open contact's operational
+     * key (D0035 §3 / §4) off the Main thread, best-effort. The self-issued
+     * capability token is minted on first use (an extra StrongBox sign). A
+     * failure is logged, never surfaced as a verify failure.
+     */
+    private fun mintAttestation(strength: StrengthFfi) {
+        val tg = session?.trustGraph ?: return
+        val subject = peerKeyRaw ?: return
+        val subjectTag = subject.toHex().take(12)
+        val now = System.currentTimeMillis() / 1000L
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { tg.attest(subject, strength, now.toULong()) }
+            }.onSuccess {
+                Log.i(TAG, "trust-graph: attested $subjectTag ($strength) -> ${it.recordId.size}B record")
+            }.onFailure {
+                Log.w(TAG, "trust-graph: attest $subjectTag failed (best-effort): ${it.message}")
+            }
+        }
     }
 
     /**
