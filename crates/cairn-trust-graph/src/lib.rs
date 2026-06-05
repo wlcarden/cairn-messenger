@@ -67,6 +67,7 @@ pub mod op;
 pub mod self_token;
 pub mod signed;
 pub mod store;
+pub mod vouch;
 
 pub use cascade::{QuarantineStatus, compute_quarantine_state};
 pub use chain::verify_chain_links;
@@ -79,3 +80,4 @@ pub use store::{
     initialize_schema, load_all_ops_chronological, load_chain_for_pair, load_signed_op,
     record_id_for, store_signed_op,
 };
+pub use vouch::{decode_vouch, encode_vouch};

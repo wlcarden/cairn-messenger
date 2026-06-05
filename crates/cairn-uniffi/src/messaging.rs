@@ -198,6 +198,11 @@ pub struct ReceivedMessageRecord {
     /// ≤ `n` as read (and must NOT treat it as a content message). `None` for a
     /// normal message.
     pub read_up_to: Option<u64>,
+    /// `Some(bytes)` if this is a provenance vouch (D0036): the `{op_chain,
+    /// token}` blob the sender shared. The caller routes it to
+    /// `TrustGraphHandle::ingest_vouch` (the sender is already authenticated by
+    /// the envelope signature), NOT to the message list. `None` otherwise.
+    pub vouch: Option<Vec<u8>>,
 }
 
 /// One persisted message in a conversation's history (D0026 §3.2).
@@ -457,6 +462,7 @@ impl SimplexAdapterHandle {
             payload: received.payload,
             received_at_unix: received.received_at_unix,
             read_up_to: received.read_up_to,
+            vouch: received.vouch,
         })
     }
 
@@ -497,6 +503,7 @@ impl SimplexAdapterHandle {
             payload: received.payload,
             received_at_unix: received.received_at_unix,
             read_up_to: received.read_up_to,
+            vouch: received.vouch,
         })
     }
 
@@ -611,6 +618,43 @@ impl SimplexAdapterHandle {
             .map_err(|_| CairnFfiError::MalformedData)?;
         self.adapter
             .send_read_receipt(&ConnectionId(connection_id), &recipient)
+            .await
+            .map_err(CairnFfiError::from)?;
+        Ok(())
+    }
+
+    /// Send a **provenance vouch** to `recipient_operational_pubkey` over
+    /// `connection_id` (D0036 §2): `vouch_bytes` is the `{op_chain, token}` blob
+    /// from `TrustGraphHandle::build_vouch`. An empty-payload, signed + chained
+    /// envelope carrying envelope key 9 — the recipient verifies + ingests it
+    /// (the envelope signature already authenticates this sender).
+    ///
+    /// WHETHER to vouch is the caller's deliberate, opt-in act (D0036 §1) — the
+    /// handle only provides the mechanism.
+    ///
+    /// # Errors
+    ///
+    /// - [`CairnFfiError::MalformedData`] if `recipient_operational_pubkey` is
+    ///   not 32 bytes.
+    /// - The facade mapping of any `SimplexAdapterError`
+    ///   ([`CairnFfiError::SidecarFailure`] when the sidecar is unreachable,
+    ///   [`CairnFfiError::StorageFailure`] on a persist failure).
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+    )]
+    pub async fn send_vouch(
+        &self,
+        connection_id: String,
+        recipient_operational_pubkey: Vec<u8>,
+        vouch_bytes: Vec<u8>,
+    ) -> Result<(), CairnFfiError> {
+        let recipient: [u8; PUBLIC_KEY_LEN] = recipient_operational_pubkey
+            .as_slice()
+            .try_into()
+            .map_err(|_| CairnFfiError::MalformedData)?;
+        self.adapter
+            .send_vouch(&ConnectionId(connection_id), &recipient, &vouch_bytes)
             .await
             .map_err(CairnFfiError::from)?;
         Ok(())

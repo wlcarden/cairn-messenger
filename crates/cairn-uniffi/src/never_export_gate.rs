@@ -73,6 +73,9 @@ pub const fn assert_v1_carrier_types_exportable() {
     // crossing as bytes.
     assert_exportable::<crate::trust_graph::StrengthFfi>();
     assert_exportable::<crate::trust_graph::TrustGraphOpRecord>();
+    // trust_graph provenance (D0036 §6): the vouch record carries only the
+    // PUBLIC voucher pubkey + the strength discriminant.
+    assert_exportable::<crate::trust_graph::VouchProvenanceRecord>();
     // identity (D0027 §2.2): the capability-token record carries only
     // PUBLIC pubkeys + scope strings + the expiry (no secret; the
     // op-identity key signs in StrongBox, never crossing as bytes).

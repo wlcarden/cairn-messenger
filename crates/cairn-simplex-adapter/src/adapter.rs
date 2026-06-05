@@ -145,6 +145,11 @@ pub struct ReceivedMessage {
     /// side's messages up to number `n`. `None` for a normal content message.
     /// The caller marks its outgoing messages ≤ `n` as read.
     pub read_up_to: Option<u64>,
+    /// `Some(bytes)` if this is a provenance vouch (D0036): the canonical-CBOR
+    /// `{op_chain, token}` the sender shared. The caller verifies + ingests it
+    /// (the `me <- sender` envelope already authenticated the sender). `None`
+    /// for content + read-receipt messages.
+    pub vouch: Option<Vec<u8>>,
 }
 
 /// One persisted message in a conversation's history per
@@ -303,8 +308,38 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
         recipient_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
         payload: &[u8],
     ) -> Result<MessageSent, SimplexAdapterError> {
-        self.send_envelope_inner(conn, recipient_operational_pubkey, payload, None)
+        self.send_envelope_inner(conn, recipient_operational_pubkey, payload, None, None)
             .await
+    }
+
+    /// Send a **provenance vouch** to `recipient` (D0036): share a verified
+    /// contact's `Attest` op chain + capability token so the recipient can
+    /// verify + store the foreign attestation and surface its provenance.
+    ///
+    /// `vouch_bytes` is the canonical-CBOR `{op_chain, token}` structure (built
+    /// by the caller). The vouch is an **empty-payload** Cairn envelope carrying
+    /// envelope key 9 — a normal signed + chained envelope on the
+    /// `me -> recipient` direction, so it inherits device-signature
+    /// authentication + chain integrity (D0036 §2, §3).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::send`] (transport, sign, storage, or a poisoned chain mutex).
+    pub async fn send_vouch(
+        &self,
+        conn: &ConnectionId,
+        recipient_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
+        vouch_bytes: &[u8],
+    ) -> Result<(), SimplexAdapterError> {
+        self.send_envelope_inner(
+            conn,
+            recipient_operational_pubkey,
+            &[],
+            None,
+            Some(vouch_bytes.to_vec()),
+        )
+        .await?;
+        Ok(())
     }
 
     /// Send a **read receipt** to `recipient` acknowledging every message this
@@ -335,8 +370,14 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
         let Some(read_up_to) = next_recv.checked_sub(1) else {
             return Ok(()); // nothing received from this peer → nothing to ack
         };
-        self.send_envelope_inner(conn, recipient_operational_pubkey, &[], Some(read_up_to))
-            .await?;
+        self.send_envelope_inner(
+            conn,
+            recipient_operational_pubkey,
+            &[],
+            Some(read_up_to),
+            None,
+        )
+        .await?;
         Ok(())
     }
 
@@ -349,6 +390,7 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
         recipient_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
         payload: &[u8],
         read_up_to: Option<u64>,
+        vouch: Option<Vec<u8>>,
     ) -> Result<MessageSent, SimplexAdapterError> {
         let (prior_hash, message_number) = self.send_chain_state(recipient_operational_pubkey)?;
 
@@ -364,6 +406,7 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             payload: payload.to_vec(),
             padding,
             read_up_to,
+            vouch,
         };
         let cose = envelope.sign_with(self.identity.device_signer.as_ref())?;
 
@@ -552,6 +595,9 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             // A read receipt (D0032) carries key 8 + an empty payload; the caller
             // routes a `Some` to read-status handling, not to the message list.
             read_up_to: envelope.read_up_to,
+            // A vouch (D0036) carries key 9 + an empty payload; the caller routes
+            // a `Some` to verify+ingest, not to the message list.
+            vouch: envelope.vouch.clone(),
         })
     }
 

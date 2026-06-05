@@ -15,6 +15,7 @@
 //! | 6   | `payload`                        | bstr           | Application-level payload |
 //! | 7   | `padding`                        | bstr           | Per D0026 §4 size-bin padding |
 //! | 8   | `read_up_to`                     | uint           | OPTIONAL (D0032) — present only on a read-receipt envelope; the cumulative message-number high-water the sender has read |
+//! | 9   | `vouch`                          | bstr           | OPTIONAL (D0036) — present only on a provenance-vouch envelope; canonical-CBOR `{op_chain, token}` the sender shares |
 //!
 //! Key 8 (`read_up_to`) is **omitted** on a normal content envelope, so
 //! content envelopes encode byte-identically to the pre-D0032 schema — the
@@ -63,6 +64,7 @@ const KEY_PRIOR_ENVELOPE_HASH: i64 = 5;
 const KEY_PAYLOAD: i64 = 6;
 const KEY_PADDING: i64 = 7;
 const KEY_READ_UP_TO: i64 = 8;
+const KEY_VOUCH: i64 = 9;
 
 /// Produces the device-key Ed25519 signature over a Cairn message
 /// envelope's COSE `Sig_structure` (D0006 §9 hop #1).
@@ -142,6 +144,15 @@ pub struct MessageEnvelope {
     /// canonical encoding so content envelopes stay byte-identical to the
     /// pre-D0032 schema (the `prior_envelope_hash` chain is undisturbed).
     pub read_up_to: Option<u64>,
+    /// OPTIONAL provenance vouch per D0026 §2.1 key 9 (D0036).
+    ///
+    /// `Some(bytes)` ONLY on a vouch control envelope (empty `payload`): a
+    /// canonical-CBOR `{op_chain, token}` carrying the sender's shared `Attest`
+    /// op chain + capability token, so the recipient can verify + store the
+    /// foreign attestation and surface its provenance. `None` on every other
+    /// envelope, in which case key 9 is OMITTED — content + read-receipt
+    /// envelopes stay byte-identical to the pre-D0036 schema.
+    pub vouch: Option<Vec<u8>>,
 }
 
 impl MessageEnvelope {
@@ -183,6 +194,12 @@ impl MessageEnvelope {
                 i64::try_from(read_up_to).map_err(|_| SimplexAdapterError::EnvelopeDecodeFailed)?;
             entries.push((Value::Int(KEY_READ_UP_TO), Value::Int(read_up_to_i64)));
         }
+        // Key 9 (vouch) is OPTIONAL (D0036): appended AFTER key 8 (canonical
+        // ascending order) ONLY when present, so non-vouch envelopes stay
+        // byte-identical to the pre-D0036 schema — the chain is undisturbed.
+        if let Some(vouch) = &self.vouch {
+            entries.push((Value::Int(KEY_VOUCH), Value::Bytes(vouch.clone())));
+        }
         Value::Map(entries)
             .encode()
             .map_err(|_| SimplexAdapterError::EnvelopeDecodeFailed)
@@ -212,6 +229,7 @@ impl MessageEnvelope {
         let mut payload: Option<Vec<u8>> = None;
         let mut padding: Option<Vec<u8>> = None;
         let mut read_up_to: Option<u64> = None;
+        let mut vouch: Option<Vec<u8>> = None;
 
         for (key, value) in entries {
             let CiboriumValue::Integer(key_int_ciborium) = key else {
@@ -245,6 +263,14 @@ impl MessageEnvelope {
                 // Optional read-receipt high-water (D0032); absent on content
                 // envelopes, where it stays None.
                 KEY_READ_UP_TO => read_up_to = Some(int_to_u64(&value)?),
+                // Optional provenance vouch (D0036); absent on non-vouch
+                // envelopes, where it stays None.
+                KEY_VOUCH => {
+                    let CiboriumValue::Bytes(b) = value else {
+                        return Err(SimplexAdapterError::EnvelopeDecodeFailed);
+                    };
+                    vouch = Some(b);
+                }
                 _ => {} // forward-compat per D0006 §6.4
             }
         }
@@ -260,6 +286,7 @@ impl MessageEnvelope {
             payload: payload.ok_or(SimplexAdapterError::EnvelopeDecodeFailed)?,
             padding: padding.ok_or(SimplexAdapterError::EnvelopeDecodeFailed)?,
             read_up_to,
+            vouch,
         })
     }
 
@@ -493,6 +520,7 @@ mod tests {
             payload: b"hello world".to_vec(),
             padding: vec![0xAA; 200], // pads to 256 bucket with envelope overhead
             read_up_to: None,
+            vouch: None,
         };
         (envelope, device_sk, recipient_op_sk)
     }
@@ -502,6 +530,25 @@ mod tests {
         let (envelope, _, _) = make_envelope();
         let bytes = envelope.to_canonical_cbor().unwrap();
         let recovered = MessageEnvelope::from_canonical_cbor(&bytes).unwrap();
+        assert_eq!(recovered, envelope);
+    }
+
+    #[test]
+    fn vouch_field_round_trips_and_is_omitted_when_none() {
+        // A non-vouch envelope omits key 9 entirely (byte-identical to the
+        // pre-D0036 schema), and a vouch envelope round-trips the bytes (D0036 §2).
+        let (mut envelope, _, _) = make_envelope();
+        let without = envelope.to_canonical_cbor().unwrap();
+
+        envelope.vouch = Some(b"vouch-cbor-bytes".to_vec());
+        let with = envelope.to_canonical_cbor().unwrap();
+        assert_ne!(without, with, "key 9 must change the encoding when present");
+
+        let recovered = MessageEnvelope::from_canonical_cbor(&with).unwrap();
+        assert_eq!(
+            recovered.vouch.as_deref(),
+            Some(b"vouch-cbor-bytes".as_ref())
+        );
         assert_eq!(recovered, envelope);
     }
 

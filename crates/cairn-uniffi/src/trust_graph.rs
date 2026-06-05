@@ -41,8 +41,9 @@ use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, VerifyingKey};
 use cairn_identity::IdentityError;
 use cairn_storage::Storage;
 use cairn_trust_graph::{
-    SignedTrustGraphOp, Strength, TrustGraphError, TrustGraphOp, compute_quarantine_state,
-    initialize_schema, load_chain_for_pair, self_issued_token, store_signed_op, verify_chain_links,
+    OpType, SignedTrustGraphOp, Strength, TrustGraphError, TrustGraphOp, compute_quarantine_state,
+    decode_vouch, encode_vouch, initialize_schema, load_all_ops_chronological, load_chain_for_pair,
+    self_issued_token, store_signed_op, verify_chain_links,
 };
 
 use crate::error::CairnFfiError;
@@ -249,6 +250,21 @@ pub struct TrustGraphOpRecord {
     pub op_bytes: Vec<u8>,
 }
 
+/// One contact's vouch for a subject (D0036 §6): a foreign attestation a
+/// contact shared, surfaced as depth-1 provenance.
+///
+/// The shell fences this to the user's OWN verified contacts and names the
+/// voucher — provenance, not reputation (D0034 §4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+pub struct VouchProvenanceRecord {
+    /// The 32-byte operational pubkey of the contact who vouched (the issuer of
+    /// the foreign attestation). The shell maps it to a known contact + name.
+    pub voucher_operational_pubkey: Vec<u8>,
+    /// The strength at which the voucher attested the subject.
+    pub strength: StrengthFfi,
+}
+
 /// v1 self-issued capability tokens carry no explicit expiry (D0035 §4):
 /// the collapsed single key is its own authority, rotated only when the
 /// master hierarchy lands (§7).
@@ -413,6 +429,124 @@ impl TrustGraphHandle {
             .into_iter()
             .map(QuarantineStatusFfi::from)
             .collect())
+    }
+
+    /// Build a **vouch** blob for `subject_operational_pubkey` (D0036 §2): this
+    /// identity's `Attest` op chain for the subject + this identity's capability
+    /// token, packaged as the canonical-CBOR `{op_chain, token}` the shell hands
+    /// to `send_vouch`. Errors if this identity has not attested the subject
+    /// (nothing to vouch).
+    ///
+    /// # Errors
+    ///
+    /// - [`CairnFfiError::MalformedData`] for a non-32-byte subject key, or if
+    ///   there is no stored attestation chain for the subject.
+    /// - The original signer error if minting the self-token fails.
+    /// - [`CairnFfiError::StorageFailure`] / encode failure otherwise.
+    pub fn build_vouch(
+        &self,
+        subject_operational_pubkey: Vec<u8>,
+    ) -> Result<Vec<u8>, CairnFfiError> {
+        let subject = parse_pubkey(&subject_operational_pubkey)?;
+        let chain = load_chain_for_pair(&self.storage, &self.operational_pubkey, &subject)?;
+        if chain.is_empty() {
+            return Err(CairnFfiError::MalformedData); // nothing to vouch
+        }
+        let token = self.ensure_self_token()?;
+        let op_chain: Vec<Vec<u8>> = chain
+            .iter()
+            .map(|op| op.encode(false))
+            .collect::<Result<_, _>>()
+            .map_err(CairnFfiError::from)?;
+        encode_vouch(&op_chain, &token).map_err(CairnFfiError::from)
+    }
+
+    /// Verify + store a foreign attestation **vouch** (D0036 §5): `vouch_bytes`
+    /// is the `{op_chain, token}` blob a contact shared (from `build_vouch`).
+    /// The chain is verified against the `voucher`'s op-key + the carried token
+    /// BEFORE anything is stored — an unverifiable vouch persists nothing.
+    ///
+    /// The sender's authenticity (this vouch really came from the voucher) is
+    /// the transport's job (the `COSE_Sign1` envelope, D0036 §3); this verifies
+    /// the attestation *content*.
+    ///
+    /// # Errors
+    ///
+    /// - [`CairnFfiError::MalformedData`] for a non-32-byte voucher key, a
+    ///   malformed vouch blob, or a self-vouch (`voucher` == this identity).
+    /// - [`CairnFfiError::ChainInvalid`] / [`CairnFfiError::SignatureVerifyFailed`]
+    ///   if the foreign chain does not verify against the voucher's key + token.
+    /// - [`CairnFfiError::StorageFailure`] for a persistence failure.
+    pub fn ingest_vouch(
+        &self,
+        voucher_operational_pubkey: Vec<u8>,
+        vouch_bytes: Vec<u8>,
+    ) -> Result<(), CairnFfiError> {
+        let voucher = parse_pubkey(&voucher_operational_pubkey)?;
+        // A vouch is always FROM a contact; a chain issued by this identity is
+        // not a vouch (it would pollute own-chain queries). Reject it.
+        if voucher == self.operational_pubkey {
+            return Err(CairnFfiError::MalformedData);
+        }
+        let (op_chain, voucher_token) = decode_vouch(&vouch_bytes)?;
+        let ops: Vec<SignedTrustGraphOp> = op_chain
+            .iter()
+            .map(|bytes| SignedTrustGraphOp::from_bytes(bytes))
+            .collect::<Result<_, _>>()?;
+        // Verify the foreign chain against the voucher's key + token; an
+        // unverifiable vouch is rejected before anything is stored (D0036 §3).
+        verify_chain_links(&ops, &voucher_token, &voucher)?;
+        for signed in &ops {
+            store_signed_op(&self.storage, signed)?;
+        }
+        Ok(())
+    }
+
+    /// Return the **depth-1 provenance** for `subject_operational_pubkey`
+    /// (D0036 §6): every FOREIGN contact (issuer != this identity) whose latest
+    /// stored op for the subject is a non-revoked attestation, with the strength
+    /// they attested at. A voucher whose latest op for the subject is a
+    /// revocation is omitted (they withdrew).
+    ///
+    /// The shell fences this to the user's OWN verified contacts + names the
+    /// voucher — provenance, not reputation (D0034 §4). Order is unspecified.
+    ///
+    /// # Errors
+    ///
+    /// - [`CairnFfiError::MalformedData`] for a non-32-byte subject key.
+    /// - [`CairnFfiError::StorageFailure`] for a load failure.
+    pub fn provenance_for(
+        &self,
+        subject_operational_pubkey: Vec<u8>,
+    ) -> Result<Vec<VouchProvenanceRecord>, CairnFfiError> {
+        let subject = parse_pubkey(&subject_operational_pubkey)?;
+        let all = load_all_ops_chronological(&self.storage)?;
+        // Ops are timestamp-ascending, so the last op per foreign issuer for
+        // this subject is their current stance. Every op here was verified
+        // before storage (own ops at mint, D0035 §4; foreign ops at
+        // `ingest_vouch`), so the store-layer load needs no re-verification.
+        let mut latest: std::collections::HashMap<
+            [u8; PUBLIC_KEY_LEN],
+            (OpType, Option<Strength>),
+        > = std::collections::HashMap::new();
+        for signed in &all {
+            let op = signed.op();
+            if op.subject != subject || op.issuer == self.operational_pubkey {
+                continue;
+            }
+            latest.insert(op.issuer.to_bytes(), (op.op_type, op.strength));
+        }
+        let records = latest
+            .into_iter()
+            .filter_map(|(issuer, (op_type, strength))| match op_type {
+                OpType::Attest | OpType::ReAttest => strength.map(|s| VouchProvenanceRecord {
+                    voucher_operational_pubkey: issuer.to_vec(),
+                    strength: StrengthFfi::from(s),
+                }),
+                _ => None, // latest op is a revocation → not surfaced
+            })
+            .collect();
+        Ok(records)
     }
 }
 
@@ -779,5 +913,85 @@ mod tests {
             .attest(vec![0u8; 31], StrengthFfi::InPerson, 1_700_000_000)
             .unwrap_err();
         assert_eq!(err, CairnFfiError::MalformedData);
+    }
+
+    // === Provenance vouch (D0036 §5/§6) ===
+
+    #[test]
+    fn vouch_round_trip_surfaces_named_provenance() {
+        let mut rng = OsRng;
+        let bob = SigningKey::generate(&mut rng);
+        let bob_key = bob.verifying_key().to_bytes().to_vec();
+        let carol_key = SigningKey::generate(&mut rng)
+            .verifying_key()
+            .to_bytes()
+            .to_vec();
+        let alice = SigningKey::generate(&mut rng);
+        let bob_handle = handle_for(bob);
+        let alice_handle = handle_for(alice);
+
+        // Bob verifies Carol in person on HIS device, then builds a vouch.
+        bob_handle
+            .attest(carol_key.clone(), StrengthFfi::InPerson, 1_700_000_000)
+            .unwrap();
+        let vouch = bob_handle.build_vouch(carol_key.clone()).unwrap();
+
+        // Alice has no provenance for Carol until she ingests the vouch.
+        assert!(
+            alice_handle
+                .provenance_for(carol_key.clone())
+                .unwrap()
+                .is_empty()
+        );
+        alice_handle.ingest_vouch(bob_key.clone(), vouch).unwrap();
+
+        // Alice now sees the named, depth-1 provenance (Bob, in person).
+        let prov = alice_handle.provenance_for(carol_key).unwrap();
+        assert_eq!(prov.len(), 1);
+        assert_eq!(prov[0].voucher_operational_pubkey, bob_key);
+        assert_eq!(prov[0].strength, StrengthFfi::InPerson);
+    }
+
+    #[test]
+    fn ingest_rejects_self_vouch() {
+        let mut rng = OsRng;
+        let me = SigningKey::generate(&mut rng);
+        let me_key = me.verifying_key().to_bytes().to_vec();
+        let peer = SigningKey::generate(&mut rng)
+            .verifying_key()
+            .to_bytes()
+            .to_vec();
+        let handle = handle_for(me);
+        handle
+            .attest(peer.clone(), StrengthFfi::InPerson, 1_700_000_000)
+            .unwrap();
+        let vouch = handle.build_vouch(peer).unwrap();
+        // Ingesting a vouch whose issuer is THIS identity is rejected (a vouch is
+        // always from a contact).
+        let err = handle.ingest_vouch(me_key, vouch).unwrap_err();
+        assert_eq!(err, CairnFfiError::MalformedData);
+    }
+
+    #[test]
+    fn ingest_rejects_tampered_vouch() {
+        let mut rng = OsRng;
+        let bob = SigningKey::generate(&mut rng);
+        let bob_key = bob.verifying_key().to_bytes().to_vec();
+        let carol_key = SigningKey::generate(&mut rng)
+            .verifying_key()
+            .to_bytes()
+            .to_vec();
+        let alice = SigningKey::generate(&mut rng);
+        let bob_handle = handle_for(bob);
+        let alice_handle = handle_for(alice);
+        bob_handle
+            .attest(carol_key.clone(), StrengthFfi::InPerson, 1_700_000_000)
+            .unwrap();
+        let mut vouch = bob_handle.build_vouch(carol_key.clone()).unwrap();
+        // Corrupt the blob → decode or chain-verify fails; nothing is stored.
+        let last = vouch.len() - 1;
+        vouch[last] ^= 0x01;
+        assert!(alice_handle.ingest_vouch(bob_key, vouch).is_err());
+        assert!(alice_handle.provenance_for(carol_key).unwrap().is_empty());
     }
 }

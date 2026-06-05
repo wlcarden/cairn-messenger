@@ -152,7 +152,7 @@ pub use storage::{StorageHandle, StrongBoxKeyMaterial};
 pub use tor::{NetworkStateFfi, TorControlConfig, TorTransportHandle};
 pub use transparency::{SigsumClientHandle, SigsumLogConfig, TreeHeadRecord};
 pub use trust_graph::{
-    QuarantineStatusFfi, StrengthFfi, TrustGraphHandle, TrustGraphOpRecord,
+    QuarantineStatusFfi, StrengthFfi, TrustGraphHandle, TrustGraphOpRecord, VouchProvenanceRecord,
     trust_graph_verify_and_classify,
 };
 
