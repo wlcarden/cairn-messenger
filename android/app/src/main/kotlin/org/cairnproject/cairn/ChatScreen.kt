@@ -903,6 +903,7 @@ private fun ChatAppBar(state: UiState.Conversation, vm: MessagingViewModel) {
     var showVerify by remember { mutableStateOf(false) }
     var showRename by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
+    var showVouch by remember { mutableStateOf(false) }
     var verifyScanError by remember { mutableStateOf<String?>(null) }
     val verifyScanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
         val scanned = result.contents
@@ -948,6 +949,17 @@ private fun ChatAppBar(state: UiState.Conversation, vm: MessagingViewModel) {
                         color = Color.White.copy(alpha = 0.85f),
                         style = MaterialTheme.typography.labelSmall,
                     )
+                    // Named, depth-1 provenance from the user's verified contacts
+                    // (D0036 §6) — provenance, not reputation.
+                    if (state.provenance.isNotEmpty()) {
+                        Text(
+                            "✓ Vouched by ${state.provenance.joinToString(", ")}",
+                            color = Color.White.copy(alpha = 0.85f),
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
         },
@@ -980,6 +992,13 @@ private fun ChatAppBar(state: UiState.Conversation, vm: MessagingViewModel) {
                         DropdownMenuItem(
                             text = { Text("Mark compromised") },
                             onClick = { menuOpen = false; vm.revokeCurrentContact(compromise = true) },
+                        )
+                        // Vouch (D0036 §1): share this verified contact's
+                        // attestation with another contact — a deliberate,
+                        // opt-in act (it reveals you know this person).
+                        DropdownMenuItem(
+                            text = { Text("Vouch for ${state.displayName} to…") },
+                            onClick = { menuOpen = false; showVouch = true },
                         )
                     }
                     DropdownMenuItem(
@@ -1041,6 +1060,56 @@ private fun ChatAppBar(state: UiState.Conversation, vm: MessagingViewModel) {
             dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } },
         )
     }
+    if (showVouch) {
+        VouchPickerDialog(
+            contactName = state.displayName,
+            recipients = vm.otherContacts(state.peerKeyHex),
+            onPick = { recipientKey ->
+                vm.vouchCurrentContactTo(recipientKey)
+                showVouch = false
+            },
+            onDismiss = { showVouch = false },
+        )
+    }
+}
+
+/**
+ * Pick a contact to vouch the open contact to (D0036 §1). Deliberate + opt-in —
+ * sharing reveals to the recipient that you know + verified this contact.
+ */
+@Composable
+private fun VouchPickerDialog(
+    contactName: String,
+    recipients: List<Pair<String, String>>,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Vouch for $contactName to…") },
+        text = {
+            if (recipients.isEmpty()) {
+                Text("You have no other contacts to vouch to.")
+            } else {
+                Column {
+                    Text(
+                        "Share your verification of $contactName with a contact — " +
+                            "they will see that you vouch for this key.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.size(8.dp))
+                    recipients.forEach { (name, key) ->
+                        TextButton(
+                            onClick = { onPick(key) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(name, modifier = Modifier.fillMaxWidth()) }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 /** Compact trust label for the chat app bar (the colour-coded badge is on the list). */

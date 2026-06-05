@@ -173,16 +173,28 @@ graph traversal — deferred (§7).
 
 ## 8. Staging + validation
 
-- **Stage 1 — Rust + uniffi + wire carrier.** Add the `MessageEnvelope` key-9
-  `vouch` field + send/recv dispatch (`cairn-simplex-adapter` + the messaging
-  uniffi surface); add `ingest_vouch` + `provenance_for` to the trust-graph handle
-  (verify-then-store foreign chains + the query). Host gates (`cargo fmt` + clippy
-  `-D warnings` + `cargo test`) + the aarch64 APK build.
-- **Stage 2 — Kotlin + on-device.** The **"Vouch for … to …"** action on a verified
-  contact (pick a recipient) + the provenance surface when encountering a vouched
-  key; driver hooks; **two-Pixel validation** (Bob vouches Carol to Alice on real
-  hardware; Alice's device shows the named provenance); reconcile D0035 §7 /
-  D0034 §4 / design brief §5.2 / status.
+- **Stage 1 — Rust + uniffi + wire carrier (LANDED 2026-06-04).** The
+  `MessageEnvelope` key-9 `vouch` field + send/recv dispatch
+  (`cairn-simplex-adapter` + the messaging uniffi surface); the `{op_chain,
+token}` codec (`cairn-trust-graph::vouch`); `build_vouch` / `ingest_vouch`
+  (verify-then-store foreign chains) / `provenance_for` (depth-1, named,
+  revocation-aware) on the trust-graph handle + `VouchProvenanceRecord`
+  (never-export-gated). Host gates clean + the aarch64 APK build (bindings
+  regenerate). Tests: vouch codec round-trip; build→ingest→provenance round-trip;
+  self-vouch + tampered-vouch rejection.
+- **Stage 2 — Kotlin + on-device (LANDED 2026-06-04).** The **"Vouch for … to …"**
+  action (a contact-picker dialog) on a verified contact; the recv loop ingests a
+  vouch (off the message list) + refreshes provenance; the conversation header
+  shows the named provenance line; a `--es vouch` driver hook. **Two-Pixel proof
+  (over Tor):** device B logged `vouched … to …` (`build_vouch` → `send_vouch`)
+  and device A logged `ingested vouch from …` (recv dispatch → `ingest_vouch`,
+  verified against the voucher's key + token, StrongBox-rooted). **Honest gap:**
+  the rendered provenance _line_ needs a 3-party graph and only two Pixels
+  (mutual contacts) were available, so the on-device proof is the cross-device
+  pipeline; the named-provenance _output_ is host-validated
+  (`vouch_round_trip_surfaces_named_provenance`). Still deferred (D0036 §7):
+  connection-making introductions, multi-hop, revocation propagation;
+  reconcile D0035 §7 / D0034 §4 / design brief §5.2 / status when those land.
 
 Each stage is its own host-gate-clean, propose-commit unit.
 

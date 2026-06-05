@@ -142,6 +142,7 @@ class MainActivity : FragmentActivity() {
      *   --es readreceipts "on|off"   → toggle read receipts (D0032; off by default)
      *   --es verifyscan "<peerHex>"   → verify by a scanned peer key (match → verified)
      *   --es revoke "withdraw|compromise" → revoke the open contact's verification (D0035 §6)
+     *   --es vouch "<recipientHex>"    → vouch the open contact to a recipient (D0036)
      *   --es simkeymismatch "1"       → simulate a recv key mismatch (downgrade + banner)
      *   --es quickenroll "<pass>"     → enroll quick unlock (shows the BiometricPrompt)
      *   --es quickunlock "1"          → quick-unlock prompt (decrypt → unlock)
@@ -218,6 +219,10 @@ class MainActivity : FragmentActivity() {
             val compromise = it == "compromise"
             Log.i(TAG, "driver: revokeCurrentContact(compromise=$compromise)")
             viewModel.revokeCurrentContact(compromise)
+        }
+        intent.getStringExtra("vouch")?.let {
+            Log.i(TAG, "driver: vouchCurrentContactTo")
+            viewModel.vouchCurrentContactTo(it)
         }
         intent.getStringExtra("simkeymismatch")?.let {
             Log.i(TAG, "driver: simulateKeyMismatch")

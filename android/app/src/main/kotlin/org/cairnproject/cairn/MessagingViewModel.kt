@@ -125,6 +125,13 @@ sealed interface UiState {
          * trust label (D0035 §5). Null otherwise.
          */
         val verifiedStrength: String? = null,
+        /**
+         * Named, depth-1 provenance (D0036 §6): which of the user's verified
+         * contacts have vouched for this key, each like "Bob (in person)".
+         * Fenced to the user's OWN verified contacts — provenance, not
+         * reputation. Empty when none.
+         */
+        val provenance: List<String> = emptyList(),
     ) : UiState
 
     /** A fatal bootstrap/transport error. */
@@ -460,12 +467,14 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
             }
             Log.i(TAG, "opened ${contact.displayName}: ${hist?.messages?.size ?: 0} history msgs")
             Log.i(TAG, "contact trust=${contact.trust()}")
+            val prov = withContext(Dispatchers.IO) { computeProvenance(peer) }
             _ui.value = UiState.Conversation(
                 myHex,
                 contact.peerKeyHex,
                 contact.displayName,
                 trust = contact.trust(),
                 verifiedStrength = contact.verifiedStrength.takeIf { contact.trust() == Trust.VERIFIED },
+                provenance = prov,
             )
             // Opening unread messages = reading them → ack the peer (D0032), but
             // only if read receipts are enabled (off by default, reciprocal).
@@ -743,6 +752,74 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Vouch for the OPEN contact to [recipientKeyHex] (D0036 §1): build a vouch
+     * from this identity's attestation chain for the open contact + send it to
+     * the recipient. A deliberate, opt-in act — the only thing that reveals to
+     * the recipient that this device knows + verified the open contact. Off-Main,
+     * best-effort.
+     */
+    fun vouchCurrentContactTo(recipientKeyHex: String) {
+        val subject = peerKeyRaw ?: return
+        val store = contacts ?: return
+        val tg = session?.trustGraph ?: return
+        val handle = session?.handle ?: return
+        val recipient = runCatching { store.get(recipientKeyHex) }.getOrNull() ?: return
+        val recipientKey = runCatching { recipientKeyHex.fromHex() }.getOrNull() ?: return
+        val subjectTag = subject.toHex().take(12)
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val vouch = tg.buildVouch(subject)
+                    handle.sendVouch(recipient.connId, recipientKey, vouch)
+                }
+            }.onSuccess { Log.i(TAG, "vouched $subjectTag to ${recipientKeyHex.take(12)}") }
+                .onFailure { Log.w(TAG, "vouch $subjectTag failed: ${it.message}") }
+        }
+    }
+
+    /**
+     * The user's other contacts (excluding [excludingKeyHex]) — the candidate
+     * recipients for a vouch. Returns (displayName, peerKeyHex) pairs.
+     */
+    fun otherContacts(excludingKeyHex: String): List<Pair<String, String>> =
+        runCatching { contacts?.list() }.getOrNull().orEmpty()
+            .filter { it.peerKeyHex != excludingKeyHex }
+            .map { it.displayName to it.peerKeyHex }
+
+    /**
+     * Named, depth-1 provenance for [peerKey] (D0036 §6): which of the user's
+     * OWN verified contacts have vouched for this key, each like
+     * "Bob (in person)". Fenced to verified contacts — provenance, not
+     * reputation. A storage+crypto call; run off the Main thread.
+     */
+    private fun computeProvenance(peerKey: ByteArray): List<String> {
+        val tg = session?.trustGraph ?: return emptyList()
+        val store = contacts ?: return emptyList()
+        val records = runCatching { tg.provenanceFor(peerKey) }.getOrNull() ?: return emptyList()
+        return records.mapNotNull { rec ->
+            val voucher = runCatching { store.get(rec.voucherOperationalPubkey.toHex()) }.getOrNull()
+            // Fence (D0036 §6): only the user's OWN verified contacts count.
+            if (voucher == null || !voucher.verified) return@mapNotNull null
+            val strength = when (rec.strength) {
+                StrengthFfi.IN_PERSON -> "in person"
+                StrengthFfi.CHANNEL_VERIFIED -> "over a channel"
+                else -> "asserted"
+            }
+            "${voucher.displayName} ($strength)"
+        }
+    }
+
+    /** Recompute the OPEN conversation's provenance (after ingesting a vouch). */
+    private fun refreshOpenProvenance() {
+        val open = _ui.value as? UiState.Conversation ?: return
+        val peerKey = runCatching { open.peerKeyHex.fromHex() }.getOrNull() ?: return
+        val prov = computeProvenance(peerKey)
+        (_ui.value as? UiState.Conversation)?.let {
+            if (it.peerKeyHex == open.peerKeyHex) _ui.value = it.copy(provenance = prov)
+        }
+    }
+
+    /**
      * A recv signature verify-failure means the channel is presenting a key that
      * no longer matches the one we pinned/verified — a re-pair or an active
      * interception (D0006 §70). Security-conservative response: downgrade the
@@ -883,6 +960,22 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                     if (readReceiptsEnabled() && open?.peerKeyHex == contact.peerKeyHex) {
                         markReadUpTo(readUpTo.toLong())
                         Log.i(TAG, "read receipt up to $readUpTo from ${contact.peerKeyHex.take(12)}")
+                    }
+                    continue
+                }
+                // A provenance vouch (D0036): empty payload + vouch set. The
+                // envelope already authenticated the sender (this contact = the
+                // voucher), so verify + ingest the foreign attestation, then
+                // refresh the open conversation's provenance. NOT a message.
+                val vouch = r.vouch
+                if (vouch != null) {
+                    session?.trustGraph?.let { tg ->
+                        runCatching { tg.ingestVouch(peer, vouch) }
+                            .onSuccess {
+                                Log.i(TAG, "trust-graph: ingested vouch from ${contact.peerKeyHex.take(12)}")
+                                refreshOpenProvenance()
+                            }
+                            .onFailure { Log.w(TAG, "trust-graph: ingest vouch failed: ${it.message}") }
                     }
                     continue
                 }
