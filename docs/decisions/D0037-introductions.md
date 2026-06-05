@@ -215,15 +215,29 @@ queue). No partial state leaves a dangling connection.
   methods — reusing the existing `build_vouch`, `ingest_vouch`, `create_invitation`,
   and `accept_invitation`. Host gates, workspace tests, and the aarch64 APK build
   are all clean.
-- **Stage 2 — Kotlin.** The **"Introduce … to …"** initiator (extends the vouch
-  picker); **Carol's** approve/decline surface; **Alice's** connect/decline
-  surface; contact-from-introduction (provenance + "introduced by" from genesis);
-  driver hooks.
-- **Stage 3 — three-device on-device validation.** Bob introduces Carol↔Alice on
-  three physical/emulated identities over Tor: Carol approves + mints, Bob relays,
-  Alice connects, and **both** new contacts show Bob's named provenance. (This
-  also closes the 3-party display gap D0036 left open.) Reconcile D0036 §7 /
-  D0034 §7 / design brief §5.2 / status.
+- **Stage 2 — Kotlin.** _(Landed.)_ The orchestration in `MessagingViewModel`:
+  `initiateIntroduction` (the **"Introduce … to …"** picker, fenced to verified
+  contacts); the recv-loop key-10 dispatch (`handleIncomingIntroduction` → by
+  kind); the broker's stateless relay gated by `pendingOutgoingIntroductions`
+  (so an unsolicited `Response` can't weaponize this device as a relay);
+  `approveIntroduction` (mint + send invitation + ingest the introducer's vouch +
+  await-pair), `connectIntroduction` (ingest + redeem the invitation), and
+  `declineIntroduction`. The consent UI in `ChatScreen`: an
+  `IntroductionConsentDialog` that overlays any screen (APPROVE / CONNECT shapes)
+  and the `IntroducePickerDialog`. The **"introduced by" provenance is reused
+  from D0036** — the introducer's vouch nests inside each message, so both new
+  contacts ingest it and `computeProvenance` already names the introducer (no new
+  `Contact` field). Driver hooks: `--es introduce` / `introapprove` /
+  `introconnect` / `introdecline` act on the open conversation + the consent-queue
+  head. Host gates + the aarch64 APK build are clean; an on-device smoke test
+  (install, core-load, Tor bootstrap, UI render, no crash) passed on a Pixel 6 —
+  the full three-party flow is Stage 3.
+- **Stage 3 — three-device on-device validation.** _(Blocked: needs three
+  identities; deferred until ≥3 devices are available.)_ Bob introduces
+  Carol↔Alice on three physical/emulated identities over Tor: Carol approves +
+  mints, Bob relays, Alice connects, and **both** new contacts show Bob's named
+  provenance. (This also closes the 3-party display gap D0036 left open.)
+  Reconcile D0036 §7 / D0034 §7 / design brief §5.2 / status.
 
 Each stage is its own host-gate-clean, propose-commit unit.
 

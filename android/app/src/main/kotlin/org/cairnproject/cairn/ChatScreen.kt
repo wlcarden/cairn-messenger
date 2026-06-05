@@ -98,6 +98,10 @@ import kotlinx.coroutines.launch
 fun ChatScreen(vm: MessagingViewModel) {
     val ui by vm.ui.collectAsStateWithLifecycle()
     val torStatus by vm.torStatus.collectAsStateWithLifecycle()
+    // Inbound introduction consent prompts (D0037 §3) — collected at the top so
+    // the prompt overlays ANY screen (an introduction can arrive while in the
+    // contact list or another conversation).
+    val pendingIntros by vm.pendingIntroductions.collectAsStateWithLifecycle()
 
     // System BACK navigates WITHIN the app instead of exiting it: a sub-screen
     // goes back to the conversation list (or cancels a pending pair / dismisses a
@@ -180,6 +184,66 @@ fun ChatScreen(vm: MessagingViewModel) {
             }
         }
     }
+
+    // Show the head of the introduction-consent queue over everything (D0037 §2:
+    // nothing happens until the user explicitly approves/connects).
+    pendingIntros.firstOrNull()?.let { p -> IntroductionConsentDialog(p, vm) }
+}
+
+/**
+ * The consent prompt for an inbound introduction (D0037 §3) — the ONLY place an
+ * introduction ever acts. Two shapes (see [PendingIntroduction]):
+ *
+ * - APPROVE — a contact wants to introduce you to someone: approving mints a
+ *   one-time invitation and sends it back, so they can connect you.
+ * - CONNECT — someone consented to meet you: connecting redeems the invitation.
+ *
+ * Either way the introducer's vouch rides along, so the new contact will show
+ * the introducer's named provenance (D0036 reuse).
+ */
+@Composable
+private fun IntroductionConsentDialog(p: PendingIntroduction, vm: MessagingViewModel) {
+    val isApprove = p.kind == PendingIntroduction.Kind.APPROVE
+    AlertDialog(
+        onDismissRequest = { vm.declineIntroduction(p) },
+        title = { Text(if (isApprove) "Introduction request" else "Introduction") },
+        text = {
+            Column {
+                Text(
+                    if (isApprove) {
+                        "${p.introducerName} would like to introduce you to a new contact, " +
+                            "“${p.peerName}”."
+                    } else {
+                        "${p.introducerName} introduced you to “${p.peerName}”, who agreed to connect."
+                    },
+                )
+                Spacer(Modifier.size(8.dp))
+                Text(
+                    "${p.introducerName} vouches for this person — they'll appear in your " +
+                        "contacts as vouched by ${p.introducerName}.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (isApprove) {
+                    Spacer(Modifier.size(8.dp))
+                    Text(
+                        "Approving creates a one-time invitation so they can reach you. " +
+                            "You'll connect once they accept.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                if (isApprove) vm.approveIntroduction(p) else vm.connectIntroduction(p)
+            }) { Text(if (isApprove) "Approve" else "Connect") }
+        },
+        dismissButton = {
+            TextButton(onClick = { vm.declineIntroduction(p) }) {
+                Text(if (isApprove) "Decline" else "Not now")
+            }
+        },
+    )
 }
 
 /**
@@ -904,6 +968,7 @@ private fun ChatAppBar(state: UiState.Conversation, vm: MessagingViewModel) {
     var showRename by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
     var showVouch by remember { mutableStateOf(false) }
+    var showIntroduce by remember { mutableStateOf(false) }
     var verifyScanError by remember { mutableStateOf<String?>(null) }
     val verifyScanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
         val scanned = result.contents
@@ -1000,6 +1065,13 @@ private fun ChatAppBar(state: UiState.Conversation, vm: MessagingViewModel) {
                             text = { Text("Vouch for ${state.displayName} to…") },
                             onClick = { menuOpen = false; showVouch = true },
                         )
+                        // Introduce (D0037 §3): broker a consent-gated, two-way
+                        // connection between this verified contact + another.
+                        // Both consent; both gain the other with your provenance.
+                        DropdownMenuItem(
+                            text = { Text("Introduce ${state.displayName} to…") },
+                            onClick = { menuOpen = false; showIntroduce = true },
+                        )
                     }
                     DropdownMenuItem(
                         text = { Text("Delete contact") },
@@ -1071,6 +1143,63 @@ private fun ChatAppBar(state: UiState.Conversation, vm: MessagingViewModel) {
             onDismiss = { showVouch = false },
         )
     }
+    if (showIntroduce) {
+        IntroducePickerDialog(
+            contactName = state.displayName,
+            // Only VERIFIED other contacts: an introduction carries your vouch
+            // for each party, which requires an attestation chain (D0037 §3).
+            candidates = vm.introducibleContacts(state.peerKeyHex),
+            onPick = { otherKey ->
+                vm.initiateIntroduction(otherKey)
+                showIntroduce = false
+            },
+            onDismiss = { showIntroduce = false },
+        )
+    }
+}
+
+/**
+ * Pick a verified contact to introduce the open contact to (D0037 §3). Sends the
+ * open contact a consent request; once they approve, the other contact is asked
+ * to connect. Both must already be verified — only verified contacts can be
+ * vouched for, which an introduction does for each party.
+ */
+@Composable
+private fun IntroducePickerDialog(
+    contactName: String,
+    candidates: List<Pair<String, String>>,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Introduce $contactName to…") },
+        text = {
+            if (candidates.isEmpty()) {
+                Text(
+                    "You have no other verified contacts to introduce. You can only " +
+                        "introduce people you have verified.",
+                )
+            } else {
+                Column {
+                    Text(
+                        "Both will be asked to consent. Each will see the other as " +
+                            "vouched by you.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.size(8.dp))
+                    candidates.forEach { (name, key) ->
+                        TextButton(
+                            onClick = { onPick(key) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(name, modifier = Modifier.fillMaxWidth()) }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 /**

@@ -19,7 +19,11 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.cairn_uniffi.CairnFfiException
+import uniffi.cairn_uniffi.IntroductionKindFfi
+import uniffi.cairn_uniffi.IntroductionMessageRecord
 import uniffi.cairn_uniffi.StrengthFfi
+import uniffi.cairn_uniffi.decodeIntroductionMessage
+import uniffi.cairn_uniffi.encodeIntroductionMessage
 
 /**
  * Delivery state of an outgoing message (received messages are [SendStatus.NONE]).
@@ -27,6 +31,50 @@ import uniffi.cairn_uniffi.StrengthFfi
  * and is only ever shown when the local read-receipts setting is on (reciprocal).
  */
 enum class SendStatus { NONE, SENDING, SENT, READ, FAILED }
+
+/**
+ * An inbound introduction (D0037 §3) awaiting the user's consent — the only
+ * place an introduction ever acts is behind one of these explicit prompts
+ * (consent is the whole point, D0037 §2). Two shapes:
+ *
+ * - [Kind.APPROVE] — a `Request` arrived: "[introducerName] wants to introduce
+ *   you to [peerName]." Approving mints a one-time invitation and sends it back;
+ *   declining ends it. The introducer's vouch for the peer rides along, so the
+ *   resulting contact shows [introducerName]'s provenance (D0036 reuse).
+ * - [Kind.CONNECT] — a `Deliver` arrived: "[introducerName] introduced you to
+ *   [peerName]; connect?" Connecting redeems the carried invitation; declining
+ *   ends it.
+ *
+ * [vouch] is the introducer's `build_vouch` bytes for [peerKeyHex] (ingested on
+ * consent so the new contact carries named provenance). [inviteUri] is the
+ * one-time pairing blob (CONNECT only). [introducerConnId] is where an APPROVE's
+ * `Response` is sent back.
+ */
+data class PendingIntroduction(
+    val kind: Kind,
+    val introducerKeyHex: String,
+    val introducerName: String,
+    val introducerConnId: String,
+    val peerKeyHex: String,
+    val peerName: String,
+    val vouch: ByteArray?,
+    val inviteUri: String?,
+) {
+    enum class Kind { APPROVE, CONNECT }
+
+    // ByteArray defeats data-class structural equality; introductions are keyed
+    // by (kind, introducer, peer) for dedup, not by the vouch bytes.
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is PendingIntroduction) return false
+        return kind == other.kind &&
+            introducerKeyHex == other.introducerKeyHex &&
+            peerKeyHex == other.peerKeyHex
+    }
+
+    override fun hashCode(): Int =
+        (kind.hashCode() * 31 + introducerKeyHex.hashCode()) * 31 + peerKeyHex.hashCode()
+}
 
 /**
  * A single chat line. [tsUnix] is the message wall-clock time; [id] is a local
@@ -163,6 +211,29 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var appForeground = true
     private var connectionId: String? = null
     private var peerKeyRaw: ByteArray? = null
+
+    /**
+     * Inbound introduction consent prompts (D0037 §3) awaiting the user's
+     * decision — the introducee side. A queue (not a single slot) so a second
+     * introduction arriving while one is open isn't dropped; the UI shows the
+     * head. Main-confined (mutated only from the recv loops' Main updates +
+     * the consent handlers).
+     */
+    private val _pendingIntroductions = MutableStateFlow<List<PendingIntroduction>>(emptyList())
+    val pendingIntroductions = _pendingIntroductions.asStateFlow()
+
+    /**
+     * Introductions THIS device brokered (D0037 §3) that are awaiting the
+     * minter's `Response`: (minterKeyHex, acceptorKeyHex). The relay of a
+     * `Response` to the acceptor fires ONLY for a pair in this set, so a contact
+     * cannot use this device as an unsolicited relay by sending an unsolicited
+     * `Response`. Ephemeral (soft liveness, D0037 §4): lost on restart, which
+     * fails the in-flight introduction gracefully rather than relaying stale
+     * state. Concurrent set: written on initiate, read+cleared on the recv
+     * loop's Main dispatcher.
+     */
+    private val pendingOutgoingIntroductions: MutableSet<Pair<String, String>> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     /**
      * One receive loop per saved contact (connId → job) — global, not just the
@@ -819,6 +890,294 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ===================================================================
+    // Introductions (D0037): consent-gated, connection-making, symmetric.
+    // The introducer (this device, in `initiateIntroduction`) has verified
+    // both parties; each introducee consents before anything happens; both
+    // new contacts carry the introducer's named provenance (reusing the
+    // D0036 vouch machinery — the vouch rides inside each message).
+    // ===================================================================
+
+    /**
+     * The contacts THIS user could introduce the open contact to (D0037 §3):
+     * the user's OTHER **verified** contacts. Verified-only because an
+     * introduction carries this user's vouch for each party, and a vouch
+     * requires an attestation chain (`buildVouch` — only verified contacts have
+     * one). Returns (displayName, peerKeyHex) pairs.
+     */
+    fun introducibleContacts(excludingKeyHex: String): List<Pair<String, String>> =
+        runCatching { contacts?.list() }.getOrNull().orEmpty()
+            .filter { it.peerKeyHex != excludingKeyHex && it.verified }
+            .map { it.displayName to it.peerKeyHex }
+
+    /**
+     * Introduce the OPEN contact (the **minter**) to [acceptorKeyHex] (the
+     * **acceptor**) — D0037 §3 step 1. Sends the minter a `Request` naming the
+     * acceptor, carrying this user's vouch FOR the acceptor (so the minter, on
+     * approval, gains the acceptor with this user's provenance). The minter will
+     * mint a one-time invitation + respond; this device then relays it to the
+     * acceptor (`onIntroductionResponse`). Off-Main, best-effort.
+     *
+     * Both parties must be verified (an unverified one has no attestation chain
+     * to vouch from); the picker already fences to verified contacts.
+     */
+    fun initiateIntroduction(acceptorKeyHex: String) {
+        val minterKey = peerKeyRaw ?: return
+        val minterHex = minterKey.toHex()
+        val store = contacts ?: return
+        val tg = session?.trustGraph ?: return
+        val handle = session?.handle ?: return
+        val minter = runCatching { store.get(minterHex) }.getOrNull() ?: return
+        val acceptor = runCatching { store.get(acceptorKeyHex) }.getOrNull() ?: return
+        val acceptorKey = runCatching { acceptorKeyHex.fromHex() }.getOrNull() ?: return
+        if (!minter.verified || !acceptor.verified) {
+            Log.w(TAG, "introduce: both parties must be verified")
+            return
+        }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    // The minter is asked to meet the acceptor → carry the
+                    // vouch FOR the acceptor (D0037 §6 reuses the vouch).
+                    val vouchForAcceptor = tg.buildVouch(acceptorKey)
+                    val request = IntroductionMessageRecord(
+                        kind = IntroductionKindFfi.REQUEST,
+                        peerKey = acceptorKey,
+                        vouch = vouchForAcceptor,
+                        inviteUri = null,
+                        accept = null,
+                    )
+                    val bytes = encodeIntroductionMessage(request)
+                    handle.sendIntroduction(minter.connId, minterKey, bytes)
+                }
+            }.onSuccess {
+                // Remember we brokered this so an unsolicited `Response` cannot
+                // make us relay (the relay gate, D0037 §3).
+                pendingOutgoingIntroductions.add(minterHex to acceptorKeyHex)
+                Log.i(TAG, "introduce: sent Request to ${minterHex.take(12)} re ${acceptorKeyHex.take(12)}")
+            }.onFailure { Log.w(TAG, "introduce: Request failed: ${it.message}") }
+        }
+    }
+
+    /**
+     * Route a decoded introduction (D0037 §5) by kind. Called from the recv loop
+     * (the carrying envelope already authenticated [sender]). A `Request` /
+     * `Deliver` raises a consent prompt; a `Response` is the broker's relay step.
+     */
+    private fun handleIncomingIntroduction(sender: Contact, bytes: ByteArray) {
+        val msg = runCatching { decodeIntroductionMessage(bytes) }.getOrNull()
+        if (msg == null) {
+            Log.w(TAG, "introduction decode failed from ${sender.peerKeyHex.take(12)}")
+            return
+        }
+        when (msg.kind) {
+            IntroductionKindFfi.REQUEST -> onIntroductionRequest(sender, msg)
+            IntroductionKindFfi.RESPONSE -> onIntroductionResponse(sender, msg)
+            IntroductionKindFfi.DELIVER -> onIntroductionDeliver(sender, msg)
+        }
+    }
+
+    /**
+     * A `Request` arrived (D0037 §3 step 2): the [introducer] proposes meeting
+     * `peer_key`. Raise the APPROVE consent prompt — nothing happens until the
+     * user approves (consent is the point, D0037 §2).
+     */
+    private fun onIntroductionRequest(introducer: Contact, msg: IntroductionMessageRecord) {
+        val peerHex = msg.peerKey.toHex()
+        enqueueIntroduction(
+            PendingIntroduction(
+                kind = PendingIntroduction.Kind.APPROVE,
+                introducerKeyHex = introducer.peerKeyHex,
+                introducerName = introducer.displayName,
+                introducerConnId = introducer.connId,
+                peerKeyHex = peerHex,
+                peerName = FriendlyName.of(peerHex),
+                vouch = msg.vouch,
+                inviteUri = null,
+            ),
+        )
+        Log.i(TAG, "introduction Request from ${introducer.displayName} re ${peerHex.take(12)}")
+    }
+
+    /**
+     * A `Response` arrived (D0037 §3 step 4): the minter [responder] consented
+     * (or declined) to OUR brokered introduction. On accept, relay a `Deliver`
+     * (carrying our vouch for the minter + the minter's invitation) to the
+     * acceptor. Relay ONLY for an introduction we brokered (the gate), so an
+     * unsolicited `Response` cannot weaponize this device as a relay.
+     */
+    private fun onIntroductionResponse(responder: Contact, msg: IntroductionMessageRecord) {
+        val minterHex = responder.peerKeyHex
+        val acceptorHex = msg.peerKey.toHex()
+        if (!pendingOutgoingIntroductions.remove(minterHex to acceptorHex)) {
+            Log.w(TAG, "introduction Response not pending (ignored): ${minterHex.take(12)} -> ${acceptorHex.take(12)}")
+            return
+        }
+        if (msg.accept != true || msg.inviteUri == null) {
+            Log.i(TAG, "introduction declined by ${responder.displayName}")
+            return
+        }
+        val inviteUri = msg.inviteUri ?: return
+        val tg = session?.trustGraph ?: return
+        val handle = session?.handle ?: return
+        val store = contacts ?: return
+        val acceptor = runCatching { store.get(acceptorHex) }.getOrNull() ?: return
+        val minterKey = runCatching { minterHex.fromHex() }.getOrNull() ?: return
+        val acceptorKey = runCatching { acceptorHex.fromHex() }.getOrNull() ?: return
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    // The acceptor is asked to meet the minter → carry our vouch
+                    // FOR the minter + the minter's one-time invitation.
+                    val vouchForMinter = tg.buildVouch(minterKey)
+                    val deliver = IntroductionMessageRecord(
+                        kind = IntroductionKindFfi.DELIVER,
+                        peerKey = minterKey,
+                        vouch = vouchForMinter,
+                        inviteUri = inviteUri,
+                        accept = null,
+                    )
+                    val bytes = encodeIntroductionMessage(deliver)
+                    handle.sendIntroduction(acceptor.connId, acceptorKey, bytes)
+                }
+            }.onSuccess { Log.i(TAG, "introduction: relayed Deliver to ${acceptor.displayName}") }
+                .onFailure { Log.w(TAG, "introduction: Deliver relay failed: ${it.message}") }
+        }
+    }
+
+    /**
+     * A `Deliver` arrived (D0037 §3 step 5): the [introducer] says the other
+     * party consented + here is their invitation. Raise the CONNECT consent
+     * prompt — the user still chooses to connect (symmetric consent, D0037 §2).
+     */
+    private fun onIntroductionDeliver(introducer: Contact, msg: IntroductionMessageRecord) {
+        val peerHex = msg.peerKey.toHex()
+        if (msg.inviteUri == null) {
+            Log.w(TAG, "introduction Deliver missing invitation (ignored)")
+            return
+        }
+        enqueueIntroduction(
+            PendingIntroduction(
+                kind = PendingIntroduction.Kind.CONNECT,
+                introducerKeyHex = introducer.peerKeyHex,
+                introducerName = introducer.displayName,
+                introducerConnId = introducer.connId,
+                peerKeyHex = peerHex,
+                peerName = FriendlyName.of(peerHex),
+                vouch = msg.vouch,
+                inviteUri = msg.inviteUri,
+            ),
+        )
+        Log.i(TAG, "introduction Deliver from ${introducer.displayName} re ${peerHex.take(12)}")
+    }
+
+    /**
+     * Approve an APPROVE-kind introduction (D0037 §3 step 3): mint a one-time
+     * invitation, send it back to the introducer in a `Response`, ingest the
+     * introducer's vouch for the peer (so the resulting contact shows named
+     * provenance), then await the peer connecting + pair. The minter side.
+     */
+    fun approveIntroduction(p: PendingIntroduction) {
+        dequeueIntroduction(p)
+        if (p.kind != PendingIntroduction.Kind.APPROVE) return
+        val s = session ?: return
+        val tg = s.trustGraph ?: return
+        val handle = s.handle
+        val introducerKey = runCatching { p.introducerKeyHex.fromHex() }.getOrNull() ?: return
+        val peerKey = runCatching { p.peerKeyHex.fromHex() }.getOrNull() ?: return
+        viewModelScope.launch {
+            if (!awaitTor()) return@launch
+            // Ingest the introducer's vouch for the peer FIRST, so the new
+            // contact carries provenance the moment it pairs (D0036 reuse).
+            p.vouch?.let { v ->
+                runCatching { withContext(Dispatchers.IO) { tg.ingestVouch(introducerKey, v) } }
+                    .onFailure { Log.w(TAG, "introduction: ingest peer vouch failed: ${it.message}") }
+            }
+            try {
+                // Mint the one-time invitation + ship it to the introducer.
+                val uri = withContext(Dispatchers.IO) { handle.createInvitation() }
+                val blob = "cairn://invite?k=$myHex&u=" + URLEncoder.encode(uri, "UTF-8")
+                val response = IntroductionMessageRecord(
+                    kind = IntroductionKindFfi.RESPONSE,
+                    peerKey = peerKey,
+                    vouch = null,
+                    inviteUri = blob,
+                    accept = true,
+                )
+                withContext(Dispatchers.IO) {
+                    val bytes = encodeIntroductionMessage(response)
+                    handle.sendIntroduction(p.introducerConnId, introducerKey, bytes)
+                }
+                Log.i(TAG, "introduction: approved + sent invitation to ${p.introducerName}")
+                // Await the peer connecting (soft liveness, D0037 §4); the first
+                // envelope re-anchors via recvLearningSender, then pair.
+                val connId = withContext(Dispatchers.IO) { handle.awaitConnection() }
+                val first = withContext(Dispatchers.IO) { handle.recvLearningSender(connId) }
+                if (!first.senderOperationalPubkey.contentEquals(peerKey)) {
+                    Log.w(TAG, "introduction: connected peer != expected acceptor; pairing anyway by learned key")
+                }
+                goLive(connId, first.senderOperationalPubkey, firstInbound = first.payload)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "introduction: approve/mint failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Connect a CONNECT-kind introduction (D0037 §3 step 5): ingest the
+     * introducer's vouch for the peer (named provenance), then redeem the
+     * carried invitation to pair. The acceptor side.
+     */
+    fun connectIntroduction(p: PendingIntroduction) {
+        dequeueIntroduction(p)
+        if (p.kind != PendingIntroduction.Kind.CONNECT) return
+        val invite = p.inviteUri ?: return
+        val s = session ?: return
+        val tg = s.trustGraph
+        val introducerKey = runCatching { p.introducerKeyHex.fromHex() }.getOrNull()
+        viewModelScope.launch {
+            // Ingest BEFORE pairing so the new contact carries provenance.
+            if (tg != null && introducerKey != null) {
+                p.vouch?.let { v ->
+                    runCatching { withContext(Dispatchers.IO) { tg.ingestVouch(introducerKey, v) } }
+                        .onFailure { Log.w(TAG, "introduction: ingest peer vouch failed: ${it.message}") }
+                }
+            }
+            Log.i(TAG, "introduction: connecting to ${p.peerName} (via ${p.introducerName})")
+            // Reuse the standard accept-invitation pairing flow.
+            acceptInvitation(invite)
+        }
+    }
+
+    /** Dismiss/decline a pending introduction without acting (D0037 §2). */
+    fun declineIntroduction(p: PendingIntroduction) {
+        dequeueIntroduction(p)
+        Log.i(TAG, "introduction declined: ${p.kind} from ${p.introducerName}")
+    }
+
+    /**
+     * Driver/testing hooks: act on the HEAD of the introduction-consent queue
+     * (a harness can't tap the Compose consent dialog, like [openFirstContact]).
+     */
+    fun approveFirstIntroduction() =
+        _pendingIntroductions.value.firstOrNull()?.let { approveIntroduction(it) }
+
+    fun connectFirstIntroduction() =
+        _pendingIntroductions.value.firstOrNull()?.let { connectIntroduction(it) }
+
+    fun declineFirstIntroduction() =
+        _pendingIntroductions.value.firstOrNull()?.let { declineIntroduction(it) }
+
+    private fun enqueueIntroduction(p: PendingIntroduction) {
+        _pendingIntroductions.update { cur -> if (p in cur) cur else cur + p }
+    }
+
+    private fun dequeueIntroduction(p: PendingIntroduction) {
+        _pendingIntroductions.update { cur -> cur.filterNot { it == p } }
+    }
+
     /**
      * A recv signature verify-failure means the channel is presenting a key that
      * no longer matches the one we pinned/verified — a re-pair or an active
@@ -977,6 +1336,15 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                             }
                             .onFailure { Log.w(TAG, "trust-graph: ingest vouch failed: ${it.message}") }
                     }
+                    continue
+                }
+                // An introduction control message (D0037): empty payload +
+                // introduction set. The envelope authenticated the sender (this
+                // contact), so route it to the dual-consent flow by kind. NOT a
+                // message.
+                val intro = r.introduction
+                if (intro != null) {
+                    handleIncomingIntroduction(contact, intro)
                     continue
                 }
                 if (r.payload.isEmpty()) continue // hello/key-exchange marker

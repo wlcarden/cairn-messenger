@@ -143,6 +143,10 @@ class MainActivity : FragmentActivity() {
      *   --es verifyscan "<peerHex>"   → verify by a scanned peer key (match → verified)
      *   --es revoke "withdraw|compromise" → revoke the open contact's verification (D0035 §6)
      *   --es vouch "<recipientHex>"    → vouch the open contact to a recipient (D0036)
+     *   --es introduce "<acceptorHex>" → introduce the open contact to <acceptor> (D0037)
+     *   --es introapprove "1"          → approve the head pending introduction (minter)
+     *   --es introconnect "1"          → connect the head pending introduction (acceptor)
+     *   --es introdecline "1"          → decline the head pending introduction
      *   --es simkeymismatch "1"       → simulate a recv key mismatch (downgrade + banner)
      *   --es quickenroll "<pass>"     → enroll quick unlock (shows the BiometricPrompt)
      *   --es quickunlock "1"          → quick-unlock prompt (decrypt → unlock)
@@ -223,6 +227,26 @@ class MainActivity : FragmentActivity() {
         intent.getStringExtra("vouch")?.let {
             Log.i(TAG, "driver: vouchCurrentContactTo")
             viewModel.vouchCurrentContactTo(it)
+        }
+        // Introductions (D0037). `introduce` starts one from the open
+        // conversation (the open contact is the minter, the named one the
+        // acceptor). The consent dialogs can't be tapped over adb, so
+        // intro{approve,connect,decline} act on the HEAD of the consent queue.
+        intent.getStringExtra("introduce")?.let {
+            Log.i(TAG, "driver: initiateIntroduction")
+            viewModel.initiateIntroduction(it)
+        }
+        intent.getStringExtra("introapprove")?.let {
+            Log.i(TAG, "driver: approveFirstIntroduction")
+            viewModel.approveFirstIntroduction()
+        }
+        intent.getStringExtra("introconnect")?.let {
+            Log.i(TAG, "driver: connectFirstIntroduction")
+            viewModel.connectFirstIntroduction()
+        }
+        intent.getStringExtra("introdecline")?.let {
+            Log.i(TAG, "driver: declineFirstIntroduction")
+            viewModel.declineFirstIntroduction()
         }
         intent.getStringExtra("simkeymismatch")?.let {
             Log.i(TAG, "driver: simulateKeyMismatch")
