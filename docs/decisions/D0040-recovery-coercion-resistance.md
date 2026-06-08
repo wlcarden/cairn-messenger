@@ -271,9 +271,18 @@ covers it), consistent with how Stage 2 chose the generic store over the
     `fireduereleases`, `cancelschedule`. **Proof (oriole + raven, 20 s test window):**
     verify → "release SCHEDULED in 20 s", A receives **nothing**; window elapses →
     fire → A receives the 154 B card; re-run + **cancel before the window** → fire →
-    nothing released. Pending (3b-ii): the holder's pending-releases list + cancel
-    button in the UI (currently driver-only), a recovering-device cooling-off notice,
-    and a production lazy trigger beyond unlock (periodic / recv-tick).
+    nothing released.
+  - **3b-ii — cooling-off UX. LANDED.** A holder-side home banner appears while
+    releases are pending (`pendingReleaseCount` StateFlow) — "N recovery share(s)
+    will be returned after a 48-hour safety delay" + a **Cancel** button
+    (`cancelAllScheduledReleases`, the user-facing form of the D0005 manual cancel,
+    previously driver-only). A recovering-device notice on the gather screen explains
+    the delay (so the owner isn't confused by getting nothing immediately). The
+    production lazy trigger beyond unlock is an in-process **60 s periodic** re-check
+    (`coolingOffJob`) that calls the proven `fireDueReleases` — proven on oriole +
+    raven by a 45 s window firing with **no driver hook**. (A `WorkManager` check that
+    survives process death remains an optional nicety; the holder-clock check is the
+    source of truth.)
 - **Stage 3c — atomic re-split (≥2 devices, highest risk).** Per §5; **recommended
   v1.x**, behind an explicit two-phase protocol. Does not block 3a/3b.
 

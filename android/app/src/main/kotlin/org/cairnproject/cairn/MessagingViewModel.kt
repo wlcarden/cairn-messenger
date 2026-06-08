@@ -13,6 +13,8 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -270,6 +272,9 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
      */
     private var coolingOffSeconds: Long = 48L * 3600L
 
+    /** In-process periodic cooling-off re-check (the production lazy trigger). */
+    private var coolingOffJob: Job? = null
+
     /**
      * Contacts we've sent a recovery_request to (peerKeyHex) and are awaiting a
      * returned share from (D0038 §7). An inbound recovery_share from a contact in
@@ -287,6 +292,13 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val _shareReturnPrompts = MutableStateFlow<List<ShareReturnPrompt>>(emptyList())
     val shareReturnPrompts = _shareReturnPrompts.asStateFlow()
+
+    /**
+     * How many cooling-off releases are currently scheduled on this (holder) device
+     * (D0040 §4, 3b). Drives a home-screen banner + the peer-side manual cancel.
+     */
+    private val _pendingReleaseCount = MutableStateFlow(0)
+    val pendingReleaseCount = _pendingReleaseCount.asStateFlow()
 
     @Volatile private var torReady = false
     @Volatile private var appForeground = true
@@ -434,8 +446,20 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 recoveryPeers = RecoveryPeerStore(s.storage)
                 recoverySchedules = RecoveryScheduleStore(s.storage)
                 // Lazy cooling-off firing (D0040 §4): on app-launch / unlock, release
-                // any cooling-off window that elapsed while we were closed.
+                // any cooling-off window that elapsed while we were closed, surface
+                // the pending count, and start the in-process periodic re-check (the
+                // production lazy trigger beyond unlock; the holder's clock is the
+                // source of truth, this just polls it while the app is open).
                 fireDueReleases()
+                refreshPendingReleases()
+                coolingOffJob?.cancel()
+                coolingOffJob = viewModelScope.launch {
+                    while (isActive) {
+                        delay(COOLING_OFF_CHECK_MS)
+                        fireDueReleases()
+                        refreshPendingReleases()
+                    }
+                }
                 myHex = s.publicKeyRaw.toHex()
                 // A public key, but still identifying metadata — keep it out of
                 // release logcat (debug keeps it for the test harnesses).
@@ -931,6 +955,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
             if (ok) {
                 Log.i(TAG, "recovery: phrase verified — release to ${prompt.requesterName} SCHEDULED in ${coolingOffSeconds}s (~${coolingOffSeconds / 3600}h cooling-off, D0040 §4)")
                 onResult(true)
+                refreshPendingReleases()
                 fireDueReleases() // fire now if the window is ~0 (debug/test override)
             } else {
                 Log.e(TAG, "returnShareByPhrase: failed to schedule release for ${prompt.requesterName}")
@@ -966,6 +991,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                     viewModelScope.launch { withContext(Dispatchers.IO) { schedules.remove(d.scheduleId) } }
                 }.onFailure { Log.e(TAG, "recovery: fireDueReleases send failed: ${it.message}") }
             }
+            if (due.isNotEmpty()) refreshPendingReleases()
         }
     }
 
@@ -975,6 +1001,30 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val ok = withContext(Dispatchers.IO) { schedules.cancelFirst() }
             Log.i(TAG, "recovery: ${if (ok) "cancelled a pending cooling-off release" else "no pending release to cancel"}")
+            refreshPendingReleases()
+        }
+    }
+
+    /**
+     * Cancel ALL pending cooling-off releases — the holder-facing "stop my recovery"
+     * action (D0040 §4): the owner reaches the holder out of band and the holder taps
+     * to discard the pending returns.
+     */
+    fun cancelAllScheduledReleases() {
+        val schedules = recoverySchedules ?: return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { while (schedules.cancelFirst()) { /* drain */ } }
+            Log.i(TAG, "recovery: cancelled all pending cooling-off releases")
+            refreshPendingReleases()
+        }
+    }
+
+    /** Re-read the pending cooling-off release count into [pendingReleaseCount] (D0040 §4). */
+    fun refreshPendingReleases() {
+        val schedules = recoverySchedules ?: return
+        viewModelScope.launch {
+            val n = withContext(Dispatchers.IO) { schedules.pending().size }
+            _pendingReleaseCount.value = n
         }
     }
 
@@ -2130,6 +2180,9 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
 
         /** Cap on queued share-return prompts — anti-flood, mirrors [MAX_PENDING_INTRODUCTIONS] (D0040 §3). */
         const val MAX_PENDING_SHARE_RETURNS = 8
+
+        /** How often the in-process periodic cooling-off re-check fires (D0040 §4). */
+        const val COOLING_OFF_CHECK_MS = 60_000L
 
         /**
          * Bound on the minter's wait for the acceptor's first (hello) envelope

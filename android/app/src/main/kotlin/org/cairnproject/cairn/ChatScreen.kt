@@ -565,6 +565,17 @@ private fun RecoveryScreen(state: UiState.Recovery, vm: MessagingViewModel) {
                     .fillMaxWidth()
                     .padding(top = 8.dp),
             ) { Text("Get a share from a recovery peer") }
+            Text(
+                // D0040 §4 (3b): peers add a cooling-off delay before returning a
+                // share, so the count above may not rise right away — that delay is
+                // what protects you if someone is forcing a recovery.
+                "Peers add a safety delay (up to 48 hours) before returning your share — " +
+                    "so it may not arrive immediately. That delay is what protects you if " +
+                    "someone is trying to force a recovery.",
+                Modifier.padding(top = 8.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
 
             if (state.status != null) {
                 Row(
@@ -770,11 +781,45 @@ private fun LockScreen(state: UiState.Locked, vm: MessagingViewModel) {
  *  moved to [IdentityView] (app-bar profile action); adding moved to the FAB. */
 @Composable
 private fun ContactListView(state: UiState.ContactList, vm: MessagingViewModel) {
+    val pendingReleases by vm.pendingReleaseCount.collectAsStateWithLifecycle()
     Column(
         Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState()),
     ) {
+        // Holder-side cooling-off banner (D0040 §4, 3b): a recovery peer who verified
+        // a challenge phrase has share return(s) pending a safety delay. If the owner
+        // says it wasn't them (out of band), the peer cancels here.
+        if (pendingReleases > 0) {
+            Card(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(
+                        if (pendingReleases == 1) {
+                            "1 recovery share will be returned after a 48-hour safety delay."
+                        } else {
+                            "$pendingReleases recovery shares will be returned after a 48-hour safety delay."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        "If the person recovering didn't ask you — or you're not sure it's " +
+                            "really them — cancel now.",
+                        Modifier.padding(top = 4.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(
+                        onClick = { vm.cancelAllScheduledReleases() },
+                        modifier = Modifier.padding(top = 4.dp),
+                    ) { Text("Cancel recovery release${if (pendingReleases == 1) "" else "s"}") }
+                }
+            }
+        }
         if (state.error != null) {
             Text(
                 state.error,
