@@ -193,6 +193,33 @@ the compromise time) so the exposed key is repudiated. The trust-graph op alread
   wiring + `peer_store` write-on-receipt (the `peer_store` persistence is not yet
   FFI-exposed). Lets a peer **hold** and **return** a share over the existing SimpleX/Tor
   transport; shares released on manual peer approval (no challenge/cooling-off yet).
+
+  > **LANDED (2026-06-08) — Stage 2 peer-share distribution, two-device-proven.** S2a
+  > (`d3a2780`): envelope key-11 `recovery_share` + key-12 `recovery_request` (the
+  > key-8/9/10 optional-omitted-byte-identical pattern) + adapter
+  > `send_recovery_share`/`send_recovery_request` + recv surfacing; the five optional
+  > control fields collapsed into a `ControlFields` struct. S2b (`2075f4e`): the FFI on
+  > `SimplexAdapterHandle` + `ReceivedMessageRecord.recovery_share/recovery_request`. S2c
+  > (`724a338`): the Kotlin flow — `RecoveryPeerStore` (held shares in the encrypted
+  > `recovery_shares` category keyed by giver), recv routing (HOLD vs RETURN disambiguated
+  > by a pending-request set), `entrustRecoveryShare`/`requestHeldShare`/approve-or-decline,
+  > a manual-approval `ShareReturnDialog`, conversation-overflow affordances gated on a
+  > VERIFIED contact (D0005 peer selection), and driver hooks. A **held share IS a card**
+  > (`CAIRN-RECOVERY-…` text), so a returned share feeds the same `addRecoveryCard` →
+  > reconstruct path as paper recovery.
+  >
+  > Resolved: the `peer_store` is the generic encrypted `recovery_shares` category via the
+  > existing `StorageHandle` (not the `cairn-recovery::peer_store` crate type) — simpler +
+  > sufficient for the manual-approval flow. \*\*On-device proof (two physical Pixels — oriole
+  >
+  > - raven — over bundled Tor):** after pairing, A entrusts a real CLI card → B logs
+  >   `now HOLDING a recovery share … (154B)` → A requests → B `asked for their held share
+back — awaiting approval` → B approves → A `RETURNED our held share (154B)`. Host-proven
+  >   too (the S2a distribute→hold→request→return round-trip over the mock transport).
+  >   **Deferred:\*\* the fresh-device re-pair-then-gather-and-reconstruct wrapper (a thin layer
+  >   on this mechanism — gather returned cards from a threshold of peers, then the existing
+  >   reconstruct).
+
 - **Stage 3 — D0005 coercion-resistance (≥2–3 devices).** Single-use pre-shared challenge
   phrases (schema + user-off-device / peer-encrypted-at-rest storage + rotation), the
   **peer-device-clock** 48h cooling-off (scheduled release + cancellation message; the
