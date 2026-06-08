@@ -449,6 +449,7 @@ pub const ALL_CATEGORIES: &[&str] = &[
     categories::RECOVERY_PEERS,
     categories::RECOVERY_SHARES,
     categories::RECOVERY_SCHEDULES,
+    categories::RECOVERY_PENDING,
     categories::RATCHET_STATE,
     categories::MESSAGES,
     categories::SIGSUM_CACHE,

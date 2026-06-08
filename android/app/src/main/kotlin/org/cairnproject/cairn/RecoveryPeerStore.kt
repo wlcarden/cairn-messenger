@@ -49,6 +49,29 @@ class RecoveryPeerStore(private val storage: StorageHandle) {
     }
 
     /**
+     * Promote a re-split (D0040 §5, 3c COMMIT): replace the card we hold for
+     * [giverKeyHex] with [newCard], **preserving the existing challenge-phrase
+     * header** (salt+hash) so the owner↔holder phrase agreement survives the share
+     * refresh — the secret is unchanged, only its sharing was re-randomized, so the
+     * phrase that gated RETURN before still gates the new card. If we held nothing
+     * (a holder added during the re-split), stores [newCard] with no phrase. Returns
+     * `false` on a write failure — the caller must not log "promoted" on a `false`.
+     */
+    fun promote(giverKeyHex: String, newCard: ByteArray): Boolean {
+        val raw = runCatching { storage.get(CATEGORY, giverKeyHex.fromHex()) }.getOrNull()
+        val header =
+            if (raw != null && raw.size >= SALT_LEN + HASH_LEN) {
+                raw.copyOfRange(0, SALT_LEN + HASH_LEN) // keep salt+phraseHash
+            } else {
+                ByteArray(SALT_LEN + HASH_LEN) // no prior share → no phrase
+            }
+        val value = header + newCard
+        return runCatching { storage.put(CATEGORY, giverKeyHex.fromHex(), value) }
+            .onFailure { Log.e(TAG, "recovery: promote failed (re-split NOT applied): ${it.message}") }
+            .isSuccess
+    }
+
+    /**
      * Set/replace the challenge phrase for the share held for [giverKeyHex] (D0005).
      * Rejects a blank phrase, or one already in use by ANOTHER held share — phrases
      * must be 1:1 with shares (D0040 §2) so [findByPhrase] is unambiguous. Returns

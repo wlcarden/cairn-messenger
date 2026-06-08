@@ -161,6 +161,9 @@ class MainActivity : FragmentActivity() {
      *   --es coolingoff "<seconds>"    → override the 48h cooling-off window (debug timer test, D0040 §4)
      *   --es fireduereleases "1"       → fire any cooling-off release whose window elapsed (D0040 §4)
      *   --es cancelschedule "1"        → peer-side manual cancel of the first pending release (D0040 §4)
+     *   --es resplit "<c1>;<c2>;<c3>"  → atomic re-split from current cards to the open peer (D0040 §5)
+     *   --es resplitdeadline "<ms>"    → shorten the re-split ACK deadline (debug, D0040 §5)
+     *   --es resplitabort "1"          → force the non-leaking re-split abort path (D0040 §5)
      *   --es quickenroll "<pass>"     → enroll quick unlock (shows the BiometricPrompt)
      *   --es quickunlock "1"          → quick-unlock prompt (decrypt → unlock)
      *   --es quickdisable "1"         → delete the wrapped passphrase + Keystore key
@@ -308,6 +311,25 @@ class MainActivity : FragmentActivity() {
         intent.getStringExtra("declineshare")?.let {
             Log.i(TAG, "driver: declineFirstShareReturn")
             viewModel.declineFirstShareReturn()
+        }
+        // Atomic re-split (D0040 §5, 3c). `resplit` carries a threshold of the
+        // owner's CURRENT cards, `;`-separated (cards are base64url, no `;`); the
+        // open conversation is the recovery peer. `resplitdeadline` shortens the
+        // ACK bound and `resplitabort` forces the non-leaking abort path for the
+        // 2-device commit/abort validation.
+        intent.getStringExtra("resplitdeadline")?.let {
+            val ms = it.toLongOrNull() ?: 120_000L
+            Log.i(TAG, "driver: setResplitDeadlineMs($ms)")
+            viewModel.setResplitDeadlineMs(ms)
+        }
+        intent.getStringExtra("resplit")?.let {
+            val cards = it.split(';').map { c -> c.trim() }.filter { c -> c.isNotEmpty() }
+            Log.i(TAG, "driver: beginResplit (${cards.size} current cards)")
+            viewModel.beginResplit(cards)
+        }
+        intent.getStringExtra("resplitabort")?.let {
+            Log.i(TAG, "driver: abortResplitNow")
+            viewModel.abortResplitNow()
         }
         intent.getStringExtra("simkeymismatch")?.let {
             Log.i(TAG, "driver: simulateKeyMismatch")

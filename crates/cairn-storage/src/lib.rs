@@ -163,6 +163,12 @@ pub mod categories {
     /// Scheduled peer-clock cooling-off releases of held shares (D0040 §4, 3b):
     /// `{requester, connId, release_at_peer_unix}` per pending return.
     pub const RECOVERY_SCHEDULES: &str = "recovery_schedules";
+    /// PENDING re-split shares a holder staged but has not yet promoted (D0040 §5).
+    ///
+    /// 3c: a new card received in a PREPARE, keyed by `resplit_id`, awaiting the
+    /// owner's COMMIT (promote → active) or DISCARD (drop). Durable so the
+    /// two-phase protocol survives a holder restart between PREPARE and COMMIT.
+    pub const RECOVERY_PENDING: &str = "recovery_pending";
     /// SimpleX per-conversation ratchet state.
     pub const RATCHET_STATE: &str = "ratchet_state";
     /// Per-conversation message history.
