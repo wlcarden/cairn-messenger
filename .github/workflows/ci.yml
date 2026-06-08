@@ -124,6 +124,11 @@ jobs:
             echo "::error::dbg! macro committed. See D0018 §4.3 logging discipline (clippy::dbg_macro)."
             exit 1
           fi
+      - name: NeverExport FFI-boundary gate
+        # D0020 §3.7 / D0027 §4: no secret-carrier type may be a uniffi::Record
+        # field. The assert_exportable allow-list is a review checkpoint (stable
+        # Rust can't express a negative impl); this scan is the executable guard.
+        run: python3 scripts/check-ffi-no-secrets.py
 
   # Android cross-compile placeholder — wired in once cargo-ndk is configured.
   # auditable-release:

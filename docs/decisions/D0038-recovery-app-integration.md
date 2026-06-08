@@ -160,6 +160,21 @@ not here.)
 > attestation reloads); negative path → 2 cards `reconstruct failed (insufficient/wrong
 cards)` (recoverable, no crash), +3rd card → success. (Screens use `FLAG_SECURE`, so the
 > logcat events are the oracle.)
+>
+> **Adversarial review (2026-06-08).** A 6-lens agent-swarm review (crypto-chain,
+> secret-hygiene, malicious-input, state-machine, identity-threat, error-handling),
+> each finding independently skeptic-verified, refuted 12 of 16 raw findings and
+> confirmed 4 (all low/nit — no critical/high/medium survived). Remediated: (1) a
+> real CI guard now backs the NeverExport FFI-boundary discipline
+> (`scripts/check-ffi-no-secrets.py` fails the build on a secret-carrier type as a
+> `uniffi::Record` field — the prior `assert_exportable` is a blanket-impl no-op
+> allow-list, and the docstrings that overstated the guard are corrected); (2)
+> `leaveRecovery` now cancels an in-flight `attemptRecovery` (tracked job +
+> `CancellationException` re-throw + post-await UI re-check) so a late completion
+> can't clobber the contact list; (3) bootstrap reloads the attestation + master
+> pubkey BOTH-or-NEITHER (a torn write → not-recovered, not a half-state); (4)
+> success clears the collection state + a docstring fix. Re-validated host gates +
+> APK + on-device happy path.
 
 ## 6. Stage 1.5 — revoke the prior operational identity
 

@@ -18,16 +18,20 @@
 //! impl NeverExport for SecretBox<SigningKey> {}
 //! ```
 //!
-//! `#[uniffi::export]` functions must not take or return `T: NeverExport`. The
-//! CI grep gate per `.github/workflows/ci.yml` rejects PRs that violate this
-//! discipline.
+//! `#[uniffi::export]` functions must not take or return `T: NeverExport`, and
+//! no secret-carrier type may be a `uniffi::Record` field. The CI scan
+//! `scripts/check-ffi-no-secrets.py` (wired into `.github/workflows/ci.yml`)
+//! fails the build when a known secret-carrier type name appears as a Record
+//! field — the precise regression the sealed marker cannot catch on stable Rust.
 //!
 //! ## Stable-Rust limitation
 //!
-//! On stable Rust, this is enforced via the sealed-trait pattern plus the CI
-//! grep gate, not via auto-trait + negative-impl machinery (which would require
+//! On stable Rust this is enforced via the sealed-trait pattern plus that CI
+//! scan, not via auto-trait + negative-impl machinery (which would require
 //! nightly Rust and is forbidden by Cairn's stable-toolchain commitment per
-//! `rust-toolchain.toml`). The CI grep gate is the stable-Rust equivalent.
+//! `rust-toolchain.toml`). The CI scan is the stable-Rust equivalent — and,
+//! per D0027 §4, the centralized `assert_exportable` allow-list in
+//! `cairn-uniffi`'s `never_export_gate` is the companion review checkpoint.
 
 mod sealed {
     /// Sealed-trait implementation detail. External crates cannot implement

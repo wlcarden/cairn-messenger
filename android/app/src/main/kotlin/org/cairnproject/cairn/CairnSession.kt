@@ -436,13 +436,34 @@ class CairnSession private constructor(
             val trustGraph = TrustGraphHandle(storage, signer, keyAlias, publicKeyRaw)
             // Load any previously-adopted master attestation + its master pubkey
             // (D0038 §5): a recovered identity persists its hop-#3 credential here,
-            // so the master-rooted state survives relaunch.
-            val masterAttestation = runCatching { storage.get(IDENTITY_CATEGORY, MASTER_ATTESTATION_ID) }
+            // so the master-rooted state survives relaunch. The two records are
+            // written non-transactionally, so reconcile them BOTH-or-NEITHER
+            // (review F3): a torn write that left exactly one is a half-state we
+            // refuse to trust — treat it as not-recovered rather than carrying an
+            // attestation with no anchor (or an anchor with no proof).
+            //
+            // NOTE (deferred, D0038 §5): when the master attestation becomes
+            // load-bearing (the self-token re-mint / trust-graph anchoring that
+            // Stage 1 defers), this reload MUST also re-verify the attestation
+            // signature against the master pubkey before trusting it. Today both
+            // records are display-only + AEAD-protected at rest, so the structural
+            // reconcile suffices.
+            val storedMasterAttestation = runCatching { storage.get(IDENTITY_CATEGORY, MASTER_ATTESTATION_ID) }
                 .getOrNull()
                 ?.takeIf { it.isNotEmpty() }
-            val masterPubkey = runCatching { storage.get(IDENTITY_CATEGORY, MASTER_PUBKEY_ID) }
+            val storedMasterPubkey = runCatching { storage.get(IDENTITY_CATEGORY, MASTER_PUBKEY_ID) }
                 .getOrNull()
                 ?.takeIf { it.isNotEmpty() }
+            val bothPresent = storedMasterAttestation != null && storedMasterPubkey != null
+            if ((storedMasterAttestation != null) != (storedMasterPubkey != null)) {
+                Log.w(
+                    TAG,
+                    "identity: half-written master attestation (att=${storedMasterAttestation != null} " +
+                        "pk=${storedMasterPubkey != null}) — treating as NOT recovered",
+                )
+            }
+            val masterAttestation = if (bothPresent) storedMasterAttestation else null
+            val masterPubkey = if (bothPresent) storedMasterPubkey else null
             Log.i(
                 TAG,
                 "CairnSession bootstrapped (${publicKeyRaw.size}-byte op key, " +

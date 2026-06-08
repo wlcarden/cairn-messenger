@@ -298,13 +298,20 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Paper-share recovery (D0038 §5) collection state: the decoded shares plus
-     * the single commitment + master every card in a set must agree on. Cleared
-     * on enter / leave / success. Main-confined (mutated only from the recovery
+     * the single commitment + master every card in a set must agree on. Reset on
+     * enter / leave / success. Main-confined (mutated only from the recovery
      * handlers, which run on the Main dispatcher).
      */
     private val recoveryCards = mutableListOf<ShareRecord>()
     private var recoveryCommitment: ByteArray? = null
     private var recoveryMaster: ByteArray? = null
+
+    /**
+     * The in-flight reconstruct/attest/adopt coroutine (D0038 §5), tracked so
+     * [leaveRecovery] can cancel it — otherwise a late completion would write a
+     * `Recovery` state over the contact list the user already navigated to.
+     */
+    private var recoveryJob: Job? = null
 
     init {
         // Gate everything behind an unlock passphrase: the at-rest encryption
@@ -539,7 +546,10 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
             masterName = FriendlyName.of(master.toHex()),
             status = "Reconstructing your identity…",
         )
-        viewModelScope.launch {
+        // Track the job so leaveRecovery can cancel a slow reconstruction (review
+        // F2): cancellation throws at the withContext suspension points, which the
+        // CancellationException re-throw below propagates (NOT the generic catch).
+        recoveryJob = viewModelScope.launch {
             try {
                 val now = (System.currentTimeMillis() / 1000L).toULong()
                 val attestation = withContext(Dispatchers.IO) {
@@ -556,12 +566,19 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 withContext(Dispatchers.IO) { s.adoptMasterAttestation(attestation, rec.master) }
                 Log.i(TAG, "recovery: identity re-rooted under master ${FriendlyName.of(rec.master.toHex())}")
+                // The user may have navigated away (leaveRecovery) during the
+                // reconstruction window — if so, don't clobber where they went.
+                if (ui.value !is UiState.Recovery) return@launch
                 recoveryCards.clear()
+                recoveryCommitment = null
+                recoveryMaster = null
                 _ui.value = UiState.Recovery(
                     collected = shares.size,
                     masterName = FriendlyName.of(rec.master.toHex()),
                     recovered = true,
                 )
+            } catch (e: CancellationException) {
+                throw e // leaveRecovery cancelled us — let it unwind, don't error-write
             } catch (e: CairnFfiException.RecoveryFailed) {
                 Log.w(TAG, "recovery: reconstruct failed (insufficient/wrong cards)")
                 _ui.value = UiState.Recovery(
@@ -582,6 +599,8 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Leave recovery (skip, or continue after success) → the contact list. */
     fun leaveRecovery() {
+        recoveryJob?.cancel()
+        recoveryJob = null
         recoveryCards.clear()
         recoveryCommitment = null
         recoveryMaster = null

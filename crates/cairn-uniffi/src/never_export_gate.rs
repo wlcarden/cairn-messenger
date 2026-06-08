@@ -14,12 +14,18 @@
 //!    `uniffi::Object` handles MAY hold one privately (the point), but
 //!    it never appears as a `uniffi::Record` field or a `Lower`
 //!    argument/return.
-//! 3. The enforcement has two layers: a compile-time
-//!    [`cairn_crypto::never_export::assert_exportable`] check on the
-//!    plain carrier types that DO cross, plus the CI discipline-grep
-//!    gate (D0020 §3.11 step 3) that scans the generated UDL +
-//!    `#[uniffi::export]` signatures for any `NeverExport` type name
-//!    in a lowering position.
+//! 3. The enforcement has two layers. (a) [`assert_v1_carrier_types_exportable`]
+//!    is a centralized ALLOW-LIST: every plain type that crosses is named in one
+//!    [`cairn_crypto::never_export::assert_exportable`] call, so adding a new
+//!    crossing type is a visible, reviewable diff in one place. (Because stable
+//!    Rust has no negative-impl machinery, `assert_exportable` is a review aid,
+//!    not a hard compile gate — a listed type that *became* secret-bearing would
+//!    still compile; see below.) (b) The CI scan
+//!    `scripts/check-ffi-no-secrets.py` (D0020 §3.11) fails the build if a known
+//!    secret-carrier type name (`Zeroizing`, `SecretBox`, `SigningKey`, …)
+//!    appears as a field of any `#[derive(uniffi::Record)]` struct — the precise
+//!    regression (adding a secret to a crossing Record). That scan is the
+//!    executable guard the allow-list cannot itself be.
 //!
 //! ## Why the marker trait is necessary but not sufficient
 //!
@@ -27,9 +33,10 @@
 //! exportable, but it cannot by itself stop a future
 //! `#[uniffi::export]` from accidentally lowering a secret — Rust has
 //! no stable negative-impl machinery to express "this generic
-//! position rejects `T: NeverExport`." The compile-time
-//! `assert_exportable` check + the CI grep gate are the executable
-//! enforcement. This module carries the compile-time half.
+//! position rejects `T: NeverExport`." So the `assert_exportable`
+//! allow-list below is a review checkpoint, and the CI Record-field
+//! scan (`scripts/check-ffi-no-secrets.py`) is the executable guard.
+//! This module carries the allow-list half.
 //!
 //! ## v1 skeleton scope
 //!
@@ -39,7 +46,7 @@
 //! exportable here. The opaque-handle export types
 //! (`uniffi::Object`s) land with the binding-generation body per
 //! D0027 §8; when they do, each gains its own `assert_exportable`
-//! line + the CI grep gate covers the generated UDL.
+//! line, and the CI Record-field scan covers their record fields.
 
 use cairn_crypto::never_export::assert_exportable;
 
