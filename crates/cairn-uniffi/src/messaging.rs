@@ -209,6 +209,15 @@ pub struct ReceivedMessageRecord {
     /// authenticated by the envelope signature), NOT to the message list. `None`
     /// otherwise.
     pub introduction: Option<Vec<u8>>,
+    /// `Some(bytes)` if this is a recovery share (D0038 §7): one recovery card a
+    /// contact entrusted to this side to HOLD, or RETURNed during recovery. The
+    /// caller stores it (hold) or feeds it into the recovery reconstruct flow
+    /// (return), NOT the message list. `None` otherwise.
+    pub recovery_share: Option<Vec<u8>>,
+    /// `Some(bytes)` if this is a recovery request (D0038 §7): a contact is asking
+    /// this side to return the recovery share it holds for them. The caller
+    /// surfaces a manual-approval prompt (Stage 2). `None` otherwise.
+    pub recovery_request: Option<Vec<u8>>,
 }
 
 /// One persisted message in a conversation's history (D0026 §3.2).
@@ -470,6 +479,8 @@ impl SimplexAdapterHandle {
             read_up_to: received.read_up_to,
             vouch: received.vouch,
             introduction: received.introduction,
+            recovery_share: received.recovery_share,
+            recovery_request: received.recovery_request,
         })
     }
 
@@ -512,6 +523,8 @@ impl SimplexAdapterHandle {
             read_up_to: received.read_up_to,
             vouch: received.vouch,
             introduction: received.introduction,
+            recovery_share: received.recovery_share,
+            recovery_request: received.recovery_request,
         })
     }
 
@@ -706,6 +719,79 @@ impl SimplexAdapterHandle {
                 &recipient,
                 &introduction_bytes,
             )
+            .await
+            .map_err(CairnFfiError::from)?;
+        Ok(())
+    }
+
+    /// Send a **recovery share** to `recipient_operational_pubkey` over
+    /// `connection_id` (D0038 §7): entrust one recovery card (`card_bytes`, from
+    /// the recovery codec) to a recovery peer to HOLD, or RETURN a held card to a
+    /// recovering owner. An empty-payload, signed + chained envelope carrying
+    /// envelope key 11 — the recipient stores it (hold) or feeds it into the
+    /// recovery reconstruct flow (return).
+    ///
+    /// A single share is transportable-by-design (below the reconstruction
+    /// threshold); the master seed never crosses. WHETHER + to WHOM to send is the
+    /// shell's choice — the handle only provides the mechanism.
+    ///
+    /// # Errors
+    ///
+    /// - [`CairnFfiError::MalformedData`] if `recipient_operational_pubkey` is
+    ///   not 32 bytes.
+    /// - The facade mapping of any `SimplexAdapterError`
+    ///   ([`CairnFfiError::SidecarFailure`] when the sidecar is unreachable,
+    ///   [`CairnFfiError::StorageFailure`] on a persist failure).
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+    )]
+    pub async fn send_recovery_share(
+        &self,
+        connection_id: String,
+        recipient_operational_pubkey: Vec<u8>,
+        card_bytes: Vec<u8>,
+    ) -> Result<(), CairnFfiError> {
+        let recipient: [u8; PUBLIC_KEY_LEN] = recipient_operational_pubkey
+            .as_slice()
+            .try_into()
+            .map_err(|_| CairnFfiError::MalformedData)?;
+        self.adapter
+            .send_recovery_share(&ConnectionId(connection_id), &recipient, &card_bytes)
+            .await
+            .map_err(CairnFfiError::from)?;
+        Ok(())
+    }
+
+    /// Send a **recovery request** to `recipient_operational_pubkey` over
+    /// `connection_id` (D0038 §7): ask a recovery peer to return the share it
+    /// holds for this side. `request_bytes` is empty in Stage 2 (release is gated
+    /// by the peer's manual approval, not a payload). An empty-payload, signed +
+    /// chained envelope carrying envelope key 12.
+    ///
+    /// # Errors
+    ///
+    /// - [`CairnFfiError::MalformedData`] if `recipient_operational_pubkey` is
+    ///   not 32 bytes.
+    /// - The facade mapping of any `SimplexAdapterError`
+    ///   ([`CairnFfiError::SidecarFailure`] when the sidecar is unreachable,
+    ///   [`CairnFfiError::StorageFailure`] on a persist failure).
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+    )]
+    pub async fn send_recovery_request(
+        &self,
+        connection_id: String,
+        recipient_operational_pubkey: Vec<u8>,
+        request_bytes: Vec<u8>,
+    ) -> Result<(), CairnFfiError> {
+        let recipient: [u8; PUBLIC_KEY_LEN] = recipient_operational_pubkey
+            .as_slice()
+            .try_into()
+            .map_err(|_| CairnFfiError::MalformedData)?;
+        self.adapter
+            .send_recovery_request(&ConnectionId(connection_id), &recipient, &request_bytes)
             .await
             .map_err(CairnFfiError::from)?;
         Ok(())
