@@ -691,6 +691,19 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun gatherFromPeer() {
         if (ui.value !is UiState.Recovery) return
+        // Anti-poisoning (D0040 §8, review): a hostile peer could return a card from
+        // a DIFFERENT split; if it were the FIRST card it would anchor reconstruction
+        // on the attacker's commitment (denial-of-recovery + a spoofed master name).
+        // Require one of YOUR OWN cards first, so the legitimate commitment is the
+        // anchor and addRecoveryCard rejects any mismatched peer-returned card.
+        if (recoveryCommitment == null) {
+            _ui.value = UiState.Recovery(
+                collected = recoveryCards.size,
+                masterName = null,
+                error = "Add one of your own recovery cards first (paste or scan) — that anchors your identity. Then gather the rest from peers.",
+            )
+            return
+        }
         gatheringFromRecovery = true
         createInvitation()
     }
@@ -763,7 +776,16 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         if (pendingShareRequests.remove(giverHex)) {
             Log.i(TAG, "recovery: ${contact.displayName} RETURNED our held share (${share.size}B)")
             val cardText = runCatching { String(share) }.getOrNull()
-            if (cardText != null && ui.value is UiState.Recovery) addRecoveryCard(cardText)
+            if (cardText != null && ui.value is UiState.Recovery) {
+                // Anti-poisoning backstop (D0040 §8): never let a peer-returned card
+                // be the FIRST/anchoring card — gatherFromPeer already requires a
+                // user-entered anchor, this guards a returned card racing ahead of it.
+                if (recoveryCommitment == null) {
+                    Log.w(TAG, "recovery: ${contact.displayName}'s returned card arrived with no anchor yet — ignored (add your own card first)")
+                } else {
+                    addRecoveryCard(cardText)
+                }
+            }
         } else {
             // HOLD on behalf of the giver. The store write is blocking SQLite — keep
             // it off the recv loop's Main dispatcher — and only log success if it
@@ -820,8 +842,12 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Set the challenge phrase for the share held for [giverKeyHex] (D0040 §3). */
     fun setHeldSharePhrase(giverKeyHex: String, phrase: String) {
-        val ok = recoveryPeers?.setPhrase(giverKeyHex, phrase) == true
-        Log.i(TAG, "recovery: ${if (ok) "set" else "FAILED to set"} challenge phrase for held share ${giverKeyHex.take(12)}")
+        val peers = recoveryPeers ?: return
+        // setPhrase runs Argon2id (memory-hard) + scans for duplicate phrases — IO.
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) { peers.setPhrase(giverKeyHex, phrase) }
+            Log.i(TAG, "recovery: ${if (ok) "set" else "FAILED to set"} challenge phrase for held share ${giverKeyHex.take(12)}")
+        }
     }
 
     /** Driver/convenience: set the phrase for the single held share (D0040 §3). */
@@ -845,35 +871,53 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
      * That bound restores D0005's single-use intent: a wrong guess again *costs* a
      * round-trip, so this is not an unbounded online phrase-guessing oracle.
      * Nothing is sent on no match.
+     *
+     * Asynchronous: the match runs Argon2id per held share (memory-hard) off the
+     * Main thread; [onResult] is invoked on Main with `true` on a verified return,
+     * `false` on a mismatch (so the dialog can show its retry error).
      */
-    fun returnShareByPhrase(prompt: ShareReturnPrompt, phrase: String): Boolean {
-        val s = session ?: return false
-        val held = recoveryPeers?.findByPhrase(phrase)
-        if (held == null) {
-            val misses = (phraseAttempts[prompt.requesterKeyHex] ?: 0) + 1
-            if (misses >= MAX_PHRASE_ATTEMPTS) {
-                phraseAttempts.remove(prompt.requesterKeyHex)
-                _shareReturnPrompts.update { it.filterNot { p -> p.requesterKeyHex == prompt.requesterKeyHex } }
-                Log.w(TAG, "recovery: $MAX_PHRASE_ATTEMPTS wrong phrase attempts for ${prompt.requesterName} — prompt dropped, they must request again")
-            } else {
-                phraseAttempts[prompt.requesterKeyHex] = misses
-                if (BuildConfig.DEBUG) {
-                    Log.w(TAG, "recovery: phrase did NOT match for ${prompt.requesterName} (attempt $misses/$MAX_PHRASE_ATTEMPTS) — retryable")
-                }
-            }
-            return false
-        }
-        // Matched: clear the attempt counter + prompt and send the card back.
-        phraseAttempts.remove(prompt.requesterKeyHex)
-        _shareReturnPrompts.update { it.filterNot { p -> p.requesterKeyHex == prompt.requesterKeyHex } }
-        val recipient = runCatching { prompt.requesterKeyHex.fromHex() }.getOrNull() ?: return false
+    fun returnShareByPhrase(
+        prompt: ShareReturnPrompt,
+        phrase: String,
+        onResult: (Boolean) -> Unit = {},
+    ) {
+        val s = session ?: return onResult(false)
+        val peers = recoveryPeers ?: return onResult(false)
         viewModelScope.launch {
+            val held = withContext(Dispatchers.IO) { peers.findByPhrase(phrase) }
+            if (held == null) {
+                val misses = (phraseAttempts[prompt.requesterKeyHex] ?: 0) + 1
+                if (misses >= MAX_PHRASE_ATTEMPTS) {
+                    phraseAttempts.remove(prompt.requesterKeyHex)
+                    _shareReturnPrompts.update { it.filterNot { p -> p.requesterKeyHex == prompt.requesterKeyHex } }
+                    Log.w(TAG, "recovery: $MAX_PHRASE_ATTEMPTS wrong phrase attempts for ${prompt.requesterName} — prompt dropped, they must request again")
+                } else {
+                    phraseAttempts[prompt.requesterKeyHex] = misses
+                    if (BuildConfig.DEBUG) {
+                        Log.w(TAG, "recovery: phrase did NOT match for ${prompt.requesterName} (attempt $misses/$MAX_PHRASE_ATTEMPTS) — retryable")
+                    }
+                }
+                onResult(false)
+                return@launch
+            }
+            // Matched: clear the attempt counter + prompt and send the card back.
+            phraseAttempts.remove(prompt.requesterKeyHex)
+            _shareReturnPrompts.update { it.filterNot { p -> p.requesterKeyHex == prompt.requesterKeyHex } }
+            val recipient = runCatching { prompt.requesterKeyHex.fromHex() }.getOrNull()
+            if (recipient == null) {
+                onResult(false)
+                return@launch
+            }
             runCatching {
                 withContext(Dispatchers.IO) { s.handle.sendRecoveryShare(prompt.connId, recipient, held.card) }
-            }.onSuccess { Log.i(TAG, "recovery: phrase verified — returned a held share to ${prompt.requesterName}") }
-                .onFailure { Log.e(TAG, "returnShareByPhrase failed: ${it.message}") }
+            }.onSuccess {
+                Log.i(TAG, "recovery: phrase verified — returned a held share to ${prompt.requesterName}")
+                onResult(true)
+            }.onFailure {
+                Log.e(TAG, "returnShareByPhrase failed: ${it.message}")
+                onResult(false)
+            }
         }
-        return true
     }
 
     /** Decline returning the held share for [prompt] (D0038 §7). */
@@ -884,8 +928,9 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Act on the HEAD share-return prompt — for the adb driver (D0040 §3). */
-    fun approveFirstShareReturn(phrase: String): Boolean =
-        _shareReturnPrompts.value.firstOrNull()?.let { returnShareByPhrase(it, phrase) } ?: false
+    fun approveFirstShareReturn(phrase: String) {
+        _shareReturnPrompts.value.firstOrNull()?.let { returnShareByPhrase(it, phrase) }
+    }
 
     fun declineFirstShareReturn() = _shareReturnPrompts.value.firstOrNull()?.let { declineReturnShare(it) }
 

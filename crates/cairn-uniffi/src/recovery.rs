@@ -122,6 +122,55 @@ pub fn recovery_decode_card(card_text: String) -> Result<RecoveryCardRecord, Cai
     })
 }
 
+/// Derive the recovery-phrase commitment hash (D0040 §3 hardening): **Argon2id**
+/// over the challenge phrase, keyed by the held share's per-share `salt`.
+///
+/// The peer stores this hash beside the card it gates. A bare SHA-256 (the prior
+/// form) of a human-memorable phrase is brute-forceable in seconds from an
+/// exfiltrated peer store (the at-rest finding from the Stage 3a adversarial
+/// review); Argon2id raises the per-guess cost ~5–6 orders of magnitude, so a
+/// memorable phrase moves from seconds to years. The phrase is expected already
+/// normalized (NFC + trimmed) by the caller; we domain-separate it from any other
+/// Argon2 use (e.g. the storage KEK) with a fixed prefix. Deterministic given
+/// `(salt, phrase)` so the holder's set + verify agree.
+///
+/// Parameters: Argon2id, v1.3, m = 19 MiB, t = 2, p = 1 (the OWASP-recommended
+/// floor) — strong against offline guessing yet light enough to run a handful of
+/// times per verify on a phone. `salt` must be ≥ 8 bytes (the store uses 16).
+///
+/// # Errors
+///
+/// [`CairnFfiError::MalformedData`] if `salt` is shorter than the Argon2 minimum
+/// (8 bytes); [`CairnFfiError::UnmappedInternal`] if Argon2id derivation fails
+/// (e.g. a memory-allocation failure) — uniform per D0018 §1.4.
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+)]
+pub fn recovery_phrase_hash(salt: Vec<u8>, phrase: String) -> Result<Vec<u8>, CairnFfiError> {
+    use argon2::{Algorithm, Argon2, Params, Version};
+    use zeroize::Zeroize;
+
+    const DOMAIN: &[u8] = b"cairn-v1-recovery-phrase";
+    const OUT_LEN: usize = 32;
+    if salt.len() < 8 {
+        return Err(CairnFfiError::MalformedData);
+    }
+    // m = 19_456 KiB (19 MiB), t = 2, p = 1, 32-byte output.
+    let params =
+        Params::new(19_456, 2, 1, Some(OUT_LEN)).map_err(|_| CairnFfiError::UnmappedInternal)?;
+    let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut pwd = Vec::with_capacity(DOMAIN.len().saturating_add(phrase.len()));
+    pwd.extend_from_slice(DOMAIN);
+    pwd.extend_from_slice(phrase.as_bytes());
+    let mut out = [0u8; OUT_LEN];
+    let res = argon.hash_password_into(&pwd, &salt, &mut out);
+    pwd.zeroize();
+    res.map_err(|_| CairnFfiError::UnmappedInternal)?;
+    Ok(out.to_vec())
+}
+
 /// Reconstruct the master seed from a threshold of shares and attest a
 /// new operational identity (D0027 §2.2).
 ///
@@ -329,6 +378,30 @@ mod tests {
     fn decode_card_rejects_garbage() {
         assert_eq!(
             recovery_decode_card("not a recovery card".to_string()).unwrap_err(),
+            CairnFfiError::MalformedData
+        );
+    }
+
+    #[test]
+    fn phrase_hash_is_deterministic_salted_and_rejects_short_salt() {
+        let salt = vec![7u8; 16];
+        let h1 = recovery_phrase_hash(salt.clone(), "open sesame".to_string()).unwrap();
+        let h2 = recovery_phrase_hash(salt.clone(), "open sesame".to_string()).unwrap();
+        assert_eq!(h1, h2, "same (salt, phrase) → same hash (set + verify must agree)");
+        assert_eq!(h1.len(), 32);
+
+        // A different phrase under the same salt → different hash.
+        let h_other = recovery_phrase_hash(salt, "open sesam".to_string()).unwrap();
+        assert_ne!(h1, h_other);
+
+        // A different salt under the same phrase → different hash (per-share salt
+        // defeats cross-share precomputation).
+        let h_salt2 = recovery_phrase_hash(vec![8u8; 16], "open sesame".to_string()).unwrap();
+        assert_ne!(h1, h_salt2);
+
+        // Salt below the Argon2 minimum is rejected (uniform malformed error).
+        assert_eq!(
+            recovery_phrase_hash(vec![0u8; 4], "x".to_string()).unwrap_err(),
             CairnFfiError::MalformedData
         );
     }

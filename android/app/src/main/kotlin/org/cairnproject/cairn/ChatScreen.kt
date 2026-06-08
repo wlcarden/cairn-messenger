@@ -207,8 +207,9 @@ fun ChatScreen(vm: MessagingViewModel) {
 private fun ShareReturnDialog(p: ShareReturnPrompt, vm: MessagingViewModel) {
     var phrase by remember { mutableStateOf("") }
     var mismatch by remember { mutableStateOf(false) }
+    var verifying by remember { mutableStateOf(false) }
     AlertDialog(
-        onDismissRequest = { vm.declineReturnShare(p) },
+        onDismissRequest = { if (!verifying) vm.declineReturnShare(p) },
         title = { Text("Return recovery share?") },
         text = {
             Column {
@@ -228,6 +229,7 @@ private fun ShareReturnDialog(p: ShareReturnPrompt, vm: MessagingViewModel) {
                     label = { Text("Their challenge phrase") },
                     singleLine = true,
                     isError = mismatch,
+                    enabled = !verifying,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 12.dp),
@@ -244,14 +246,24 @@ private fun ShareReturnDialog(p: ShareReturnPrompt, vm: MessagingViewModel) {
         },
         confirmButton = {
             TextButton(
-                enabled = phrase.isNotBlank(),
-                // On a mismatch the prompt is kept (returnShareByPhrase → false): keep
-                // the dialog open with an error so a typo is retryable, not a re-request.
-                onClick = { if (!vm.returnShareByPhrase(p, phrase)) mismatch = true },
-            ) { Text("Verify + return") }
+                enabled = phrase.isNotBlank() && !verifying,
+                // The match runs Argon2id off-Main; on a mismatch the prompt is kept
+                // (up to the attempt cap) so a typo is retryable, not a re-request.
+                onClick = {
+                    verifying = true
+                    mismatch = false
+                    vm.returnShareByPhrase(p, phrase) { ok ->
+                        verifying = false
+                        if (!ok) {
+                            mismatch = true
+                            phrase = ""
+                        }
+                    }
+                },
+            ) { Text(if (verifying) "Verifying…" else "Verify + return") }
         },
         dismissButton = {
-            TextButton(onClick = { vm.declineReturnShare(p) }) { Text("Not now") }
+            TextButton(enabled = !verifying, onClick = { vm.declineReturnShare(p) }) { Text("Not now") }
         },
     )
 }
@@ -536,15 +548,19 @@ private fun RecoveryScreen(state: UiState.Recovery, vm: MessagingViewModel) {
 
             HorizontalDivider(Modifier.padding(top = 20.dp))
             Text(
-                "Or pull a share back from someone you entrusted one to. Pair with " +
-                    "them, then tell them — on a channel you trust — the challenge phrase " +
-                    "you agreed; their device returns your share into the count above.",
+                "Once you've added at least one of your own cards above, you can pull the " +
+                    "rest back from people you entrusted shares to. Pair with them, then ask " +
+                    "for the challenge phrase you agreed — on a channel you trust — and their " +
+                    "device returns your share into the count above.",
                 Modifier.padding(top = 16.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedButton(
                 onClick = { vm.gatherFromPeer() },
+                // Anti-poisoning (D0040 §8): your own card must anchor the identity
+                // before a peer-returned card is accepted.
+                enabled = state.collected >= 1,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 8.dp),

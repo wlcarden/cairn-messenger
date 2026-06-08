@@ -6,7 +6,9 @@ package org.cairnproject.cairn
 import android.util.Log
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.text.Normalizer
 import uniffi.cairn_uniffi.StorageHandle
+import uniffi.cairn_uniffi.recoveryPhraseHash
 
 /**
  * The recovery shares this device HOLDS on behalf of contacts (D0038 §7 / D0040,
@@ -20,10 +22,13 @@ import uniffi.cairn_uniffi.StorageHandle
  *
  * Backed by the encrypted `recovery_shares` category. The stored value is
  * `[salt(16)][phraseHash(32)][cardText]`; `salt`/`phraseHash` are all-zero until a
- * phrase is set ([setPhrase]). The phrase hash is a salted SHA-256 — sufficient
- * here because it lives inside the already-encrypted store right next to the card
- * it gates, so an at-rest attacker who could brute-force it already holds the card;
- * the phrase defends against LIVE impersonation of an honest peer, not at-rest.
+ * phrase is set ([setPhrase]). The phrase hash is **Argon2id** (computed in the
+ * Rust core, [recoveryPhraseHash]) over the NFC-normalized phrase, keyed by the
+ * per-share salt — a memory-hard KDF, so even an attacker who exfiltrates this
+ * encrypted store cannot cheaply brute-force a memorable phrase offline (the Stage
+ * 3a adversarial-review at-rest finding; the prior bare SHA-256 fell in seconds).
+ * Phrases are 1:1 with held shares: [setPhrase] rejects a phrase already in use and
+ * [findByPhrase] fails closed on >1 match, so a returned card is never ambiguous.
  */
 class RecoveryPeerStore(private val storage: StorageHandle) {
 
@@ -43,13 +48,43 @@ class RecoveryPeerStore(private val storage: StorageHandle) {
             .isSuccess
     }
 
-    /** Set/replace the challenge phrase for the share held for [giverKeyHex] (D0005). */
+    /**
+     * Set/replace the challenge phrase for the share held for [giverKeyHex] (D0005).
+     * Rejects a blank phrase, or one already in use by ANOTHER held share — phrases
+     * must be 1:1 with shares (D0040 §2) so [findByPhrase] is unambiguous. Returns
+     * false if no share is held, the phrase is blank/duplicate, or the write fails.
+     * Runs Argon2id (memory-hard) — call off the main thread.
+     */
     fun setPhrase(giverKeyHex: String, phrase: String): Boolean {
         val card = held(giverKeyHex) ?: return false
+        if (phrase.isBlank()) {
+            Log.w(TAG, "recovery: refusing to set a blank challenge phrase")
+            return false
+        }
+        if (phraseUsedByAnother(giverKeyHex, phrase)) {
+            Log.w(TAG, "recovery: that phrase is already used by another held share — not set (D0040 §2)")
+            return false
+        }
         val salt = ByteArray(SALT_LEN).also { SecureRandom().nextBytes(it) }
         val hash = phraseHash(salt, phrase)
         val value = salt + hash + card
         return runCatching { storage.put(CATEGORY, giverKeyHex.fromHex(), value) }.isSuccess
+    }
+
+    /** True if any held share OTHER than [exceptGiverKeyHex] already matches [phrase]. */
+    private fun phraseUsedByAnother(exceptGiverKeyHex: String, phrase: String): Boolean {
+        val except = runCatching { exceptGiverKeyHex.fromHex() }.getOrNull()
+        val ids = runCatching { storage.listRecords(CATEGORY) }.getOrDefault(emptyList())
+        for (id in ids) {
+            if (except != null && id.contentEquals(except)) continue
+            val raw = runCatching { storage.get(CATEGORY, id) }.getOrNull() ?: continue
+            val (header, _) = decode(raw) ?: continue
+            val salt = header.copyOfRange(0, SALT_LEN)
+            val hash = header.copyOfRange(SALT_LEN, SALT_LEN + HASH_LEN)
+            if (hash.all { it == 0.toByte() }) continue
+            if (MessageDigest.isEqual(hash, phraseHash(salt, phrase))) return true
+        }
+        return false
     }
 
     /** The card we hold for [giverKeyHex] (phrase header stripped), or null. */
@@ -71,10 +106,15 @@ class RecoveryPeerStore(private val storage: StorageHandle) {
      * Find the held share whose challenge phrase matches [phrase] (D0005 / D0040
      * §2): the fresh-device matcher — the requester's operational key is new, so the
      * phrase the owner produces is the only link to which share is theirs. Returns
-     * the matching [Held] or null. Shares with no phrase set never match.
+     * the matching [Held], or null if none match. **Fails closed on >1 match**
+     * (returns null) — a duplicate phrase must never silently return one of two
+     * cards; [setPhrase] already prevents duplicates, this is the backstop. Shares
+     * with no phrase set never match. Runs Argon2id per record — call off the main
+     * thread.
      */
     fun findByPhrase(phrase: String): Held? {
         val ids = runCatching { storage.listRecords(CATEGORY) }.getOrDefault(emptyList())
+        var match: Held? = null
         for (id in ids) {
             val raw = runCatching { storage.get(CATEGORY, id) }.getOrNull() ?: continue
             val (header, card) = decode(raw) ?: continue
@@ -82,10 +122,14 @@ class RecoveryPeerStore(private val storage: StorageHandle) {
             val hash = header.copyOfRange(SALT_LEN, SALT_LEN + HASH_LEN)
             if (hash.all { it == 0.toByte() }) continue // no phrase set
             if (MessageDigest.isEqual(hash, phraseHash(salt, phrase))) {
-                return Held(id.toHex(), card, hasPhrase = true)
+                if (match != null) {
+                    Log.w(TAG, "recovery: phrase matched >1 held share — refusing to return (fail closed)")
+                    return null
+                }
+                match = Held(id.toHex(), card, hasPhrase = true)
             }
         }
-        return null
+        return match
     }
 
     /** Drop the share we hold for [giverKeyHex]. */
@@ -99,12 +143,16 @@ class RecoveryPeerStore(private val storage: StorageHandle) {
         return value.copyOfRange(0, SALT_LEN + HASH_LEN) to value.copyOfRange(SALT_LEN + HASH_LEN, value.size)
     }
 
-    private fun phraseHash(salt: ByteArray, phrase: String): ByteArray =
-        MessageDigest.getInstance("SHA-256").run {
-            update(DOMAIN)
-            update(salt)
-            digest(phrase.trim().toByteArray())
-        }
+    /**
+     * Argon2id commitment of [phrase] under [salt] (computed in the Rust core). The
+     * phrase is canonicalized first — **NFC** normalize then trim — so the same
+     * human phrase typed on two devices (possibly in different Unicode forms) hashes
+     * equal; the Rust side adds domain separation. Memory-hard, so call off-Main.
+     */
+    private fun phraseHash(salt: ByteArray, phrase: String): ByteArray {
+        val canonical = Normalizer.normalize(phrase, Normalizer.Form.NFC).trim()
+        return recoveryPhraseHash(salt, canonical)
+    }
 
     private companion object {
         const val TAG = "CairnFfi"
@@ -113,8 +161,5 @@ class RecoveryPeerStore(private val storage: StorageHandle) {
         const val CATEGORY = "recovery_shares"
         const val SALT_LEN = 16
         const val HASH_LEN = 32
-
-        /** Domain-separates the phrase hash from any other SHA-256 use. */
-        val DOMAIN = "cairn-v1-recovery-phrase".toByteArray()
     }
 }
