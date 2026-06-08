@@ -180,21 +180,36 @@ design must therefore be:
   sends a **discard** to peers who received a pending share, zeroizes the master,
   signs **no** new identity, and reports recovery **failed-but-non-leaking**.
 
-Open forks (resolve in 3c, NOT here):
-
-- The ack / commit / discard control messages — likely **key-13/14/15** envelope
-  fields, or a small CBOR sub-protocol over key-11. Define in 3c.
-- The **bound** for "all peers ack" over async transport, and what a partial-ack
-  timeout does (retry vs abort). This is the crux risk.
-- Whether v1 ships re-split at all, or whether the **landed Stage-1 re-rooting**
-  (the master attests the new operational key, no re-split) is the v1 recovery
-  endpoint and re-split is **v1.x**. Re-splitting changes every peer's share, so it
-  is only needed to keep the _old_ shares from recovering the master again after a
-  recovery — a real but second-order property. **Recommendation: ship 3a + 3b for
-  v1; treat 3c (re-split) as v1.x**, since reconstruct-and-re-root is already
-  whole, and atomic re-split over async transport is a research-grade problem whose
-  failure modes (a leaked master mid-protocol) are exactly what we must not get
-  wrong under deadline.
+> **RESOLVED IN BUILD (2026-06-08) — LANDED + 2-Pixel-proven; see §7 Stage 3c.**
+> The open forks below are settled, and the phase-1/phase-2 model above is
+> superseded by a **stronger** one: the master is **not** held across the async
+> wait. `cairn-recovery::reconstruct_resplit_and_attest` runs the master's whole
+> lifecycle — reconstruct → derive → re-split → sign → **zeroize** — in ONE FFI
+> call, so the master is gone **before** phase 1 even sends. That collapses the
+> "leaked master mid-protocol" failure mode entirely (there is no master to leak
+> during the wait), reducing the two-phase protocol from _master safety_ to
+> _distributed share-set consistency_: COMMIT (peers promote, owner keeps the new
+> kit) vs ABORT (peers discard the pending, keep the old card; owner adopts no new
+> identity). The fork resolutions:
+>
+> - **Control messages:** a single **key-13** `recovery_control` =
+>   `[kind(1)][resplit_id(16)]` with a kind discriminator (PREPARE/ACK/COMMIT/
+>   DISCARD), NOT three separate keys 13/14/15. A PREPARE rides alongside the new
+>   card in key 11.
+> - **The ack bound:** a per-owner **deadline** (default 2 min; debug-overridable).
+>   A partial-ack timeout **aborts** (sends DISCARD to peers, adopts no identity) —
+>   not retry — keeping the non-leaking property simple. The owner can re-run later
+>   (the old cards still reconstruct, so re-split is idempotent-safe to retry).
+> - **Ship-or-defer:** **shipped in v1.** The protocol proved tractable on real
+>   hardware (the §7 3c-b COMMIT + ABORT proof); the earlier "treat as v1.x"
+>   recommendation is withdrawn. (Reconstruct-and-re-root, Stage 1, remains the
+>   minimum recovery endpoint; re-split is the share-refresh on top that stales the
+>   old cards on honest holders.)
+>
+> The **soft-property caveat stands**: re-split leaves the master seed (and hence
+> the commitment) unchanged, so the OLD cards still cryptographically reconstruct —
+> "old cards can no longer recover" holds only once their honest holders delete
+> them.
 
 ## 6. Storage
 
@@ -283,10 +298,49 @@ covers it), consistent with how Stage 2 chose the generic store over the
     raven by a 45 s window firing with **no driver hook**. (A `WorkManager` check that
     survives process death remains an optional nicety; the holder-clock check is the
     source of truth.)
-- **Stage 3c — atomic re-split (≥2 devices, highest risk).** Per §5; **recommended
-  v1.x**, behind an explicit two-phase protocol. Does not block 3a/3b.
+- **Stage 3c — atomic re-split (≥2 devices, highest risk). LANDED + 2-Pixel-proven
+  over Tor.** Per §5; brought into v1 (the §5 "recommend v1.x" recommendation is
+  superseded — the protocol proved tractable on real hardware). Split in build:
+  - **3c-a — Rust foundation. LANDED + host-tested.** Envelope **key 13**
+    `recovery_control` = `[kind(1)][resplit_id(16)]` (PREPARE/ACK/COMMIT/DISCARD),
+    omitted-when-None so content envelopes stay byte-identical (a PREPARE rides
+    alongside the new card in key 11). `cairn-recovery::reconstruct_resplit_and_attest`
+    runs the master's WHOLE lifecycle in one call — reconstruct (from old shares) →
+    derive → re-split a fresh N-of-M → sign the new-op attestation → zeroize — so the
+    master never crosses to Kotlin. New `RecoveryError::ShamirSplit` keeps a re-split's
+    two Shamir steps distinct (reconstruct-fail = "wrong/insufficient old cards",
+    user-actionable; split-fail = internal param fault). FFI `recovery_resplit_and_attest`
+    → `{new_cards (paper text), attestation, master_pubkey, new_commitment}` +
+    `sendRecoveryControl` + `ReceivedMessageRecord.recovery_control`. 32 cairn-recovery
+    - 79 cairn-uniffi + 79 cairn-simplex-adapter tests; a key insight encoded in the
+      tests: re-split leaves the SECRET (hence the commitment = BLAKE3(seed)) UNCHANGED
+      and the OLD shares still reconstruct — "old cards can't recover" is a SOFT property
+      dependent on honest deletion; the HARD guarantee is non-leaking atomicity.
+  - **3c-b — Kotlin two-phase orchestration. LANDED + 2-Pixel-proven over Tor.**
+    Because 3c-a zeroizes the master inside one FFI call, the master is gone before
+    phase 1 even sends — collapsing the doc's hardest risk ("a leaked master
+    mid-protocol"), reducing the orchestration from master-safety to distributed
+    share-set CONSISTENCY. Owner `beginResplit` → reconstruct + re-split + re-attest →
+    **PREPARE** (key 13 + the peer's new card in key 11) to each recovery peer; an ACK
+    deadline arms the abort. `ownerHandleResplitAck` tallies; all-acked →
+    **COMMIT** (peers promote pending→active). Deadline/manual → **ABORT** → **DISCARD**
+    to peers + drop the new cards from memory + adopt no new identity. Peer: recv routes
+    `recoveryControl` BEFORE `recoveryShare` (a PREPARE carries both); PREPARE → stage in
+    the durable `recovery_pending` category + ACK; COMMIT → `RecoveryPeerStore.promote`
+    (swap card, **preserve** the salt+phraseHash header so the phrase agreement survives);
+    DISCARD → drop pending, keep old card. Driver hooks `resplit "<c1>;<c2>;<c3>"`,
+    `resplitdeadline`, `resplitabort`. **Proof (oriole "Print Cotton Math" ↔ raven
+    "Month Enforce Develop", over bundled Tor):** COMMIT (`id 34cef1f1`) — A re-split into
+    5 new cards → PREPARE → B staged PENDING + ACKed → A tallied 1/1 + COMMITted → B
+    **promoted to active, phrase preserved**. ABORT (`id 2e015140`, 1.5 s deadline) — A
+    sent PREPARE → deadline fired before B's ~15 s ACK → A **DISCARDed, adopted no new
+    identity, master already zeroized** → B's late ACK ignored (unknown id) → B **dropped
+    pending, kept the old card** (non-leaking). The 2-Pixel proof exercises N=1 over the
+    wire while the cryptographic split is a real 3-of-5; the N-peer generalization is the
+    same ACK tally over the whole peer map.
+  - **3c-c — re-split UX + docs. See below.**
 
-Each sub-stage is a wire/codec/FFI/Kotlin slice in the landed key-8/9/10/11/12
+Each sub-stage is a wire/codec/FFI/Kotlin slice in the landed key-8/9/10/11/12/13
 pattern + a 2-device on-device proof, mirroring how Stages 1–2 shipped.
 
 ## 8. Threat model honesty
