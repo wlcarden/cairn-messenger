@@ -102,6 +102,7 @@ fun ChatScreen(vm: MessagingViewModel) {
     // the prompt overlays ANY screen (an introduction can arrive while in the
     // contact list or another conversation).
     val pendingIntros by vm.pendingIntroductions.collectAsStateWithLifecycle()
+    val shareReturnPrompts by vm.shareReturnPrompts.collectAsStateWithLifecycle()
 
     // System BACK navigates WITHIN the app instead of exiting it: a sub-screen
     // goes back to the conversation list (or cancels a pending pair / dismisses a
@@ -190,6 +191,37 @@ fun ChatScreen(vm: MessagingViewModel) {
     // Show the head of the introduction-consent queue over everything (D0037 §2:
     // nothing happens until the user explicitly approves/connects).
     pendingIntros.firstOrNull()?.let { p -> IntroductionConsentDialog(p, vm) }
+
+    // A recovery peer is asking for the share we hold for them back (D0038 §7):
+    // manual approval is the whole Stage-2 gate.
+    shareReturnPrompts.firstOrNull()?.let { p -> ShareReturnDialog(p, vm) }
+}
+
+/**
+ * Manual-approval prompt for returning a held recovery share (D0038 §7). The
+ * holder decides whether the requester is really the owner before releasing the
+ * share they hold — the only release gate in Stage 2 (cooling-off + a challenge
+ * phrase are Stage 3).
+ */
+@Composable
+private fun ShareReturnDialog(p: ShareReturnPrompt, vm: MessagingViewModel) {
+    AlertDialog(
+        onDismissRequest = { vm.declineReturnShare(p) },
+        title = { Text("Return recovery share?") },
+        text = {
+            Text(
+                "“${p.requesterName}” is asking you to send back the recovery share " +
+                    "you're holding for them. Only do this if you're sure it's really " +
+                    "them recovering their identity.",
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { vm.approveReturnShare(p) }) { Text("Return it") }
+        },
+        dismissButton = {
+            TextButton(onClick = { vm.declineReturnShare(p) }) { Text("Not now") }
+        },
+    )
 }
 
 /**
@@ -1122,6 +1154,7 @@ private fun ChatAppBar(state: UiState.Conversation, vm: MessagingViewModel) {
     var showDelete by remember { mutableStateOf(false) }
     var showVouch by remember { mutableStateOf(false) }
     var showIntroduce by remember { mutableStateOf(false) }
+    var showEntrustShare by remember { mutableStateOf(false) }
     var verifyScanError by remember { mutableStateOf<String?>(null) }
     val verifyScanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
         val scanned = result.contents
@@ -1225,6 +1258,17 @@ private fun ChatAppBar(state: UiState.Conversation, vm: MessagingViewModel) {
                             text = { Text("Introduce ${state.displayName} to…") },
                             onClick = { menuOpen = false; showIntroduce = true },
                         )
+                        // Recovery peer (D0038 §7): entrust one of YOUR recovery
+                        // shares to this verified contact to hold, or ask for it
+                        // back. Only verified contacts (peer-selection discipline).
+                        DropdownMenuItem(
+                            text = { Text("Entrust a recovery share…") },
+                            onClick = { menuOpen = false; showEntrustShare = true },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Request my held share back") },
+                            onClick = { menuOpen = false; vm.requestHeldShare() },
+                        )
                     }
                     DropdownMenuItem(
                         text = { Text("Delete contact") },
@@ -1307,6 +1351,41 @@ private fun ChatAppBar(state: UiState.Conversation, vm: MessagingViewModel) {
                 showIntroduce = false
             },
             onDismiss = { showIntroduce = false },
+        )
+    }
+    if (showEntrustShare) {
+        var card by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showEntrustShare = false },
+            title = { Text("Entrust a recovery share") },
+            text = {
+                Column {
+                    Text(
+                        "Paste one of your recovery cards to entrust to ${state.displayName}. " +
+                            "They'll hold it and can return it if you ever need to recover your " +
+                            "identity. Spread your shares across people you trust — a threshold " +
+                            "of them together could reconstruct your key (D0038 §7).",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    OutlinedTextField(
+                        value = card,
+                        onValueChange = { card = it },
+                        label = { Text("Recovery card") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = card.isNotBlank(),
+                    onClick = { vm.entrustRecoveryShare(card); showEntrustShare = false },
+                ) { Text("Send") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEntrustShare = false }) { Text("Cancel") }
+            },
         )
     }
 }

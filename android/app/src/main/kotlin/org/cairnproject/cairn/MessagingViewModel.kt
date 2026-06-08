@@ -82,6 +82,19 @@ data class PendingIntroduction(
 }
 
 /**
+ * An inbound recovery-share-return request (D0038 §7) awaiting the user's manual
+ * approval — the holder side. [requesterName]/[requesterKeyHex] is the contact
+ * (whose share we hold) asking for it back; [connId] is where the returned share
+ * is sent. Manual approval is the whole Stage-2 gate (no cooling-off/challenge
+ * yet — that is Stage 3).
+ */
+data class ShareReturnPrompt(
+    val requesterKeyHex: String,
+    val requesterName: String,
+    val connId: String,
+)
+
+/**
  * A single chat line. [tsUnix] is the message wall-clock time; [id] is a local
  * identity so an optimistic send can be updated in place to its [status].
  * [messageNumber] is this message's send-chain position for an outgoing message
@@ -244,6 +257,27 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     private var session: CairnSession? = null
     private var contacts: ContactStore? = null
 
+    /** Recovery shares this device holds for contacts (D0038 §7). Set on unlock. */
+    private var recoveryPeers: RecoveryPeerStore? = null
+
+    /**
+     * Contacts we've sent a recovery_request to (peerKeyHex) and are awaiting a
+     * returned share from (D0038 §7). An inbound recovery_share from a contact in
+     * this set is a RETURN (route it to the owner / gather); otherwise it is a
+     * peer entrusting us a share to HOLD. Concurrent set: written on request,
+     * read+cleared on the recv loop's Main dispatcher.
+     */
+    private val pendingShareRequests: MutableSet<String> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    /**
+     * Inbound recovery-share-return requests (D0038 §7) awaiting the user's manual
+     * approval — the holder side. A queue (the UI shows the head), mirroring the
+     * introduction-consent queue. Main-confined.
+     */
+    private val _shareReturnPrompts = MutableStateFlow<List<ShareReturnPrompt>>(emptyList())
+    val shareReturnPrompts = _shareReturnPrompts.asStateFlow()
+
     @Volatile private var torReady = false
     @Volatile private var appForeground = true
     private var connectionId: String? = null
@@ -368,6 +402,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 session = s
                 contacts = ContactStore(s.storage)
+                recoveryPeers = RecoveryPeerStore(s.storage)
                 myHex = s.publicKeyRaw.toHex()
                 // A public key, but still identifying metadata — keep it out of
                 // release logcat (debug keeps it for the test harnesses).
@@ -606,6 +641,116 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         recoveryMaster = null
         showContacts()
     }
+
+    // ── Peer-share distribution (D0038 §7, Stage 2) ──────────────────────────
+
+    /**
+     * Entrust one of YOUR recovery cards ([cardText]) to the OPEN contact as a
+     * recovery peer (D0038 §7): the peer holds it and can return it to you later.
+     * The card is validated locally before sending. Converts a paper backup share
+     * into a peer-held one over the existing authenticated connection.
+     */
+    fun entrustRecoveryShare(cardText: String) {
+        val s = session ?: return
+        val connId = connectionId ?: return
+        val peer = peerKeyRaw ?: return
+        val card = cardText.trim()
+        if (runCatching { recoveryDecodeCard(card) }.getOrNull() == null) {
+            Log.w(TAG, "entrustRecoveryShare: not a valid recovery card")
+            return
+        }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { s.handle.sendRecoveryShare(connId, peer, card.toByteArray()) }
+            }.onSuccess { Log.i(TAG, "recovery: entrusted a share to ${peer.toHex().take(12)}") }
+                .onFailure { Log.e(TAG, "entrustRecoveryShare failed: ${it.message}") }
+        }
+    }
+
+    /**
+     * Ask the OPEN contact to return the recovery share they hold for you (D0038
+     * §7). Marks them pending so their returned share is routed to the gather (or
+     * an active recovery) rather than treated as a new hold.
+     */
+    fun requestHeldShare() {
+        val s = session ?: return
+        val connId = connectionId ?: return
+        val peer = peerKeyRaw ?: return
+        val peerHex = peer.toHex()
+        pendingShareRequests.add(peerHex)
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { s.handle.sendRecoveryRequest(connId, peer, ByteArray(0)) }
+            }.onSuccess { Log.i(TAG, "recovery: requested our held share back from ${peerHex.take(12)}") }
+                .onFailure {
+                    Log.e(TAG, "requestHeldShare failed: ${it.message}")
+                    pendingShareRequests.remove(peerHex)
+                }
+        }
+    }
+
+    /**
+     * Inbound recovery share (D0038 §7): a RETURN of our own share (we requested
+     * it) — routed to an active recovery / logged — or a contact entrusting us a
+     * share to HOLD — persisted in the [RecoveryPeerStore] keyed by them. The
+     * envelope already authenticated the sender. Called from the recv loop.
+     */
+    private fun handleIncomingRecoveryShare(contact: Contact, share: ByteArray) {
+        val giverHex = contact.peerKeyHex
+        if (pendingShareRequests.remove(giverHex)) {
+            Log.i(TAG, "recovery: ${contact.displayName} RETURNED our held share (${share.size}B)")
+            val cardText = runCatching { String(share) }.getOrNull()
+            if (cardText != null && ui.value is UiState.Recovery) addRecoveryCard(cardText)
+        } else {
+            recoveryPeers?.hold(giverHex, share)
+            Log.i(TAG, "recovery: now HOLDING a recovery share for ${contact.displayName} (${share.size}B)")
+        }
+    }
+
+    /**
+     * Inbound recovery request (D0038 §7): a contact asks for the share we hold
+     * for them back. Enqueue a manual-approval prompt — but only if we actually
+     * hold something for them (else ignore). Called from the recv loop.
+     */
+    private fun handleIncomingRecoveryRequest(contact: Contact) {
+        if (recoveryPeers?.holds(contact.peerKeyHex) != true) {
+            Log.i(TAG, "recovery: ${contact.displayName} requested a share we don't hold — ignored")
+            return
+        }
+        val prompt = ShareReturnPrompt(contact.peerKeyHex, contact.displayName, contact.connId)
+        _shareReturnPrompts.update { cur ->
+            if (cur.any { it.requesterKeyHex == prompt.requesterKeyHex }) cur else cur + prompt
+        }
+        Log.i(TAG, "recovery: ${contact.displayName} asked for their held share back — awaiting approval")
+    }
+
+    /** Approve returning the held share for [prompt] (D0038 §7) → send it back. */
+    fun approveReturnShare(prompt: ShareReturnPrompt) {
+        val s = session ?: return
+        val card = recoveryPeers?.held(prompt.requesterKeyHex)
+        _shareReturnPrompts.update { it.filterNot { p -> p.requesterKeyHex == prompt.requesterKeyHex } }
+        if (card == null) {
+            Log.w(TAG, "approveReturnShare: no held share for ${prompt.requesterName}")
+            return
+        }
+        val recipient = runCatching { prompt.requesterKeyHex.fromHex() }.getOrNull() ?: return
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { s.handle.sendRecoveryShare(prompt.connId, recipient, card) }
+            }.onSuccess { Log.i(TAG, "recovery: returned ${prompt.requesterName}'s held share") }
+                .onFailure { Log.e(TAG, "approveReturnShare failed: ${it.message}") }
+        }
+    }
+
+    /** Decline returning the held share for [prompt] (D0038 §7). */
+    fun declineReturnShare(prompt: ShareReturnPrompt) {
+        _shareReturnPrompts.update { it.filterNot { p -> p.requesterKeyHex == prompt.requesterKeyHex } }
+        Log.i(TAG, "recovery: declined returning a share to ${prompt.requesterName}")
+    }
+
+    /** Act on the HEAD share-return prompt — for the adb driver (D0038 §7). */
+    fun approveFirstShareReturn() = _shareReturnPrompts.value.firstOrNull()?.let { approveReturnShare(it) }
+    fun declineFirstShareReturn() = _shareReturnPrompts.value.firstOrNull()?.let { declineReturnShare(it) }
 
     /** Show the add-a-contact screen (invite / scan / paste). */
     fun showAddContact() {
@@ -1605,6 +1750,22 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 val intro = r.introduction
                 if (intro != null) {
                     handleIncomingIntroduction(contact, intro)
+                    continue
+                }
+                // A recovery share (D0038 §7): empty payload + recoveryShare set.
+                // If we requested it (we're gathering), it's a RETURN → surface to
+                // the owner; otherwise this contact is entrusting us a share to
+                // HOLD → store it keyed by them. NOT a message.
+                val share = r.recoveryShare
+                if (share != null) {
+                    handleIncomingRecoveryShare(contact, share)
+                    continue
+                }
+                // A recovery request (D0038 §7): this contact asks us to return the
+                // share we hold for them → surface a manual-approval prompt. NOT a
+                // message.
+                if (r.recoveryRequest != null) {
+                    handleIncomingRecoveryRequest(contact)
                     continue
                 }
                 if (r.payload.isEmpty()) continue // hello/key-exchange marker

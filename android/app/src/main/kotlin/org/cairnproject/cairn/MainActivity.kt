@@ -152,6 +152,10 @@ class MainActivity : FragmentActivity() {
      *   --es recoverycard "<card>"     → feed a recovery-card text into the collector
      *   --es recover "1"               → reconstruct + re-root the identity (D0038)
      *   --es recoveryskip "1"          → leave recovery → contacts
+     *   --es entrustshare "<card>"     → entrust a recovery card to the open contact (D0038 §7)
+     *   --es requestshare "1"          → ask the open contact to return our held share
+     *   --es approveshare "1"          → approve the head share-return request
+     *   --es declineshare "1"          → decline the head share-return request
      *   --es quickenroll "<pass>"     → enroll quick unlock (shows the BiometricPrompt)
      *   --es quickunlock "1"          → quick-unlock prompt (decrypt → unlock)
      *   --es quickdisable "1"         → delete the wrapped passphrase + Keystore key
@@ -263,6 +267,25 @@ class MainActivity : FragmentActivity() {
         intent.getStringExtra("introdecline")?.let {
             Log.i(TAG, "driver: declineFirstIntroduction")
             viewModel.declineFirstIntroduction()
+        }
+        // Peer-share distribution (D0038 §7). entrustshare carries a card (percent-
+        // encoding-resistant, like invite); request/approve/decline drive the
+        // hold-and-return mechanism (the approval dialog can't be tapped over adb).
+        intent.getStringExtra("entrustshare")?.let {
+            Log.i(TAG, "driver: entrustRecoveryShare len=${it.length}")
+            viewModel.entrustRecoveryShare(it)
+        }
+        intent.getStringExtra("requestshare")?.let {
+            Log.i(TAG, "driver: requestHeldShare")
+            viewModel.requestHeldShare()
+        }
+        intent.getStringExtra("approveshare")?.let {
+            Log.i(TAG, "driver: approveFirstShareReturn")
+            viewModel.approveFirstShareReturn()
+        }
+        intent.getStringExtra("declineshare")?.let {
+            Log.i(TAG, "driver: declineFirstShareReturn")
+            viewModel.declineFirstShareReturn()
         }
         intent.getStringExtra("simkeymismatch")?.let {
             Log.i(TAG, "driver: simulateKeyMismatch")
