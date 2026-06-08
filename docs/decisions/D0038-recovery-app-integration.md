@@ -227,6 +227,11 @@ back — awaiting approval` → B approves → A `RETURNED our held share (154B)
   **atomic-or-non-leaking re-split** two-phase commit across N peers (D0005 §, D0018 §3.5)
   — which is greenfield (it lives nowhere today, despite D0018's claim it is in
   `cairn-recovery`). This is the largest, riskiest surface and is staged last.
+  **Scoped in [D0040](D0040-recovery-coercion-resistance.md)** — which also
+  resolves the fresh-device identity-matching that the peer-recovery gather needs
+  (the challenge phrase doubles as identity-proof + share-selector), and
+  recommends shipping 3a (phrases + gather) + 3b (cooling-off) for v1 while
+  treating 3c (atomic re-split) as v1.x.
 
 ## 8. Doc-vs-code reconciliations (fold in with Stage 1)
 
