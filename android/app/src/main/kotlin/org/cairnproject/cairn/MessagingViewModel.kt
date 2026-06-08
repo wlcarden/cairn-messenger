@@ -22,9 +22,13 @@ import kotlinx.coroutines.withTimeoutOrNull
 import uniffi.cairn_uniffi.CairnFfiException
 import uniffi.cairn_uniffi.IntroductionKindFfi
 import uniffi.cairn_uniffi.IntroductionMessageRecord
+import uniffi.cairn_uniffi.ShareRecord
 import uniffi.cairn_uniffi.StrengthFfi
 import uniffi.cairn_uniffi.decodeIntroductionMessage
 import uniffi.cairn_uniffi.encodeIntroductionMessage
+import uniffi.cairn_uniffi.recoveryDecodeCard
+import uniffi.cairn_uniffi.recoveryReconstructAndAttest
+import uniffi.cairn_uniffi.recoveryVerifyMasterAttestation
 
 /**
  * Delivery state of an outgoing message (received messages are [SendStatus.NONE]).
@@ -125,6 +129,32 @@ sealed interface UiState {
         val error: String?,
         /** A wrapped-passphrase blob exists → offer "Unlock with fingerprint" (D0029). */
         val quickUnlockEnrolled: Boolean = false,
+        /**
+         * This passphrase screen begins a RECOVERY (D0038 §5): setting it creates
+         * the new device's at-rest storage + persistent operational key, after
+         * which the session enters the card-collection [Recovery] flow instead of
+         * the contact list. Only meaningful with [firstLaunch].
+         */
+        val recovering: Boolean = false,
+    ) : UiState
+
+    /**
+     * Paper-share recovery (D0038 §5): the user enters recovery cards until a
+     * threshold reconstructs their master, which re-roots THIS device's
+     * persistent operational identity under it. Reached from Welcome →
+     * "Recover", after the new device's passphrase + key are bootstrapped.
+     */
+    data class Recovery(
+        /** Distinct cards entered so far (deduped by Shamir id). */
+        val collected: Int,
+        /** Friendly name of the master the entered cards attest (once ≥1 card). */
+        val masterName: String?,
+        /** A transient status line (e.g. "Reconstructing…"). */
+        val status: String? = null,
+        /** A rejected-card / failed-reconstruction message (recoverable). */
+        val error: String? = null,
+        /** Reconstruction succeeded + the identity was re-rooted under the master. */
+        val recovered: Boolean = false,
     ) : UiState
 
     /** Bringing up the encrypted session + bundled Tor. */
@@ -150,6 +180,12 @@ sealed interface UiState {
          * the signing key is hardware-backed + hardware-generated. Advisory.
          */
         val attestation: DeviceAttestation = DeviceAttestation.unattested("unknown"),
+        /**
+         * Friendly name of the recovered master (D0038 §5) when this identity was
+         * re-rooted via paper-share recovery — null when still self-issued. A
+         * non-null value surfaces "Recovered identity — master <name>".
+         */
+        val masterName: String? = null,
     ) : UiState
 
     /** The add-a-contact screen (invite / scan / paste), behind the FAB. */
@@ -260,6 +296,16 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     private var myHex: String = ""
     private val msgIdSeq = AtomicLong(0)
 
+    /**
+     * Paper-share recovery (D0038 §5) collection state: the decoded shares plus
+     * the single commitment + master every card in a set must agree on. Cleared
+     * on enter / leave / success. Main-confined (mutated only from the recovery
+     * handlers, which run on the Main dispatcher).
+     */
+    private val recoveryCards = mutableListOf<ShareRecord>()
+    private var recoveryCommitment: ByteArray? = null
+    private var recoveryMaster: ByteArray? = null
+
     init {
         // Gate everything behind an unlock passphrase: the at-rest encryption
         // is only meaningful if it's keyed by a user secret. First launch (no
@@ -283,6 +329,17 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Welcome → "Recover an existing identity" (D0038 §5). Recovery still needs a
+     * NEW local passphrase + a fresh persistent device key for THIS device's
+     * at-rest data (which is device-bound, not Shamir-recovered), so it routes
+     * through the same first-launch passphrase screen — flagged [recovering] so
+     * [unlock] enters the card-collection flow instead of the contact list.
+     */
+    fun beginRecovery() {
+        _ui.value = UiState.Locked(firstLaunch = true, error = null, recovering = true)
+    }
+
+    /**
      * Unlock (or, on first launch, set up) the encrypted session with
      * [passphrase] — derives the storage KEK + the SQLCipher DB key from it. A
      * wrong passphrase is rejected (the canary fails to decrypt) and returns to
@@ -290,7 +347,9 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun unlock(passphrase: String, onUnlocked: (() -> Unit)? = null) {
         if (passphrase.isEmpty() || session != null) return
-        val firstLaunch = (ui.value as? UiState.Locked)?.firstLaunch ?: false
+        val locked = ui.value as? UiState.Locked
+        val firstLaunch = locked?.firstLaunch ?: false
+        val recovering = locked?.recovering ?: false
         _ui.value = UiState.Starting
         viewModelScope.launch {
             try {
@@ -306,11 +365,13 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 // A public key, but still identifying metadata — keep it out of
                 // release logcat (debug keeps it for the test harnesses).
                 if (BuildConfig.DEBUG) Log.i(TAG, "MY_PUBKEY=$myHex")
-                showContacts()
                 // Session up + passphrase known-correct: let the caller enroll
                 // quick unlock now, while it still holds the passphrase (D0029) —
                 // so the passphrase is never retained in this ViewModel.
                 onUnlocked?.invoke()
+                // Recovery (D0038 §5): collect cards + re-root, instead of going
+                // straight to the (empty) contact list.
+                if (recovering) enterRecovery() else showContacts()
             } catch (e: Exception) {
                 Log.w(TAG, "unlock failed: ${e.message}")
                 _ui.value = UiState.Locked(
@@ -389,11 +450,142 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Show the user's own identity screen (key QR + fingerprint). */
     fun showIdentity() {
+        // Surface the recovered master (D0038 §5) when this identity was re-rooted
+        // — durable across launches (loaded from the IDENTITY store at bootstrap).
+        val masterName = session?.masterPubkey?.let { FriendlyName.of(it.toHex()) }
         _ui.value = UiState.Identity(
             myHex,
             quickUnlockEnrolled = quickUnlockEnrolled(),
             attestation = session?.attestation ?: DeviceAttestation.unattested("no-session"),
+            masterName = masterName,
         )
+    }
+
+    // ── Paper-share recovery (D0038 §5) ──────────────────────────────────────
+
+    /** Post-bootstrap entry into the card-collection recovery screen. */
+    private fun enterRecovery() {
+        recoveryCards.clear()
+        recoveryCommitment = null
+        recoveryMaster = null
+        _ui.value = UiState.Recovery(collected = 0, masterName = null)
+    }
+
+    /**
+     * Decode + collect one or more recovery cards (D0038 §5). Tolerates a
+     * multi-line/space-separated paste (one card token per line). Each token is
+     * decoded in Rust ([recoveryDecodeCard]); all cards in a set must agree on
+     * the commitment + master (a card from a different split is rejected), and a
+     * duplicate Shamir id is ignored.
+     */
+    fun addRecoveryCard(text: String) {
+        if (ui.value !is UiState.Recovery) return
+        val tokens = text.split('\n', '\r', ' ', '\t').map { it.trim() }.filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return
+        var added = 0
+        var rejected: String? = null
+        for (token in tokens) {
+            val card = try {
+                recoveryDecodeCard(token)
+            } catch (e: CairnFfiException) {
+                rejected = "That doesn't look like a recovery card."
+                continue
+            }
+            val commit = recoveryCommitment
+            if (commit == null) {
+                recoveryCommitment = card.commitment
+                recoveryMaster = card.masterPubkey
+            } else if (!commit.contentEquals(card.commitment) ||
+                recoveryMaster?.contentEquals(card.masterPubkey) != true
+            ) {
+                rejected = "That card is from a different identity — skipped."
+                continue
+            }
+            if (recoveryCards.any { it.id == card.share.id }) continue // duplicate
+            recoveryCards.add(card.share)
+            added++
+        }
+        _ui.value = UiState.Recovery(
+            collected = recoveryCards.size,
+            masterName = recoveryMaster?.let { FriendlyName.of(it.toHex()) },
+            error = if (added == 0) (rejected ?: "No new cards in that.") else null,
+        )
+    }
+
+    /**
+     * Reconstruct the master from the collected cards + re-root THIS device's
+     * persistent operational identity under it (D0038 §5). On success the signed
+     * master attestation + the master pubkey are persisted as the hop-#3
+     * credential ([CairnSession.adoptMasterAttestation]); on too-few/wrong cards
+     * the screen stays put so the user can add the rest. The reconstruction +
+     * zeroization happen entirely in Rust — no secret crosses back.
+     */
+    fun attemptRecovery() {
+        val s = session ?: return
+        if (ui.value !is UiState.Recovery) return
+        val commit = recoveryCommitment
+        val master = recoveryMaster
+        if (commit == null || master == null || recoveryCards.size < 2) {
+            _ui.value = UiState.Recovery(
+                collected = recoveryCards.size,
+                masterName = master?.let { FriendlyName.of(it.toHex()) },
+                error = "Enter at least two of your recovery cards.",
+            )
+            return
+        }
+        val shares = recoveryCards.toList()
+        _ui.value = UiState.Recovery(
+            collected = shares.size,
+            masterName = FriendlyName.of(master.toHex()),
+            status = "Reconstructing your identity…",
+        )
+        viewModelScope.launch {
+            try {
+                val now = (System.currentTimeMillis() / 1000L).toULong()
+                val attestation = withContext(Dispatchers.IO) {
+                    recoveryReconstructAndAttest(shares, commit, s.publicKeyRaw, now)
+                }
+                // Verify the attestation binds OUR operational key to the claimed
+                // master before adopting it (defense in depth — the FFI already
+                // checked the commitment).
+                val rec = withContext(Dispatchers.IO) {
+                    recoveryVerifyMasterAttestation(attestation, master)
+                }
+                if (!rec.operationalIdentity.contentEquals(s.publicKeyRaw)) {
+                    throw IllegalStateException("attestation does not bind this device")
+                }
+                withContext(Dispatchers.IO) { s.adoptMasterAttestation(attestation, rec.master) }
+                Log.i(TAG, "recovery: identity re-rooted under master ${FriendlyName.of(rec.master.toHex())}")
+                recoveryCards.clear()
+                _ui.value = UiState.Recovery(
+                    collected = shares.size,
+                    masterName = FriendlyName.of(rec.master.toHex()),
+                    recovered = true,
+                )
+            } catch (e: CairnFfiException.RecoveryFailed) {
+                Log.w(TAG, "recovery: reconstruct failed (insufficient/wrong cards)")
+                _ui.value = UiState.Recovery(
+                    collected = shares.size,
+                    masterName = FriendlyName.of(master.toHex()),
+                    error = "Those cards didn't reconstruct your identity yet — add the rest of your recovery cards.",
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "recovery failed", e)
+                _ui.value = UiState.Recovery(
+                    collected = shares.size,
+                    masterName = FriendlyName.of(master.toHex()),
+                    error = "Recovery failed — ${e.message}",
+                )
+            }
+        }
+    }
+
+    /** Leave recovery (skip, or continue after success) → the contact list. */
+    fun leaveRecovery() {
+        recoveryCards.clear()
+        recoveryCommitment = null
+        recoveryMaster = null
+        showContacts()
     }
 
     /** Show the add-a-contact screen (invite / scan / paste). */

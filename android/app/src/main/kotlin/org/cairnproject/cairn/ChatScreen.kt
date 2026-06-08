@@ -136,6 +136,8 @@ fun ChatScreen(vm: MessagingViewModel) {
 
                 is UiState.Locked -> LockScreen(state, vm)
 
+                is UiState.Recovery -> RecoveryScreen(state, vm)
+
                 is UiState.Starting -> Centered {
                     CircularProgressIndicator()
                     Text("Bringing up encrypted session…", Modifier.padding(top = 12.dp))
@@ -365,6 +367,140 @@ private fun WelcomeScreen(vm: MessagingViewModel) {
             onClick = { vm.beginSetup() },
             modifier = Modifier.padding(top = 24.dp),
         ) { Text("Get started") }
+        TextButton(
+            onClick = { vm.beginRecovery() },
+            modifier = Modifier.padding(top = 4.dp),
+        ) { Text("Recover an existing identity") }
+    }
+}
+
+/**
+ * Paper-share recovery (D0038 §5): collect recovery cards until a threshold
+ * reconstructs the master, which re-roots THIS device's persistent operational
+ * identity under it. Reached from Welcome → "Recover", after the new device's
+ * passphrase + key are set up. Cards can be pasted (one per line) or scanned.
+ */
+@Composable
+private fun RecoveryScreen(state: UiState.Recovery, vm: MessagingViewModel) {
+    val context = LocalContext.current
+    var pasted by remember { mutableStateOf("") }
+
+    val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        result.contents?.takeIf { it.isNotBlank() }?.let { vm.addRecoveryCard(it) }
+    }
+    val launchScan = {
+        scanLauncher.launch(
+            ScanOptions().apply {
+                setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                setPrompt("Scan a recovery card")
+                setBeepEnabled(false)
+                setOrientationLocked(false)
+            },
+        )
+    }
+    val cameraPermLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) launchScan()
+        }
+    val onScanClick = {
+        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+            PackageManager.PERMISSION_GRANTED
+        if (granted) launchScan() else cameraPermLauncher.launch(Manifest.permission.CAMERA)
+    }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(top = 24.dp),
+    ) {
+        if (state.recovered) {
+            Text("Identity recovered", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "Your identity is restored on this device" +
+                    (state.masterName?.let { " as “$it”" } ?: "") +
+                    ". Your contacts aren't carried over — you'll re-add them as before.",
+                Modifier.padding(top = 12.dp),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Button(
+                onClick = { vm.leaveRecovery() },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 24.dp),
+            ) { Text("Continue") }
+        } else {
+            Text("Recover your identity", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "Enter the recovery cards you saved when you set up Cairn. You'll need " +
+                    "the number you chose to require (often 3 of 5). Paste them — one per " +
+                    "line — or scan each card.",
+                Modifier.padding(top = 8.dp),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                "Cards entered: ${state.collected}" +
+                    (state.masterName?.let { "  ·  identity “$it”" } ?: ""),
+                Modifier.padding(top = 16.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = pasted,
+                onValueChange = { pasted = it },
+                label = { Text("Paste recovery card(s)") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp),
+            )
+            Button(
+                onClick = {
+                    vm.addRecoveryCard(pasted)
+                    pasted = ""
+                },
+                enabled = pasted.isNotBlank(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+            ) { Text("Add card") }
+            OutlinedButton(
+                onClick = onScanClick,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+            ) { Text("Scan a card") }
+
+            if (state.status != null) {
+                Row(
+                    Modifier.padding(top = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Text(state.status, Modifier.padding(start = 8.dp))
+                }
+            }
+            if (state.error != null) {
+                Text(
+                    state.error,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 12.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Button(
+                onClick = { vm.attemptRecovery() },
+                enabled = state.collected >= 2 && state.status == null,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 20.dp),
+            ) { Text("Recover identity") }
+            TextButton(
+                onClick = { vm.leaveRecovery() },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp),
+            ) { Text("Skip for now") }
+        }
     }
 }
 
@@ -703,6 +839,18 @@ private fun IdentityView(state: UiState.Identity, vm: MessagingViewModel) {
         )
         Spacer(Modifier.height(20.dp))
         DeviceAttestationSection(state.attestation)
+        if (state.masterName != null) {
+            Spacer(Modifier.height(12.dp))
+            Text("Recovered identity ✓", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "Restored from your recovery cards and re-rooted under your master " +
+                    "key “${state.masterName}”.",
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
         Spacer(Modifier.height(16.dp))
         Text("Your key", style = MaterialTheme.typography.titleSmall)
         SelectableBlock(state.myKeyHex)

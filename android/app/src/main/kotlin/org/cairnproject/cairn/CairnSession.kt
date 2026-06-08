@@ -31,26 +31,32 @@ import uniffi.cairn_uniffi.StrongBoxKeyMaterial
 import uniffi.cairn_uniffi.verifyDeviceKeyAttestation
 
 /**
- * DEMO identity + session bootstrap for the chat UI.
+ * Session bootstrap + the SOFTWARE-FALLBACK identity for the chat UI.
  *
- * **NOT the v1 hardened path.** The real device key signs in StrongBox via the
- * `HardwareKeySigner` callback (D0020 §3.4 / D0028 — pending), where the key
- * never crosses the FFI. Here a SOFTWARE Ed25519 key stands in so the UI + the
- * bundled-Tor transport can be exercised end-to-end. Signing routes through
+ * The LIVE operational/device key is the **hardware-backed TEE Ed25519** key in
+ * [KeystoreEd25519Signer]: [CairnSession.bootstrap] calls `generateOrLoad`
+ * FIRST and signs every `COSE_Sign1` envelope through the `HardwareKeySigner`
+ * callback, where the private key never leaves the TEE (D0020 §3.4; attested in
+ * Rust per D0033). It persists across launches under a fixed Keystore alias, so
+ * the operational pubkey is STABLE. StrongBox can't hold an Ed25519 key on the
+ * Pixel 6 (Titan M2 rejects `ed25519`), so the device key is TEE — still
+ * hardware-backed, non-exportable, and attestable.
+ *
+ * The [CairnIdentity] / [DemoSigner] below are the **fallback**, used only when
+ * the platform can't provide a hardware Ed25519 key (pre-API-33 / a keygen gap)
+ * so the app never bricks on a provisioning failure. The fallback is a SOFTWARE
  * [DemoEd25519Signer] — the SAME `cairn-crypto` ed25519-dalek the envelope
- * verifier uses — so the COSE_Sign1 signature + the operational pubkey are
- * byte-compatible with verification. (AndroidKeyStore's Ed25519 is NOT: its
- * X.509/DER key + signature encodings fail the raw-32-byte `VerifyingKey` and
- * raw-64-byte signature checks — the on-device two-party finding, D0026 §12.)
- * The one key serves as BOTH the device key (it signs the envelope) and the
- * operational key (the envelope sender) — valid for the 1:1 demo, where the two
- * peers exchange pubkeys alongside the invitation.
+ * verifier uses — so its raw-32-byte pubkey + raw-64-byte signatures stay
+ * byte-compatible with verification. One key serves as BOTH the device key (it
+ * signs the envelope) and the operational key (the envelope sender): the
+ * collapsed v1 identity (D0035 §1).
  */
 
 /**
- * Label for the device key the FFI signer passes through to the
- * [HardwareKeySigner]; the demo software signer ignores it (the v1 StrongBox
- * path keys on it, D0028).
+ * Keystore alias for the SOFTWARE-FALLBACK device key (the [DemoSigner] ignores
+ * the alias, signing with its in-memory key). The hardware path keys on
+ * [KeystoreEd25519Signer.DEVICE_KEY_ALIAS] instead; this constant tags the
+ * fallback so the two never collide.
  */
 const val DEMO_DEVICE_KEY_ALIAS = "cairn-demo-op-key"
 
@@ -58,11 +64,16 @@ const val DEMO_DEVICE_KEY_ALIAS = "cairn-demo-op-key"
 private const val ED25519_SEED_LEN = 32
 
 /**
- * An ephemeral SOFTWARE Ed25519 demo identity. A fresh 32-byte seed is minted
- * per launch ([SecureRandom]) and handed to [DemoEd25519Signer] (Rust
- * `cairn-crypto`); the raw 32-byte pubkey + raw 64-byte signatures it produces
- * are exactly what `cairn-envelope` verifies. The v1 hardening replaces this
- * with a StrongBox key + attestation (D0020 §3.4 / D0028).
+ * The SOFTWARE-FALLBACK identity (see the file header). Only reached when
+ * [KeystoreEd25519Signer.generateOrLoad] returns null (no hardware Ed25519). A
+ * fresh 32-byte seed is minted ([SecureRandom]) and handed to
+ * [DemoEd25519Signer] (Rust `cairn-crypto`); the raw 32-byte pubkey + raw
+ * 64-byte signatures it produces are exactly what `cairn-envelope` verifies.
+ *
+ * Unlike the hardware key, this fallback does NOT persist — a fresh key per
+ * launch — so a fallback device has no stable operational identity across
+ * launches (acceptable for the non-target devices it serves; the v1 target,
+ * Pixel 6, always takes the persistent TEE path).
  */
 class CairnIdentity private constructor(
     private val signer: DemoEd25519Signer,
@@ -83,9 +94,9 @@ class CairnIdentity private constructor(
 }
 
 /**
- * Software [HardwareKeySigner] over the demo Ed25519 identity. Only [sign] is
- * real (the messaging send path uses it); StrongBox key-gen + attestation are
- * the v1 hardening (D0028) and are not exercised by the demo.
+ * Software [HardwareKeySigner] over the fallback Ed25519 identity (only reached
+ * when no hardware key is available). Only [sign] is real; key-gen + attestation
+ * throw, since the hardware path ([KeystoreEd25519Signer]) owns those.
  */
 class DemoSigner(private val identity: CairnIdentity) : HardwareKeySigner {
     override fun sign(keyAlias: String, payload: ByteArray): ByteArray =
@@ -292,7 +303,45 @@ class CairnSession private constructor(
      * My-Identity. Advisory: a non-attested verdict never blocks the session.
      */
     val attestation: DeviceAttestation,
+    masterAttestationInit: ByteArray?,
+    masterPubkeyInit: ByteArray?,
 ) {
+    /**
+     * The adopted master attestation (hop #3, D0038 §5) binding THIS device's
+     * persistent operational key to a recovered master — or null when the
+     * identity is still self-issued (the collapsed v1 default, D0035 §1). Loaded
+     * at [bootstrap] and set by [adoptMasterAttestation]; a non-null value means
+     * the identity was recovered + re-rooted under a master.
+     */
+    var masterAttestation: ByteArray? = masterAttestationInit
+        private set
+
+    /**
+     * The recovered master's Ed25519 public key (D0038 §5) — the durable identity
+     * anchor the [masterAttestation] is signed by. Null until a recovery. Stored
+     * alongside the attestation so the master is surfaceable (its friendly name)
+     * without re-deriving it from the signed blob.
+     */
+    var masterPubkey: ByteArray? = masterPubkeyInit
+        private set
+
+    /**
+     * Adopt a recovered master attestation as this identity's hop-#3 credential
+     * (D0038 §5 — paper-share recovery). [attestation] is the PUBLIC signed
+     * attestation `recoveryReconstructAndAttest` returns (the reconstructed master
+     * signing `master → this device's operational pubkey`); [masterPubkey] is that
+     * master's public key (the anchor). Neither carries a secret. Persist both to
+     * the IDENTITY store + flip the live session to master-rooted, so the identity
+     * is no longer self-issued. Overwrites any prior attestation.
+     */
+    fun adoptMasterAttestation(attestation: ByteArray, masterPubkey: ByteArray) {
+        storage.put(IDENTITY_CATEGORY, MASTER_ATTESTATION_ID, attestation)
+        storage.put(IDENTITY_CATEGORY, MASTER_PUBKEY_ID, masterPubkey)
+        this.masterAttestation = attestation
+        this.masterPubkey = masterPubkey
+        Log.i(TAG, "identity: adopted master attestation (${attestation.size}B) — now master-rooted")
+    }
+
     /**
      * Re-key the encrypted store from [old] to [new] (D0030 §3 —
      * change-passphrase): re-encrypts every record under the new
@@ -385,8 +434,24 @@ class CairnSession private constructor(
             // operational == device key, D0035 §1) — a stateless callback both
             // handles can drive. Initializes the trust-graph category schema.
             val trustGraph = TrustGraphHandle(storage, signer, keyAlias, publicKeyRaw)
-            Log.i(TAG, "CairnSession bootstrapped (${publicKeyRaw.size}-byte op key)")
-            return CairnSession(publicKeyRaw, storage, handle, trustGraph, attestation)
+            // Load any previously-adopted master attestation + its master pubkey
+            // (D0038 §5): a recovered identity persists its hop-#3 credential here,
+            // so the master-rooted state survives relaunch.
+            val masterAttestation = runCatching { storage.get(IDENTITY_CATEGORY, MASTER_ATTESTATION_ID) }
+                .getOrNull()
+                ?.takeIf { it.isNotEmpty() }
+            val masterPubkey = runCatching { storage.get(IDENTITY_CATEGORY, MASTER_PUBKEY_ID) }
+                .getOrNull()
+                ?.takeIf { it.isNotEmpty() }
+            Log.i(
+                TAG,
+                "CairnSession bootstrapped (${publicKeyRaw.size}-byte op key, " +
+                    "master-rooted=${masterAttestation != null})",
+            )
+            return CairnSession(
+                publicKeyRaw, storage, handle, trustGraph, attestation,
+                masterAttestation, masterPubkey,
+            )
         }
 
         /**
@@ -498,5 +563,15 @@ class CairnSession private constructor(
         /** Record id + value of the encrypted passphrase canary. */
         private val UNLOCK_CANARY_ID = "cairn-unlock-canary-v1".toByteArray()
         private val UNLOCK_CANARY_VALUE = "cairn-unlock-ok".toByteArray()
+
+        /**
+         * Record id (in IDENTITY) of the adopted master attestation (D0038 §5):
+         * the hop-#3 credential a paper-share recovery re-roots this identity
+         * under. Absent until a recovery is completed.
+         */
+        private val MASTER_ATTESTATION_ID = "cairn-master-attestation-v1".toByteArray()
+
+        /** Record id (in IDENTITY) of the recovered master's public key (D0038 §5). */
+        private val MASTER_PUBKEY_ID = "cairn-master-pubkey-v1".toByteArray()
     }
 }

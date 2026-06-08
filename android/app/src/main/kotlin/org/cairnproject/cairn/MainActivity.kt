@@ -148,6 +148,10 @@ class MainActivity : FragmentActivity() {
      *   --es introconnect "1"          → connect the head pending introduction (acceptor)
      *   --es introdecline "1"          → decline the head pending introduction
      *   --es simkeymismatch "1"       → simulate a recv key mismatch (downgrade + banner)
+     *   --es beginrecovery "1"         → Welcome → recovery passphrase screen (D0038)
+     *   --es recoverycard "<card>"     → feed a recovery-card text into the collector
+     *   --es recover "1"               → reconstruct + re-root the identity (D0038)
+     *   --es recoveryskip "1"          → leave recovery → contacts
      *   --es quickenroll "<pass>"     → enroll quick unlock (shows the BiometricPrompt)
      *   --es quickunlock "1"          → quick-unlock prompt (decrypt → unlock)
      *   --es quickdisable "1"         → delete the wrapped passphrase + Keystore key
@@ -263,6 +267,26 @@ class MainActivity : FragmentActivity() {
         intent.getStringExtra("simkeymismatch")?.let {
             Log.i(TAG, "driver: simulateKeyMismatch")
             viewModel.simulateKeyMismatch()
+        }
+        // Paper-share recovery (D0038 §5). `beginrecovery` → the recovery
+        // passphrase screen; after `unlock`, `recoverycard` feeds card text
+        // (percent-encoding-resistant, like `invite`), and `recover` attempts the
+        // reconstruct + re-root.
+        intent.getStringExtra("beginrecovery")?.let {
+            Log.i(TAG, "driver: beginRecovery")
+            viewModel.beginRecovery()
+        }
+        intent.getStringExtra("recoverycard")?.let {
+            Log.i(TAG, "driver: addRecoveryCard len=${it.length}")
+            viewModel.addRecoveryCard(it)
+        }
+        intent.getStringExtra("recover")?.let {
+            Log.i(TAG, "driver: attemptRecovery")
+            viewModel.attemptRecovery()
+        }
+        intent.getStringExtra("recoveryskip")?.let {
+            Log.i(TAG, "driver: leaveRecovery")
+            viewModel.leaveRecovery()
         }
         // Quick-unlock (D0029) driver hooks. The biometric/credential AUTH itself
         // can't be satisfied over adb on hardware (D0029 §7), so these drive the

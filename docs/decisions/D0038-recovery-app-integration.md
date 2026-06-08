@@ -132,6 +132,35 @@ implementation: whether a recovered identity coexists with or replaces a
 locally-generated demo identity in `CairnSession` — to be resolved in the Stage-1 build,
 not here.)
 
+> **LANDED (2026-06-08) — Stage 1 paper-share recovery, on-device-proven.** S1a (codec +
+> CLI emit, `5f2c94e`), S1b (`recovery_decode_card` FFI, `185be83`), and S1c (the Kotlin
+> recovery flow) complete Stage 1. The **open coexistence sub-question is resolved by a
+> corrected premise**: the "locally-generated demo identity" was a stale-docstring
+> misread — the live operational key is the **persistent TEE Ed25519 key**
+> (`KeystoreEd25519Signer`, already shipped). So recovery does not replace or coexist with
+> a demo key; it **re-roots the existing persistent operational key** under the recovered
+> master. Adoption (`CairnSession.adoptMasterAttestation`) persists the signed attestation
+> (hop #3) + the master pubkey (the durable anchor) to the IDENTITY store; both reload at
+> bootstrap (`master-rooted=true`), and My-Identity surfaces the master's friendly name.
+> **Scoped out of Stage 1 (deferred):** re-minting the collapsed-v1 self-token under the
+> recovered master so the trust graph anchors to it — the self-token stays self-issued for
+> now (that is the optional D0035 two-key un-collapse, not a recovery dependency).
+>
+> Flow: Welcome → "Recover an existing identity" → new local passphrase (the new device's
+> at-rest data is device-bound, **not** Shamir-recovered) → bootstrap → collect cards
+> (paste one-per-line, or scan) → the BLAKE3 commitment is the have-enough-shares oracle
+> (`reconstruct_and_attest` returns `RecoveryFailed` with no mutation on a short/wrong set,
+> so the UI is "try, then add the rest") → adopt + re-root.
+>
+> **On-device proof (Pixel 6 / GrapheneOS, single device — recovery is 1-device
+> validatable).** A real CLI 3-of-5 split (master `2f3e3838…`, friendly name "Collect Life
+> Island") drove, via the debug driver hooks: 3 paper cards decoded across the FFI →
+> `attemptRecovery` → `adopted master attestation (151B) — now master-rooted` →
+> `re-rooted under master Collect Life Island`; relaunch → `master-rooted=true` (persisted
+> attestation reloads); negative path → 2 cards `reconstruct failed (insufficient/wrong
+cards)` (recoverable, no crash), +3rd card → success. (Screens use `FLAG_SECURE`, so the
+> logcat events are the oracle.)
+
 ## 6. Stage 1.5 — revoke the prior operational identity
 
 §5.3 specifies that recovery revokes the seized operational identity (`revoked_as_of` =
