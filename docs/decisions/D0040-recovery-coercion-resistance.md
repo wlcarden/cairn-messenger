@@ -220,7 +220,25 @@ covers it), consistent with how Stage 2 chose the generic store over the
   releases immediately on confirm; the 48h delay is 3b) → auto-feed returned cards
   into the landed `addRecoveryCard` → reconstruct + re-root. This is the
   highest-value completion: peer recovery becomes usable for the real scenario, and
-  it resolves the §2 matching once. 2-Pixel-validatable.
+  it resolves the §2 matching once. 2-Pixel-validatable. Split in build:
+  - **3a-i — challenge-phrase mechanism. LANDED + 2-Pixel-proven over Tor.**
+    Holder-side `RecoveryPeerStore` record format `[salt(16)][phraseHash(32)][card]`
+    (salted SHA-256, domain-separated; all-zero until set), `setPhrase` /
+    `findByPhrase` (the §2 key-independent matcher), and the verify-gated
+    `MessagingViewModel.returnShareByPhrase` replacing the old unconditional
+    `approveReturnShare`. The holder's request gate is now `hasAnyHeld()` not
+    `holds(peerKey)` — a fresh-device requester's NEW key cannot select a share, so
+    the phrase selects it (§2). `ShareReturnDialog` requires the phrase; driver hooks
+    `setphrase` / `approveshare "<phrase>"`. **Proof:** A entrusts → B holds (154 B)
+    → B `setphrase` → A requests → B prompted → **wrong** phrase refused (A receives
+    nothing) → A re-requests → **correct** phrase returns the exact 154 B card to A,
+    all over bundled Tor on oriole + raven. Wire/codec/FFI unchanged (rides the
+    landed key-11/12). Known UX gap deferred to 3a-ii: a mismatched guess consumes
+    the prompt (fails closed, but the dialog should keep open + show an error +
+    allow retry instead of forcing the requester to re-request).
+  - **3a-ii — fresh-device gather UX (pending).** Persistent gathering-mode across
+    navigation + the held-shares/set-phrase surfaces + the full blank-device
+    recover-from-peers flow; 2-device validate end-to-end.
 - **Stage 3b — peer-clock cooling-off (≥2 devices).** The scheduled-release record +
   the lazy peer-clock firing + the peer-side manual cancel + the display-only
   countdown. Inserts the 48h delay between 3a's challenge-confirm and the release.

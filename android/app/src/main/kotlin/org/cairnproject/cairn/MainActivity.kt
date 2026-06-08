@@ -154,7 +154,8 @@ class MainActivity : FragmentActivity() {
      *   --es recoveryskip "1"          → leave recovery → contacts
      *   --es entrustshare "<card>"     → entrust a recovery card to the open contact (D0038 §7)
      *   --es requestshare "1"          → ask the open contact to return our held share
-     *   --es approveshare "1"          → approve the head share-return request
+     *   --es setphrase "<phrase>"      → set the challenge phrase on the held share (D0040 §3)
+     *   --es approveshare "<phrase>"   → return the head share IF the phrase verifies (D0040 §3)
      *   --es declineshare "1"          → decline the head share-return request
      *   --es quickenroll "<pass>"     → enroll quick unlock (shows the BiometricPrompt)
      *   --es quickunlock "1"          → quick-unlock prompt (decrypt → unlock)
@@ -279,9 +280,13 @@ class MainActivity : FragmentActivity() {
             Log.i(TAG, "driver: requestHeldShare")
             viewModel.requestHeldShare()
         }
+        intent.getStringExtra("setphrase")?.let {
+            Log.i(TAG, "driver: setFirstHeldPhrase")
+            viewModel.setFirstHeldPhrase(it)
+        }
         intent.getStringExtra("approveshare")?.let {
-            Log.i(TAG, "driver: approveFirstShareReturn")
-            viewModel.approveFirstShareReturn()
+            Log.i(TAG, "driver: approveFirstShareReturn (phrase-gated)")
+            viewModel.approveFirstShareReturn(it)
         }
         intent.getStringExtra("declineshare")?.let {
             Log.i(TAG, "driver: declineFirstShareReturn")

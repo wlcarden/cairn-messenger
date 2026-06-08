@@ -205,18 +205,35 @@ fun ChatScreen(vm: MessagingViewModel) {
  */
 @Composable
 private fun ShareReturnDialog(p: ShareReturnPrompt, vm: MessagingViewModel) {
+    var phrase by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = { vm.declineReturnShare(p) },
         title = { Text("Return recovery share?") },
         text = {
-            Text(
-                "“${p.requesterName}” is asking you to send back the recovery share " +
-                    "you're holding for them. Only do this if you're sure it's really " +
-                    "them recovering their identity.",
-            )
+            Column {
+                Text(
+                    "“${p.requesterName}” is asking for the recovery share you hold for " +
+                        "them. Confirm it's really them: ask them for the challenge phrase " +
+                        "you agreed — on a channel you trust, NOT here — and enter it below. " +
+                        "Don't read the phrase to them; they must produce it (D0005).",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedTextField(
+                    value = phrase,
+                    onValueChange = { phrase = it },
+                    label = { Text("Their challenge phrase") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp),
+                )
+            }
         },
         confirmButton = {
-            TextButton(onClick = { vm.approveReturnShare(p) }) { Text("Return it") }
+            TextButton(
+                enabled = phrase.isNotBlank(),
+                onClick = { vm.returnShareByPhrase(p, phrase) },
+            ) { Text("Verify + return") }
         },
         dismissButton = {
             TextButton(onClick = { vm.declineReturnShare(p) }) { Text("Not now") }

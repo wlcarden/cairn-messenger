@@ -233,6 +233,28 @@ back — awaiting approval` → B approves → A `RETURNED our held share (154B)
   recommends shipping 3a (phrases + gather) + 3b (cooling-off) for v1 while
   treating 3c (atomic re-split) as v1.x.
 
+  > **LANDED (2026-06-08) — Stage 3a-i, the challenge-phrase mechanism,
+  > two-Pixel-proven over Tor.** Kotlin-only on the landed key-11/12 wire (no
+  > envelope/codec/FFI change): `RecoveryPeerStore` records gained a salted-SHA-256
+  > phrase header `[salt(16)][phraseHash(32)][card]` (domain-separated
+  > `cairn-v1-recovery-phrase`; all-zero ⇒ no phrase) with `setPhrase` and
+  > `findByPhrase` — the latter is the **key-independent matcher** that solves the
+  > §2 fresh-device problem (the recovering owner arrives with a NEW operational
+  > key, so the share is found by the phrase the owner produces, not by key).
+  > `MessagingViewModel.returnShareByPhrase` replaced the unconditional
+  > `approveReturnShare`; the holder-side request gate moved from
+  > `holds(peerKey)` to `hasAnyHeld()`; `ShareReturnDialog` now requires the
+  > phrase; driver hooks `setphrase` / `approveshare "<phrase>"`. **Proof (oriole +
+  > raven):** A entrusts a real 3-of-5 card → B holds 154 B → B sets phrase → A
+  > requests → B prompted → **wrong phrase refused, A receives nothing** → A
+  > re-requests → **correct phrase returns the exact 154 B card to A**, all over
+  > bundled Tor. The salted hash is sufficient _here_ (it lives inside the already
+  > device-bound encrypted `recovery_shares` store next to the card it gates — it
+  > defends LIVE peer-impersonation, not at-rest). Pending: 3a-ii (fresh-device
+  > gather UX), 3b (48h cooling-off), 3c (atomic re-split, v1.x). Known 3a-ii UX
+  > gap: a mismatched guess consumes the prompt (fails closed; the dialog should
+  > keep open + show an error + allow retry rather than force a re-request).
+
 ## 8. Doc-vs-code reconciliations (fold in with Stage 1)
 
 - **BLAKE3 commit construction is specified three ways.** D0018 §3.4 says

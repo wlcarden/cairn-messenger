@@ -713,32 +713,56 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
      * hold something for them (else ignore). Called from the recv loop.
      */
     private fun handleIncomingRecoveryRequest(contact: Contact) {
-        if (recoveryPeers?.holds(contact.peerKeyHex) != true) {
-            Log.i(TAG, "recovery: ${contact.displayName} requested a share we don't hold — ignored")
+        // 3a: gate on holding ANY share — a fresh-device requester's NEW key won't
+        // match a specific held share, so the challenge phrase (verified at the
+        // approval) is the matcher, not the key (D0040 §2).
+        if (recoveryPeers?.hasAnyHeld() != true) {
+            Log.i(TAG, "recovery: ${contact.displayName} requested a share but we hold none — ignored")
             return
         }
         val prompt = ShareReturnPrompt(contact.peerKeyHex, contact.displayName, contact.connId)
         _shareReturnPrompts.update { cur ->
             if (cur.any { it.requesterKeyHex == prompt.requesterKeyHex }) cur else cur + prompt
         }
-        Log.i(TAG, "recovery: ${contact.displayName} asked for their held share back — awaiting approval")
+        Log.i(TAG, "recovery: ${contact.displayName} asked for a held share — verify their phrase to return it")
     }
 
-    /** Approve returning the held share for [prompt] (D0038 §7) → send it back. */
-    fun approveReturnShare(prompt: ShareReturnPrompt) {
+    /** Set the challenge phrase for the share held for [giverKeyHex] (D0040 §3). */
+    fun setHeldSharePhrase(giverKeyHex: String, phrase: String) {
+        val ok = recoveryPeers?.setPhrase(giverKeyHex, phrase) == true
+        Log.i(TAG, "recovery: ${if (ok) "set" else "FAILED to set"} challenge phrase for held share ${giverKeyHex.take(12)}")
+    }
+
+    /** Driver/convenience: set the phrase for the single held share (D0040 §3). */
+    fun setFirstHeldPhrase(phrase: String) {
+        val giver = recoveryPeers?.firstHeldGiver()
+        if (giver == null) {
+            Log.w(TAG, "setFirstHeldPhrase: hold no shares")
+            return
+        }
+        setHeldSharePhrase(giver, phrase)
+    }
+
+    /**
+     * Approve returning a held share to [prompt] by verifying the [phrase] the
+     * requester produced (D0005 / D0040 §3): the phrase is matched against held
+     * shares — the fresh-device matcher, since the requester's operational key is
+     * new (D0040 §2). On no match, nothing is returned.
+     */
+    fun returnShareByPhrase(prompt: ShareReturnPrompt, phrase: String) {
         val s = session ?: return
-        val card = recoveryPeers?.held(prompt.requesterKeyHex)
         _shareReturnPrompts.update { it.filterNot { p -> p.requesterKeyHex == prompt.requesterKeyHex } }
-        if (card == null) {
-            Log.w(TAG, "approveReturnShare: no held share for ${prompt.requesterName}")
+        val held = recoveryPeers?.findByPhrase(phrase)
+        if (held == null) {
+            Log.w(TAG, "recovery: phrase did NOT match any held share — not returned to ${prompt.requesterName}")
             return
         }
         val recipient = runCatching { prompt.requesterKeyHex.fromHex() }.getOrNull() ?: return
         viewModelScope.launch {
             runCatching {
-                withContext(Dispatchers.IO) { s.handle.sendRecoveryShare(prompt.connId, recipient, card) }
-            }.onSuccess { Log.i(TAG, "recovery: returned ${prompt.requesterName}'s held share") }
-                .onFailure { Log.e(TAG, "approveReturnShare failed: ${it.message}") }
+                withContext(Dispatchers.IO) { s.handle.sendRecoveryShare(prompt.connId, recipient, held.card) }
+            }.onSuccess { Log.i(TAG, "recovery: phrase verified — returned a held share to ${prompt.requesterName}") }
+                .onFailure { Log.e(TAG, "returnShareByPhrase failed: ${it.message}") }
         }
     }
 
@@ -748,8 +772,10 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         Log.i(TAG, "recovery: declined returning a share to ${prompt.requesterName}")
     }
 
-    /** Act on the HEAD share-return prompt — for the adb driver (D0038 §7). */
-    fun approveFirstShareReturn() = _shareReturnPrompts.value.firstOrNull()?.let { approveReturnShare(it) }
+    /** Act on the HEAD share-return prompt — for the adb driver (D0040 §3). */
+    fun approveFirstShareReturn(phrase: String) =
+        _shareReturnPrompts.value.firstOrNull()?.let { returnShareByPhrase(it, phrase) }
+
     fun declineFirstShareReturn() = _shareReturnPrompts.value.firstOrNull()?.let { declineReturnShare(it) }
 
     /** Show the add-a-contact screen (invite / scan / paste). */
