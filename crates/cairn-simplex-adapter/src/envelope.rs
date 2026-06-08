@@ -17,6 +17,8 @@
 //! | 8   | `read_up_to`                     | uint           | OPTIONAL (D0032) — present only on a read-receipt envelope; the cumulative message-number high-water the sender has read |
 //! | 9   | `vouch`                          | bstr           | OPTIONAL (D0036) — present only on a provenance-vouch envelope; canonical-CBOR `{op_chain, token}` the sender shares |
 //! | 10  | `introduction`                   | bstr           | OPTIONAL (D0037) — present only on an introduction control envelope; canonical-CBOR `{kind, peer_key, vouch?, invite_uri?, accept?}` carrying one of the three dual-consent introduction messages |
+//! | 11  | `recovery_share`                 | bstr           | OPTIONAL (D0038 §7) — present only on a recovery-share control envelope; one recovery card's bytes (a Shamir share + its commitment + master pubkey), entrusted to a recovery peer to HOLD or RETURNed on request |
+//! | 12  | `recovery_request`               | bstr           | OPTIONAL (D0038 §7) — present only on a recovery-request control envelope; an (empty in Stage 2) marker asking a peer to return the recovery share it holds. A Stage-3 challenge phrase slots in here |
 //!
 //! Keys 8–10 are each **omitted** on a normal content envelope, so content
 //! envelopes encode byte-identically to the pre-D0032 schema — the
@@ -69,6 +71,8 @@ const KEY_PADDING: i64 = 7;
 const KEY_READ_UP_TO: i64 = 8;
 const KEY_VOUCH: i64 = 9;
 const KEY_INTRODUCTION: i64 = 10;
+const KEY_RECOVERY_SHARE: i64 = 11;
+const KEY_RECOVERY_REQUEST: i64 = 12;
 
 /// Produces the device-key Ed25519 signature over a Cairn message
 /// envelope's COSE `Sig_structure` (D0006 §9 hop #1).
@@ -165,6 +169,23 @@ pub struct MessageEnvelope {
     /// `None` on every other envelope, in which case key 10 is OMITTED — all
     /// prior envelope kinds stay byte-identical to the pre-D0037 schema.
     pub introduction: Option<Vec<u8>>,
+    /// OPTIONAL recovery share per D0026 §2.1 key 11 (D0038 §7).
+    ///
+    /// `Some(bytes)` ONLY on a recovery-share control envelope (empty `payload`):
+    /// one recovery card's bytes (the `cairn-recovery` card binary — a Shamir
+    /// share + commitment + master pubkey), sent to a recovery peer to HOLD, or
+    /// RETURNed to a recovering owner. A single share is transportable-by-design
+    /// (below the reconstruction threshold). `None` on every other envelope, in
+    /// which case key 11 is OMITTED — prior envelope kinds stay byte-identical.
+    pub recovery_share: Option<Vec<u8>>,
+    /// OPTIONAL recovery request per D0026 §2.1 key 12 (D0038 §7).
+    ///
+    /// `Some(bytes)` ONLY on a recovery-request control envelope (empty
+    /// `payload`): a marker asking the peer to return the recovery share it
+    /// holds for the sender. Empty in Stage 2 (release is gated by the peer's
+    /// manual approval, not a payload); a Stage-3 single-use challenge phrase
+    /// slots in here. `None` on every other envelope, key 12 OMITTED.
+    pub recovery_request: Option<Vec<u8>>,
 }
 
 impl MessageEnvelope {
@@ -220,6 +241,22 @@ impl MessageEnvelope {
                 Value::Bytes(introduction.clone()),
             ));
         }
+        // Key 11 (recovery_share) is OPTIONAL (D0038 §7): appended after key 10
+        // only when present, so non-recovery envelopes stay byte-identical.
+        if let Some(recovery_share) = &self.recovery_share {
+            entries.push((
+                Value::Int(KEY_RECOVERY_SHARE),
+                Value::Bytes(recovery_share.clone()),
+            ));
+        }
+        // Key 12 (recovery_request) is OPTIONAL (D0038 §7): appended after key 11
+        // only when present, so non-recovery envelopes stay byte-identical.
+        if let Some(recovery_request) = &self.recovery_request {
+            entries.push((
+                Value::Int(KEY_RECOVERY_REQUEST),
+                Value::Bytes(recovery_request.clone()),
+            ));
+        }
         Value::Map(entries)
             .encode()
             .map_err(|_| SimplexAdapterError::EnvelopeDecodeFailed)
@@ -251,6 +288,8 @@ impl MessageEnvelope {
         let mut read_up_to: Option<u64> = None;
         let mut vouch: Option<Vec<u8>> = None;
         let mut introduction: Option<Vec<u8>> = None;
+        let mut recovery_share: Option<Vec<u8>> = None;
+        let mut recovery_request: Option<Vec<u8>> = None;
 
         for (key, value) in entries {
             let CiboriumValue::Integer(key_int_ciborium) = key else {
@@ -300,6 +339,22 @@ impl MessageEnvelope {
                     };
                     introduction = Some(b);
                 }
+                // Optional recovery share (D0038 §7); absent on non-recovery
+                // envelopes, where it stays None.
+                KEY_RECOVERY_SHARE => {
+                    let CiboriumValue::Bytes(b) = value else {
+                        return Err(SimplexAdapterError::EnvelopeDecodeFailed);
+                    };
+                    recovery_share = Some(b);
+                }
+                // Optional recovery request (D0038 §7); absent on non-recovery
+                // envelopes, where it stays None.
+                KEY_RECOVERY_REQUEST => {
+                    let CiboriumValue::Bytes(b) = value else {
+                        return Err(SimplexAdapterError::EnvelopeDecodeFailed);
+                    };
+                    recovery_request = Some(b);
+                }
                 _ => {} // forward-compat per D0006 §6.4
             }
         }
@@ -317,6 +372,8 @@ impl MessageEnvelope {
             read_up_to,
             vouch,
             introduction,
+            recovery_share,
+            recovery_request,
         })
     }
 
@@ -552,6 +609,8 @@ mod tests {
             read_up_to: None,
             vouch: None,
             introduction: None,
+            recovery_share: None,
+            recovery_request: None,
         };
         (envelope, device_sk, recipient_op_sk)
     }
@@ -603,6 +662,46 @@ mod tests {
             recovered.introduction.as_deref(),
             Some(b"introduction-cbor-bytes".as_ref())
         );
+        assert_eq!(recovered, envelope);
+    }
+
+    #[test]
+    fn recovery_fields_round_trip_and_are_omitted_when_none() {
+        // A non-recovery envelope omits keys 11 + 12 entirely (byte-identical to
+        // the pre-D0038 schema); a recovery-share / recovery-request envelope
+        // round-trips its bytes (D0038 §7).
+        let (mut envelope, _, _) = make_envelope();
+        let without = envelope.to_canonical_cbor().unwrap();
+
+        envelope.recovery_share = Some(b"recovery-card-bytes".to_vec());
+        envelope.recovery_request = Some(b"req".to_vec());
+        let with = envelope.to_canonical_cbor().unwrap();
+        assert_ne!(
+            without, with,
+            "keys 11/12 must change the encoding when present"
+        );
+
+        let recovered = MessageEnvelope::from_canonical_cbor(&with).unwrap();
+        assert_eq!(
+            recovered.recovery_share.as_deref(),
+            Some(b"recovery-card-bytes".as_ref())
+        );
+        assert_eq!(recovered.recovery_request.as_deref(), Some(b"req".as_ref()));
+        assert_eq!(recovered, envelope);
+    }
+
+    #[test]
+    fn recovery_share_envelope_byte_identical_below_key_11() {
+        // The recovery-share envelope is a normal signed + chained envelope: with
+        // both recovery fields None it must encode byte-identically to the
+        // pre-D0038 schema (the prior_envelope_hash chain stays undisturbed).
+        let (envelope, _, _) = make_envelope();
+        assert!(envelope.recovery_share.is_none() && envelope.recovery_request.is_none());
+        let bytes = envelope.to_canonical_cbor().unwrap();
+        // No key-11 (0x0b) or key-12 (0x0c) integer key appears in the map.
+        let recovered = MessageEnvelope::from_canonical_cbor(&bytes).unwrap();
+        assert_eq!(recovered.recovery_share, None);
+        assert_eq!(recovered.recovery_request, None);
         assert_eq!(recovered, envelope);
     }
 

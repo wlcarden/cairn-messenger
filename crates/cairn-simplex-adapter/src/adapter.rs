@@ -156,6 +156,29 @@ pub struct ReceivedMessage {
     /// to the dual-consent flow (the `me <- sender` envelope already
     /// authenticated the sender). `None` for every other message kind.
     pub introduction: Option<Vec<u8>>,
+    /// `Some(bytes)` if this is a recovery share (D0038 §7): one recovery card's
+    /// bytes a contact entrusted to this side to HOLD, or RETURNed to this side
+    /// during recovery. The caller stores it (hold) or feeds it into the recovery
+    /// reconstruct flow (return). `None` for every other message kind.
+    pub recovery_share: Option<Vec<u8>>,
+    /// `Some(bytes)` if this is a recovery request (D0038 §7): a contact is asking
+    /// this side to return the recovery share it holds for them. The caller
+    /// surfaces a manual-approval prompt (Stage 2). `None` otherwise.
+    pub recovery_request: Option<Vec<u8>>,
+}
+
+/// The optional control fields of a [`MessageEnvelope`] — every send is either a
+/// content message (all `None`) or a single-purpose control envelope with exactly
+/// one of these `Some` (read-receipt / vouch / introduction / recovery share /
+/// recovery request). Grouped into one struct so the shared send tail takes named
+/// fields rather than a long positional `Option` list (D0038 §7).
+#[derive(Debug, Default)]
+struct ControlFields {
+    read_up_to: Option<u64>,
+    vouch: Option<Vec<u8>>,
+    introduction: Option<Vec<u8>>,
+    recovery_share: Option<Vec<u8>>,
+    recovery_request: Option<Vec<u8>>,
 }
 
 /// One persisted message in a conversation's history per
@@ -318,9 +341,7 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             conn,
             recipient_operational_pubkey,
             payload,
-            None,
-            None,
-            None,
+            ControlFields::default(),
         )
         .await
     }
@@ -348,9 +369,10 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             conn,
             recipient_operational_pubkey,
             &[],
-            None,
-            Some(vouch_bytes.to_vec()),
-            None,
+            ControlFields {
+                vouch: Some(vouch_bytes.to_vec()),
+                ..Default::default()
+            },
         )
         .await?;
         Ok(())
@@ -380,9 +402,74 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             conn,
             recipient_operational_pubkey,
             &[],
-            None,
-            None,
-            Some(introduction_bytes.to_vec()),
+            ControlFields {
+                introduction: Some(introduction_bytes.to_vec()),
+                ..Default::default()
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Send a **recovery share** to `recipient` (D0038 §7): entrust one recovery
+    /// card to a recovery peer to HOLD, or RETURN a held card to a recovering
+    /// owner.
+    ///
+    /// `card_bytes` is one `cairn-recovery` card's bytes (a Shamir share + its
+    /// commitment + master pubkey — a single share is transportable-by-design).
+    /// The message is an **empty-payload** Cairn envelope carrying envelope key
+    /// 11 — a normal signed + chained envelope on the `me -> recipient`
+    /// direction, so it inherits device-signature authentication + chain
+    /// integrity.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::send`] (transport, sign, storage, or a poisoned chain mutex).
+    pub async fn send_recovery_share(
+        &self,
+        conn: &ConnectionId,
+        recipient_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
+        card_bytes: &[u8],
+    ) -> Result<(), SimplexAdapterError> {
+        self.send_envelope_inner(
+            conn,
+            recipient_operational_pubkey,
+            &[],
+            ControlFields {
+                recovery_share: Some(card_bytes.to_vec()),
+                ..Default::default()
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Send a **recovery request** to `recipient` (D0038 §7): ask a recovery peer
+    /// to return the share it holds for this side.
+    ///
+    /// `request_bytes` is empty in Stage 2 (the peer's manual approval gates
+    /// release, not a payload); a Stage-3 single-use challenge phrase slots here.
+    /// The message is an **empty-payload** Cairn envelope carrying envelope key
+    /// 12 — a normal signed + chained envelope on the `me -> recipient`
+    /// direction.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::send`] (transport, sign, storage, or a poisoned chain mutex).
+    pub async fn send_recovery_request(
+        &self,
+        conn: &ConnectionId,
+        recipient_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
+        request_bytes: &[u8],
+    ) -> Result<(), SimplexAdapterError> {
+        self.send_envelope_inner(
+            conn,
+            recipient_operational_pubkey,
+            &[],
+            ControlFields {
+                recovery_request: Some(request_bytes.to_vec()),
+                ..Default::default()
+            },
         )
         .await?;
         Ok(())
@@ -420,9 +507,10 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             conn,
             recipient_operational_pubkey,
             &[],
-            Some(read_up_to),
-            None,
-            None,
+            ControlFields {
+                read_up_to: Some(read_up_to),
+                ..Default::default()
+            },
         )
         .await?;
         Ok(())
@@ -430,17 +518,17 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
 
     /// Shared send tail for [`Self::send`] (content, all control fields `None`),
     /// [`Self::send_read_receipt`] (empty payload, `read_up_to = Some`),
-    /// [`Self::send_vouch`] (empty payload, `vouch = Some`), and
-    /// [`Self::send_introduction`] (empty payload, `introduction = Some`): build →
-    /// sign → transport → persist → advance the `me -> recipient` send chain.
+    /// [`Self::send_vouch`] (empty payload, `vouch = Some`),
+    /// [`Self::send_introduction`] (empty payload, `introduction = Some`),
+    /// [`Self::send_recovery_share`] (empty payload, `recovery_share = Some`), and
+    /// [`Self::send_recovery_request`] (empty payload, `recovery_request = Some`):
+    /// build → sign → transport → persist → advance the `me -> recipient` chain.
     async fn send_envelope_inner(
         &self,
         conn: &ConnectionId,
         recipient_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
         payload: &[u8],
-        read_up_to: Option<u64>,
-        vouch: Option<Vec<u8>>,
-        introduction: Option<Vec<u8>>,
+        control: ControlFields,
     ) -> Result<MessageSent, SimplexAdapterError> {
         let (prior_hash, message_number) = self.send_chain_state(recipient_operational_pubkey)?;
 
@@ -455,9 +543,11 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             prior_envelope_hash: prior_hash,
             payload: payload.to_vec(),
             padding,
-            read_up_to,
-            vouch,
-            introduction,
+            read_up_to: control.read_up_to,
+            vouch: control.vouch,
+            introduction: control.introduction,
+            recovery_share: control.recovery_share,
+            recovery_request: control.recovery_request,
         };
         let cose = envelope.sign_with(self.identity.device_signer.as_ref())?;
 
@@ -652,6 +742,11 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             // An introduction (D0037) carries key 10 + an empty payload; the
             // caller routes a `Some` to the dual-consent flow, not the list.
             introduction: envelope.introduction.clone(),
+            // A recovery share / request (D0038 §7) carries key 11 / 12 + an empty
+            // payload; the caller routes a `Some` to the peer-recovery flow (hold /
+            // return / gather), not the message list.
+            recovery_share: envelope.recovery_share.clone(),
+            recovery_request: envelope.recovery_request.clone(),
         })
     }
 
@@ -1628,6 +1723,49 @@ mod tests {
             .unwrap();
         assert_eq!(receipt.read_up_to, Some(1), "acks up to the last received");
         assert!(receipt.payload.is_empty(), "a receipt carries no content");
+    }
+
+    #[tokio::test]
+    async fn send_recovery_share_and_request_round_trip() {
+        // alice entrusts a recovery card to her peer bob (key 11); on recovery bob
+        // asks alice to return it (key 12); alice returns it (key 11). Each is an
+        // empty-payload control envelope surfaced on recv (D0038 §7).
+        let wire = MockSidecarTransport::new();
+        let alice = make_party_1to1([20u8; 32], wire.clone());
+        let bob = make_party_1to1([21u8; 32], wire.clone());
+        let conn = ConnectionId("c".to_string());
+
+        // Distribute: alice -> bob holds a card.
+        let card = b"recovery-card-bytes-for-bob".to_vec();
+        alice
+            .adapter
+            .send_recovery_share(&conn, &bob.operational_pubkey, &card)
+            .await
+            .unwrap();
+        let held = bob
+            .adapter
+            .recv(&conn, &alice.operational_pubkey, &alice.device_vk)
+            .await
+            .unwrap();
+        assert_eq!(held.recovery_share.as_deref(), Some(card.as_slice()));
+        assert!(held.recovery_request.is_none());
+        assert!(
+            held.payload.is_empty(),
+            "a recovery share carries no content"
+        );
+
+        // Request: bob -> alice asks for the held share back (empty marker, Stage 2).
+        bob.adapter
+            .send_recovery_request(&conn, &alice.operational_pubkey, &[])
+            .await
+            .unwrap();
+        let req = alice
+            .adapter
+            .recv(&conn, &bob.operational_pubkey, &bob.device_vk)
+            .await
+            .unwrap();
+        assert_eq!(req.recovery_request.as_deref(), Some(b"".as_ref()));
+        assert!(req.recovery_share.is_none());
     }
 
     #[tokio::test]
