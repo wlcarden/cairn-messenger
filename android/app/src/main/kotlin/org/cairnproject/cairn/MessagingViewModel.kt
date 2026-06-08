@@ -270,6 +270,9 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     /** Staged-but-not-promoted re-split shares we hold (D0040 §5, 3c). Set on unlock. */
     private var recoveryPending: RecoveryPendingStore? = null
 
+    /** Contacts who hold OUR shares — the re-split fan-out targets (D0040 §5). Set on unlock. */
+    private var recoveryOwnerPeers: RecoveryOwnerPeerStore? = null
+
     /**
      * The OWNER side of an in-flight atomic re-split (D0040 §5, 3c), or null when
      * idle. Main-confined (touched only from the recv loop's Main dispatcher + the
@@ -324,6 +327,14 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val _pendingReleaseCount = MutableStateFlow(0)
     val pendingReleaseCount = _pendingReleaseCount.asStateFlow()
+
+    /**
+     * User-facing state of an atomic re-split (D0040 §5, 3c). Drives the re-split
+     * dialog: idle → preparing → awaiting peer acks → done (showing the new paper
+     * cards the owner keeps) or failed (non-leaking abort). Main-confined.
+     */
+    private val _resplitUiState = MutableStateFlow<ResplitUiState>(ResplitUiState.Idle)
+    val resplitUiState = _resplitUiState.asStateFlow()
 
     @Volatile private var torReady = false
     @Volatile private var appForeground = true
@@ -471,6 +482,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 recoveryPeers = RecoveryPeerStore(s.storage)
                 recoverySchedules = RecoveryScheduleStore(s.storage)
                 recoveryPending = RecoveryPendingStore(s.storage)
+                recoveryOwnerPeers = RecoveryOwnerPeerStore(s.storage)
                 // Lazy cooling-off firing (D0040 §4): on app-launch / unlock, release
                 // any cooling-off window that elapsed while we were closed, surface
                 // the pending count, and start the in-process periodic re-check (the
@@ -789,10 +801,16 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
             Log.w(TAG, "entrustRecoveryShare: not a valid recovery card")
             return
         }
+        val peerHex = peer.toHex()
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) { s.handle.sendRecoveryShare(connId, peer, card.toByteArray()) }
-            }.onSuccess { Log.i(TAG, "recovery: entrusted a share to ${peer.toHex().take(12)}") }
+            }.onSuccess {
+                Log.i(TAG, "recovery: entrusted a share to ${peerHex.take(12)}")
+                // Remember this contact holds one of OUR shares, so a later atomic
+                // re-split (D0040 §5) can fan a fresh kit out to ALL holders at once.
+                withContext(Dispatchers.IO) { recoveryOwnerPeers?.record(peerHex, connId) }
+            }
                 .onFailure { Log.e(TAG, "entrustRecoveryShare failed: ${it.message}") }
         }
     }
@@ -1079,50 +1097,92 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         val attestation: ByteArray,
         val newCards: List<String>,
         val peerCards: Map<String, ResplitTarget>,
+        /** The new cards NOT sent to any peer — the owner's fresh PAPER backups. */
+        val keepCards: List<String>,
         val acked: MutableSet<String> = mutableSetOf(),
     )
+
+    /** User-facing state of an atomic re-split (D0040 §5, 3c). Drives the re-split dialog. */
+    sealed interface ResplitUiState {
+        /** No re-split in flight. */
+        data object Idle : ResplitUiState
+
+        /** Reconstructing + re-splitting the master (master zeroized inside the FFI). */
+        data object Preparing : ResplitUiState
+
+        /** PREPAREs sent; awaiting peer acknowledgements. */
+        data class Awaiting(val acked: Int, val total: Int) : ResplitUiState
+
+        /** All peers acked + committed — [keepCards] are the new paper backups to save. */
+        data class Done(val keepCards: List<String>) : ResplitUiState
+
+        /** Aborted/failed (non-leaking) — no new identity adopted; peers kept old cards. */
+        data class Failed(val reason: String) : ResplitUiState
+    }
 
     /** Build a key-13 control body `[kind(1)][resplitId(16)]` (D0040 §5). */
     private fun resplitControl(kind: Byte, id: ByteArray): ByteArray = byteArrayOf(kind) + id
 
     /**
-     * Begin an atomic re-split (D0040 §5, 3c) against the OPEN contact as a recovery
-     * peer. [oldCardTexts] is a threshold of the user's CURRENT recovery cards (the
-     * same input recovery takes); the master is reconstructed, re-split 3-of-5 into a
-     * FRESH set, and the identity re-attested — all inside one Rust call, so the
-     * master never crosses to Kotlin (the structural non-leaking property). We then
-     * send the open peer ITS new card in a PREPARE (key 13 + key 11) and await an
-     * ACK; on ACK we COMMIT (the peer promotes), on timeout we DISCARD (non-leaking
-     * abort).
+     * Begin an atomic re-split (D0040 §5, 3c) and fan ONE fresh kit out to ALL of the
+     * user's recovery peers. [oldCardTexts] is a threshold of the user's CURRENT
+     * recovery cards (the same input recovery takes); the master is reconstructed,
+     * re-split into a FRESH `max(5, peerCount)`-of-… set, and the identity re-attested
+     * — all inside one Rust call, so the master never crosses to Kotlin (the
+     * structural non-leaking property). Each peer is sent ITS new card in a PREPARE
+     * (key 13 + key 11); when ALL ack we COMMIT (peers promote), on timeout we DISCARD
+     * (non-leaking abort).
      *
-     * A real N-peer re-split iterates [ResplitState.peerCards] over every recovery
-     * peer; the ACK tally below already spans the whole map. The 2-Pixel proof
-     * exercises N=1 over the wire while the cryptographic split stays a real 3-of-5.
+     * Peers come from [RecoveryOwnerPeerStore] (the contacts we entrusted shares to).
+     * **One kit, all peers** is a correctness requirement: re-splitting per-peer would
+     * give each a card from a different polynomial, which cannot reconstruct together.
+     * If no peers are tracked, falls back to the OPEN conversation peer (the driver /
+     * 2-Pixel path) so the proven N=1 flow keeps working.
      */
     fun beginResplit(oldCardTexts: List<String>) {
         val s = session ?: return
-        val connId = connectionId ?: run { Log.w(TAG, "resplit: no open conversation"); return }
-        val peer = peerKeyRaw ?: run { Log.w(TAG, "resplit: no open peer"); return }
         if (resplitState != null) {
             Log.w(TAG, "resplit: one already in flight — ignoring")
             return
         }
+        _resplitUiState.value = ResplitUiState.Preparing
         viewModelScope.launch {
             // Decode the OLD cards → shares, requiring agreement on the commitment.
             val decoded =
                 oldCardTexts.mapNotNull { runCatching { recoveryDecodeCard(it.trim()) }.getOrNull() }
             if (decoded.size < 2) {
-                Log.w(TAG, "resplit: need >=2 valid current cards to re-split")
+                failResplitUi("Enter at least two of your current recovery cards.")
                 return@launch
             }
             val commit = decoded.first().commitment
             if (decoded.any { !it.commitment.contentEquals(commit) }) {
-                Log.w(TAG, "resplit: current cards disagree on commitment — aborting")
+                failResplitUi("Those cards are from different recovery kits.")
                 return@launch
             }
+            // Gather the fan-out targets as (peerHex, connId): every tracked recovery
+            // peer, or — if none are tracked — the open conversation peer (the driver /
+            // 2-Pixel fallback so the proven N=1 flow keeps working).
+            val tracked =
+                withContext(Dispatchers.IO) { recoveryOwnerPeers?.all() }
+                    .orEmpty()
+                    .map { it.peerKeyHex to it.connId }
+            val targets: List<Pair<String, String>> =
+                if (tracked.isNotEmpty()) {
+                    tracked
+                } else {
+                    val cId = connectionId
+                    val pk = peerKeyRaw
+                    if (cId != null && pk != null) listOf(pk.toHex() to cId) else emptyList()
+                }
+            if (targets.isEmpty()) {
+                failResplitUi("No recovery peers yet — entrust a share to a contact first.")
+                return@launch
+            }
+            // One card per peer, plus the existing paper-backup count: max(5, peers).
+            val numShares = maxOf(RESPLIT_NUM_SHARES, targets.size).coerceAtMost(255)
             val shares = decoded.map { it.share }
-            // Reconstruct + re-split + re-attest (master zeroized inside the FFI).
             val now = (System.currentTimeMillis() / 1000L).toULong()
+            // Reconstruct + re-split + re-attest (master zeroized inside the FFI).
             val out =
                 runCatching {
                     withContext(Dispatchers.IO) {
@@ -1131,7 +1191,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                             commit,
                             s.publicKeyRaw,
                             RESPLIT_THRESHOLD.toUByte(),
-                            RESPLIT_NUM_SHARES.toUByte(),
+                            numShares.toUByte(),
                             now,
                         )
                     }
@@ -1139,48 +1199,63 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                     .getOrElse {
                         when (it) {
                             is CairnFfiException.RecoveryFailed ->
-                                Log.w(TAG, "resplit: reconstruct failed (insufficient/wrong current cards)")
-                            else -> Log.e(TAG, "resplit: re-split failed: ${it.message}")
+                                failResplitUi("Those cards didn't reconstruct — wrong or too few. Add more.")
+                            else -> failResplitUi("Re-split failed. Please try again.")
                         }
                         return@launch
                     }
-            // Assign the FIRST new card to the open peer; the rest are the owner's kit.
+            // Assign new cards: peer[i] → newCards[i]; the rest are the owner's paper kit.
             val id = ByteArray(RESPLIT_ID_LEN).also { SecureRandom().nextBytes(it) }
-            val peerHex = peer.toHex()
-            val peerCard = out.newCards.first()
-            val st =
-                ResplitState(
-                    id,
-                    out.attestation,
-                    out.newCards,
-                    mapOf(peerHex to ResplitTarget(connId, peerCard)),
-                )
+            val peerCards =
+                targets.mapIndexed { i, (hex, peerConnId) ->
+                    hex to ResplitTarget(peerConnId, out.newCards[i])
+                }.toMap()
+            val keepCards = out.newCards.drop(targets.size)
+            val st = ResplitState(id, out.attestation, out.newCards, peerCards, keepCards)
             resplitState = st
-            // Phase 1: PREPARE (key 13 + the peer's new card in key 11). Await the ACK.
-            val sent =
-                runCatching {
-                    withContext(Dispatchers.IO) {
-                        s.handle.sendRecoveryControl(
-                            connId,
-                            peer,
-                            resplitControl(RC_PREPARE, id),
-                            peerCard.toByteArray(),
-                        )
+            _resplitUiState.value = ResplitUiState.Awaiting(acked = 0, total = peerCards.size)
+            // Phase 1: a PREPARE (key 13 + the peer's new card in key 11) to each peer.
+            var anySent = false
+            for ((peerHex, target) in peerCards) {
+                val recipient = runCatching { peerHex.fromHex() }.getOrNull() ?: continue
+                val sent =
+                    runCatching {
+                        withContext(Dispatchers.IO) {
+                            s.handle.sendRecoveryControl(
+                                target.connId,
+                                recipient,
+                                resplitControl(RC_PREPARE, id),
+                                target.card.toByteArray(),
+                            )
+                        }
                     }
-                }
-                    .isSuccess
-            if (!sent) {
-                Log.e(TAG, "resplit: PREPARE send failed — aborting in place")
+                        .isSuccess
+                if (sent) anySent = true
+                else Log.e(TAG, "resplit: PREPARE send to ${peerHex.take(12)} failed")
+            }
+            if (!anySent) {
                 resplitState = null
+                failResplitUi("Couldn't reach any recovery peer. Check your connection.")
                 return@launch
             }
             Log.i(
                 TAG,
-                "resplit: PREPARE sent to ${peerHex.take(12)} (id ${id.toHex().take(8)}…), " +
+                "resplit: PREPARE sent to ${peerCards.size} peer(s) (id ${id.toHex().take(8)}…), " +
                     "re-split into ${out.newCards.size} new cards, awaiting ACK",
             )
             startResplitDeadline()
         }
+    }
+
+    /** Surface a re-split failure to the UI + log (Main-confined). */
+    private fun failResplitUi(reason: String) {
+        Log.w(TAG, "resplit: $reason")
+        _resplitUiState.value = ResplitUiState.Failed(reason)
+    }
+
+    /** Dismiss the re-split dialog back to idle (after the user reads Done/Failed). */
+    fun dismissResplit() {
+        _resplitUiState.value = ResplitUiState.Idle
     }
 
     /** Arm the deadline that aborts an in-flight re-split if not all peers ACK in time. */
@@ -1215,7 +1290,11 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         }
         st.acked.add(contact.peerKeyHex)
         Log.i(TAG, "resplit: ACK from ${contact.displayName} (${st.acked.size}/${st.peerCards.size})")
-        if (st.acked.containsAll(st.peerCards.keys)) commitResplit(st)
+        if (st.acked.containsAll(st.peerCards.keys)) {
+            commitResplit(st)
+        } else {
+            _resplitUiState.value = ResplitUiState.Awaiting(st.acked.size, st.peerCards.size)
+        }
     }
 
     /** Owner: all peers ACKed → COMMIT (phase 2). Peers promote pending→active on receipt. */
@@ -1223,6 +1302,9 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         val s = session ?: return
         resplitDeadlineJob?.cancel()
         resplitState = null // the new kit stays live; nothing to discard
+        // Surface the owner's NEW paper backups (the cards not sent to peers) so they
+        // can write them down — the recovering point of the whole operation.
+        _resplitUiState.value = ResplitUiState.Done(st.keepCards)
         viewModelScope.launch {
             for ((peerHex, target) in st.peerCards) {
                 val recipient = runCatching { peerHex.fromHex() }.getOrNull() ?: continue
@@ -1252,6 +1334,8 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         val s = session ?: return
         resplitDeadlineJob?.cancel()
         resplitState = null // drops newCards + attestation from memory
+        _resplitUiState.value =
+            ResplitUiState.Failed("Re-split didn't complete — your shares are unchanged.")
         viewModelScope.launch {
             for ((peerHex, target) in st.peerCards) {
                 val recipient = runCatching { peerHex.fromHex() }.getOrNull() ?: continue

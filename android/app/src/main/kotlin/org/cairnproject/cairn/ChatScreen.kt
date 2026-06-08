@@ -945,6 +945,8 @@ private fun IdentityView(state: UiState.Identity, vm: MessagingViewModel) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     var showChangePass by remember { mutableStateOf(false) }
+    var showResplitEntry by remember { mutableStateOf(false) }
+    val resplit by vm.resplitUiState.collectAsStateWithLifecycle()
     Column(
         Modifier
             .fillMaxSize()
@@ -1065,7 +1067,170 @@ private fun IdentityView(state: UiState.Identity, vm: MessagingViewModel) {
                 },
             )
         }
+        // Refresh recovery shares (D0040 §5, atomic re-split). After a recovery, the
+        // OLD cards still reconstruct the master — re-splitting hands every recovery
+        // peer a fresh share (and gives you fresh paper backups), so the old cards
+        // go stale once their honest holders delete them.
+        Spacer(Modifier.height(28.dp))
+        HorizontalDivider(Modifier.fillMaxWidth())
+        Spacer(Modifier.height(12.dp))
+        Text("Refresh recovery shares", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "Replaces every recovery peer's share with a fresh one in a single atomic " +
+                "step — use this after a recovery so the cards used to recover can no " +
+                "longer recover again. Needs a threshold of your current cards.",
+            textAlign = TextAlign.Center,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        OutlinedButton(
+            onClick = { showResplitEntry = true },
+            modifier = Modifier.padding(top = 8.dp),
+        ) { Text("Refresh recovery shares") }
     }
+    if (showResplitEntry) {
+        ResplitEntryDialog(
+            vm,
+            onDismiss = { showResplitEntry = false },
+        )
+    }
+    // The progress/result dialog tracks the re-split lifecycle once started.
+    if (resplit !is MessagingViewModel.ResplitUiState.Idle) {
+        ResplitProgressDialog(resplit, onDismiss = vm::dismissResplit)
+    }
+}
+
+/**
+ * Re-split entry (D0040 §5): the owner pastes a threshold of their CURRENT recovery
+ * cards (one per line), then re-splits — fanning a fresh kit to all recovery peers
+ * at once. The master is reconstructed + re-split + zeroized entirely in Rust; only
+ * the public new cards ever reach Kotlin.
+ */
+@Composable
+private fun ResplitEntryDialog(vm: MessagingViewModel, onDismiss: () -> Unit) {
+    var cards by remember { mutableStateOf("") }
+    val parsed = remember(cards) { cards.split("\n").map { it.trim() }.filter { it.isNotEmpty() } }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Refresh recovery shares") },
+        text = {
+            Column {
+                Text(
+                    "Paste a threshold of your current recovery cards — one per line. " +
+                        "Your peers will be sent fresh shares; you'll get new paper backups.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = cards,
+                    onValueChange = { cards = it },
+                    label = { Text("Recovery cards (one per line)") },
+                    minLines = 4,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "${parsed.size} card(s) entered",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = parsed.size >= 2,
+                onClick = {
+                    vm.beginResplit(parsed)
+                    onDismiss()
+                },
+            ) { Text("Re-split") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/**
+ * Re-split progress/result (D0040 §5). Tracks preparing → awaiting peer acks → done
+ * (showing the new paper cards to save) or failed (non-leaking — shares unchanged).
+ */
+@Composable
+private fun ResplitProgressDialog(
+    state: MessagingViewModel.ResplitUiState,
+    onDismiss: () -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    val dismissable =
+        state is MessagingViewModel.ResplitUiState.Done ||
+            state is MessagingViewModel.ResplitUiState.Failed
+    AlertDialog(
+        onDismissRequest = { if (dismissable) onDismiss() },
+        title = {
+            Text(
+                when (state) {
+                    is MessagingViewModel.ResplitUiState.Done -> "Recovery shares refreshed ✓"
+                    is MessagingViewModel.ResplitUiState.Failed -> "Re-split didn't complete"
+                    else -> "Refreshing recovery shares…"
+                },
+            )
+        },
+        text = {
+            Column {
+                when (state) {
+                    is MessagingViewModel.ResplitUiState.Preparing ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(Modifier.size(20.dp))
+                            Spacer(Modifier.size(12.dp))
+                            Text("Re-splitting your master key…")
+                        }
+                    is MessagingViewModel.ResplitUiState.Awaiting ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(Modifier.size(20.dp))
+                            Spacer(Modifier.size(12.dp))
+                            Text("Waiting for peers to accept (${state.acked}/${state.total})…")
+                        }
+                    is MessagingViewModel.ResplitUiState.Failed ->
+                        Text(
+                            state.reason + " Your recovery shares are unchanged — nothing leaked.",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    is MessagingViewModel.ResplitUiState.Done -> {
+                        Text(
+                            if (state.keepCards.isEmpty()) {
+                                "All your peers now hold fresh shares. The old cards go stale " +
+                                    "once their holders delete them."
+                            } else {
+                                "Your peers now hold fresh shares. Write down these new paper " +
+                                    "backup card(s) and destroy the old ones:"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        if (state.keepCards.isNotEmpty()) {
+                            Spacer(Modifier.height(12.dp))
+                            state.keepCards.forEachIndexed { i, card ->
+                                Text(
+                                    "Card ${i + 1}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    modifier = Modifier.padding(top = if (i == 0) 0.dp else 8.dp),
+                                )
+                                SelectableBlock(card)
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedButton(onClick = {
+                                clipboard.setText(AnnotatedString(state.keepCards.joinToString("\n")))
+                                Toast.makeText(context, "New cards copied", Toast.LENGTH_SHORT).show()
+                            }) { Text("Copy new cards") }
+                        }
+                    }
+                    is MessagingViewModel.ResplitUiState.Idle -> {}
+                }
+            }
+        },
+        confirmButton = {
+            if (dismissable) TextButton(onClick = onDismiss) { Text("Done") }
+        },
+    )
 }
 
 /**
