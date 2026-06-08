@@ -338,25 +338,31 @@ covers it), consistent with how Stage 2 chose the generic store over the
     pending, kept the old card** (non-leaking). The 2-Pixel proof exercises N=1 over the
     wire while the cryptographic split is a real 3-of-5; the N-peer generalization is the
     same ACK tally over the whole peer map.
-  - **3c-c — multi-peer re-split UX. LANDED + APK-built (UI/multi-peer on-device
-    re-run pending a stable device).** Makes re-split a real user action, not just a
-    driver hook, AND closes the multi-peer correctness gap. A new
-    `RecoveryOwnerPeerStore` (over the existing `recovery_peers` category) records
-    each contact we entrust a share to (on `entrustRecoveryShare`); `beginResplit`
-    now gathers ALL of them and fans **one** fresh kit out atomically — `peer[i] →
-newCards[i]`, `num_shares = max(5, peerCount)`, the rest are the owner's new paper
-    backups. (Correctness, not polish: re-splitting per-peer would hand each peer a
-    card from a different polynomial, which cannot reconstruct together — so it MUST
-    be one kit to all peers.) An empty peer list falls back to the open-conversation
-    peer, so the proven driver/2-Pixel path is unchanged. The "My identity" screen
-    gains a **Refresh recovery shares** action → a card-entry dialog (paste a
-    threshold of current cards) → a progress dialog (preparing → awaiting N acks →
-    done, showing the new paper cards to write down / copy, or a non-leaking failure).
-    A `ResplitUiState` StateFlow drives it; `dismissResplit` closes it. The
-    orchestration + wire are unchanged from 3c-b (still 2-Pixel-proven); the new
-    surface is the peer-list gather + the Compose dialogs, APK-built — the
-    tracked-peer + UI on-device re-run is pending a stable test device (the Pixel
-    USB-flakiness recurred this session).
+  - **3c-c — multi-peer re-split UX. LANDED + 2-Pixel-proven over Tor.** Makes
+    re-split a real user action, not just a driver hook, AND closes the multi-peer
+    correctness gap. A new `RecoveryOwnerPeerStore` (over the existing
+    `recovery_peers` category) records each contact we entrust a share to (on
+    `entrustRecoveryShare`); `beginResplit` now gathers ALL of them and fans **one**
+    fresh kit out atomically — `peer[i] → newCards[i]`, `num_shares = max(5,
+peerCount)`, the rest are the owner's new paper backups. (Correctness, not
+    polish: re-splitting per-peer would hand each peer a card from a different
+    polynomial, which cannot reconstruct together — so it MUST be one kit to all
+    peers.) An empty peer list falls back to the open-conversation peer, so the
+    proven driver/2-Pixel path is unchanged. The "My identity" screen gains a
+    **Refresh recovery shares** action → a card-entry dialog (paste a threshold of
+    current cards) → a progress dialog (preparing → awaiting N acks → done, showing
+    the new paper cards to write down / copy, or a non-leaking failure). A
+    `ResplitUiState` StateFlow drives it; `dismissResplit` closes it. **Proof (oriole
+    ↔ raven, over bundled Tor):** A entrusts a card to B (→ A records B in
+    `RecoveryOwnerPeerStore`, B holds 154 B) → A leaves the conversation (`home`
+    clears `connectionId`/`peerKeyRaw`, removing the open-peer fallback) → A re-splits
+    (id `f4c00d32`) and the PREPARE reaches B **purely via the tracked list**
+    (`PREPARE sent to 1 peer(s)`, NOT the fallback — had tracking failed it would log
+    "No recovery peers yet") → B stages + ACKs → A tallies 1/1 + COMMITs → B
+    **promotes to active, phrase preserved**. The driver `resplit` path calls the
+    same `beginResplit` the UI button invokes; the Compose dialogs are pure
+    `resplitUiState` rendering. (N>1 fan-out needs ≥3 devices, the §7 #302 blocker;
+    the tracked-list gather + atomic COMMIT across the whole map is what's proven.)
 
 Each sub-stage is a wire/codec/FFI/Kotlin slice in the landed key-8/9/10/11/12/13
 pattern + a 2-device on-device proof, mirroring how Stages 1–2 shipped.
