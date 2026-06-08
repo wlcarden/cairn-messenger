@@ -156,8 +156,11 @@ class MainActivity : FragmentActivity() {
      *   --es entrustshare "<card>"     → entrust a recovery card to the open contact (D0038 §7)
      *   --es requestshare "1"          → ask the open contact to return our held share
      *   --es setphrase "<phrase>"      → set the challenge phrase on the held share (D0040 §3)
-     *   --es approveshare "<phrase>"   → return the head share IF the phrase verifies (D0040 §3)
+     *   --es approveshare "<phrase>"   → verify the phrase → SCHEDULE a cooling-off release (D0040 §3/§4)
      *   --es declineshare "1"          → decline the head share-return request
+     *   --es coolingoff "<seconds>"    → override the 48h cooling-off window (debug timer test, D0040 §4)
+     *   --es fireduereleases "1"       → fire any cooling-off release whose window elapsed (D0040 §4)
+     *   --es cancelschedule "1"        → peer-side manual cancel of the first pending release (D0040 §4)
      *   --es quickenroll "<pass>"     → enroll quick unlock (shows the BiometricPrompt)
      *   --es quickunlock "1"          → quick-unlock prompt (decrypt → unlock)
      *   --es quickdisable "1"         → delete the wrapped passphrase + Keystore key
@@ -284,6 +287,19 @@ class MainActivity : FragmentActivity() {
         intent.getStringExtra("setphrase")?.let {
             Log.i(TAG, "driver: setFirstHeldPhrase")
             viewModel.setFirstHeldPhrase(it)
+        }
+        intent.getStringExtra("coolingoff")?.let {
+            val secs = it.toLongOrNull() ?: 0L
+            Log.i(TAG, "driver: setCoolingOffSeconds($secs)")
+            viewModel.setCoolingOffSeconds(secs)
+        }
+        intent.getStringExtra("fireduereleases")?.let {
+            Log.i(TAG, "driver: fireDueReleases")
+            viewModel.fireDueReleases()
+        }
+        intent.getStringExtra("cancelschedule")?.let {
+            Log.i(TAG, "driver: cancelFirstScheduledRelease")
+            viewModel.cancelFirstScheduledRelease()
         }
         intent.getStringExtra("approveshare")?.let {
             Log.i(TAG, "driver: approveFirstShareReturn (phrase-gated)")

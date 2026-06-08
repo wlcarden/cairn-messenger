@@ -448,6 +448,7 @@ pub const ALL_CATEGORIES: &[&str] = &[
     categories::QUARANTINE_STATE,
     categories::RECOVERY_PEERS,
     categories::RECOVERY_SHARES,
+    categories::RECOVERY_SCHEDULES,
     categories::RATCHET_STATE,
     categories::MESSAGES,
     categories::SIGSUM_CACHE,

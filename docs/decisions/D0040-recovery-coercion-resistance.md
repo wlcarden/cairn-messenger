@@ -260,6 +260,20 @@ covers it), consistent with how Stage 2 chose the generic store over the
   the lazy peer-clock firing + the peer-side manual cancel + the display-only
   countdown. Inserts the 48h delay between 3a's challenge-confirm and the release.
   (key-13 `recovery_cancel` deferred per §4.)
+  - **3b-i — cooling-off mechanism. LANDED + 2-Pixel-proven over Tor.** A new
+    encrypted `recovery_schedules` category + `RecoveryScheduleStore`
+    (`[releaseAt(8)][requesterKey(32)][giverKey(32)][connId]`). On phrase-verify,
+    `returnShareByPhrase` no longer sends — it **schedules** the release at the
+    holder's own clock + the window (D0005 H5: the fresh device's clock is never
+    trusted). `fireDueReleases()` (lazy: on unlock + a debug driver hook; re-loads
+    the card from the held store and sends key-11 when due) + `cancelFirstScheduledRelease`
+    (peer-side manual cancel). Driver hooks `coolingoff "<sec>"` (window override),
+    `fireduereleases`, `cancelschedule`. **Proof (oriole + raven, 20 s test window):**
+    verify → "release SCHEDULED in 20 s", A receives **nothing**; window elapses →
+    fire → A receives the 154 B card; re-run + **cancel before the window** → fire →
+    nothing released. Pending (3b-ii): the holder's pending-releases list + cancel
+    button in the UI (currently driver-only), a recovering-device cooling-off notice,
+    and a production lazy trigger beyond unlock (periodic / recv-tick).
 - **Stage 3c — atomic re-split (≥2 devices, highest risk).** Per §5; **recommended
   v1.x**, behind an explicit two-phase protocol. Does not block 3a/3b.
 

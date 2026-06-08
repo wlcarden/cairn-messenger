@@ -260,6 +260,16 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     /** Recovery shares this device holds for contacts (D0038 §7). Set on unlock. */
     private var recoveryPeers: RecoveryPeerStore? = null
 
+    /** Pending peer-clock cooling-off releases (D0040 §4, 3b). Set on unlock. */
+    private var recoverySchedules: RecoveryScheduleStore? = null
+
+    /**
+     * Cooling-off window before a phrase-verified share is released (D0040 §4):
+     * 48h on the holder's own clock. Debug-overridable via the `coolingoff` driver
+     * hook so the 2-device timer can be validated without waiting two days.
+     */
+    private var coolingOffSeconds: Long = 48L * 3600L
+
     /**
      * Contacts we've sent a recovery_request to (peerKeyHex) and are awaiting a
      * returned share from (D0038 §7). An inbound recovery_share from a contact in
@@ -422,6 +432,10 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 session = s
                 contacts = ContactStore(s.storage)
                 recoveryPeers = RecoveryPeerStore(s.storage)
+                recoverySchedules = RecoveryScheduleStore(s.storage)
+                // Lazy cooling-off firing (D0040 §4): on app-launch / unlock, release
+                // any cooling-off window that elapsed while we were closed.
+                fireDueReleases()
                 myHex = s.publicKeyRaw.toHex()
                 // A public key, but still identifying metadata — keep it out of
                 // release logcat (debug keeps it for the test harnesses).
@@ -881,7 +895,6 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         phrase: String,
         onResult: (Boolean) -> Unit = {},
     ) {
-        val s = session ?: return onResult(false)
         val peers = recoveryPeers ?: return onResult(false)
         viewModelScope.launch {
             val held = withContext(Dispatchers.IO) { peers.findByPhrase(phrase) }
@@ -900,24 +913,75 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 onResult(false)
                 return@launch
             }
-            // Matched: clear the attempt counter + prompt and send the card back.
+            // Matched (D0040 §4, 3b): clear the prompt, then SCHEDULE the release at
+            // our OWN clock + the cooling-off window — do NOT send now. The window
+            // gives a coerced owner's network time to notice + the holder time to
+            // cancel; fireDueReleases() (lazy, on unlock / recv-tick) sends it later.
             phraseAttempts.remove(prompt.requesterKeyHex)
             _shareReturnPrompts.update { it.filterNot { p -> p.requesterKeyHex == prompt.requesterKeyHex } }
-            val recipient = runCatching { prompt.requesterKeyHex.fromHex() }.getOrNull()
-            if (recipient == null) {
+            val schedules = recoverySchedules
+            if (schedules == null) {
                 onResult(false)
                 return@launch
             }
-            runCatching {
-                withContext(Dispatchers.IO) { s.handle.sendRecoveryShare(prompt.connId, recipient, held.card) }
-            }.onSuccess {
-                Log.i(TAG, "recovery: phrase verified — returned a held share to ${prompt.requesterName}")
+            val releaseAt = (System.currentTimeMillis() / 1000) + coolingOffSeconds
+            val ok = withContext(Dispatchers.IO) {
+                schedules.schedule(prompt.requesterKeyHex, held.giverKeyHex, prompt.connId, releaseAt)
+            }
+            if (ok) {
+                Log.i(TAG, "recovery: phrase verified — release to ${prompt.requesterName} SCHEDULED in ${coolingOffSeconds}s (~${coolingOffSeconds / 3600}h cooling-off, D0040 §4)")
                 onResult(true)
-            }.onFailure {
-                Log.e(TAG, "returnShareByPhrase failed: ${it.message}")
+                fireDueReleases() // fire now if the window is ~0 (debug/test override)
+            } else {
+                Log.e(TAG, "returnShareByPhrase: failed to schedule release for ${prompt.requesterName}")
                 onResult(false)
             }
         }
+    }
+
+    /**
+     * Fire any cooling-off release whose window has elapsed (D0040 §4, lazy):
+     * re-load each due share from the [RecoveryPeerStore] and send it (key-11) to
+     * the requester, then drop the schedule. Called on unlock + recv-loop ticks; a
+     * debug driver hook forces it for the 2-device timer test.
+     */
+    fun fireDueReleases() {
+        val s = session ?: return
+        val schedules = recoverySchedules ?: return
+        val peers = recoveryPeers ?: return
+        viewModelScope.launch {
+            val due = withContext(Dispatchers.IO) { schedules.due(System.currentTimeMillis() / 1000) }
+            for (d in due) {
+                val card = withContext(Dispatchers.IO) { peers.held(d.giverKeyHex) }
+                val recipient = runCatching { d.requesterKeyHex.fromHex() }.getOrNull()
+                if (card == null || recipient == null) {
+                    Log.w(TAG, "recovery: due release for ${FriendlyName.of(d.requesterKeyHex)} has no held card — dropping schedule")
+                    withContext(Dispatchers.IO) { schedules.remove(d.scheduleId) }
+                    continue
+                }
+                runCatching {
+                    withContext(Dispatchers.IO) { s.handle.sendRecoveryShare(d.connId, recipient, card) }
+                }.onSuccess {
+                    Log.i(TAG, "recovery: cooling-off elapsed — released a held share to ${FriendlyName.of(d.requesterKeyHex)}")
+                    viewModelScope.launch { withContext(Dispatchers.IO) { schedules.remove(d.scheduleId) } }
+                }.onFailure { Log.e(TAG, "recovery: fireDueReleases send failed: ${it.message}") }
+            }
+        }
+    }
+
+    /** Cancel the FIRST pending cooling-off release — peer-side manual cancel (D0040 §4). */
+    fun cancelFirstScheduledRelease() {
+        val schedules = recoverySchedules ?: return
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) { schedules.cancelFirst() }
+            Log.i(TAG, "recovery: ${if (ok) "cancelled a pending cooling-off release" else "no pending release to cancel"}")
+        }
+    }
+
+    /** Debug: override the cooling-off window so the 2-device timer is testable (D0040 §4). */
+    fun setCoolingOffSeconds(seconds: Long) {
+        coolingOffSeconds = seconds.coerceAtLeast(0)
+        Log.i(TAG, "recovery: cooling-off window set to ${coolingOffSeconds}s")
     }
 
     /** Decline returning the held share for [prompt] (D0038 §7). */

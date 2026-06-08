@@ -160,6 +160,9 @@ pub mod categories {
     pub const RECOVERY_PEERS: &str = "recovery_peers";
     /// Shares this user holds of OTHER users' masters.
     pub const RECOVERY_SHARES: &str = "recovery_shares";
+    /// Scheduled peer-clock cooling-off releases of held shares (D0040 §4, 3b):
+    /// `{requester, connId, release_at_peer_unix}` per pending return.
+    pub const RECOVERY_SCHEDULES: &str = "recovery_schedules";
     /// SimpleX per-conversation ratchet state.
     pub const RATCHET_STATE: &str = "ratchet_state";
     /// Per-conversation message history.
