@@ -254,6 +254,24 @@ back — awaiting approval` → B approves → A `RETURNED our held share (154B)
   > gather UX), 3b (48h cooling-off), 3c (atomic re-split, v1.x). Known 3a-ii UX
   > gap: a mismatched guess consumes the prompt (fails closed; the dialog should
   > keep open + show an error + allow retry rather than force a re-request).
+  >
+  > **LANDED (2026-06-08) — Stage 3a-ii, the fresh-device gather UX,
+  > two-Pixel-proven over Tor.** From the recovery card-collector, `gatherFromPeer()`
+  > pairs with a recovery peer (creates an invite); a `gatheringFromRecovery` flag
+  > re-routes `goLive` so the pairing auto-sends a `recovery_request` and returns to
+  > the collector instead of opening a chat, and the returned card auto-feeds the
+  > existing `addRecoveryCard` path. The 3a-i retry gap above is also fixed:
+  > `returnShareByPhrase` clears the prompt only on a match, so a wrong guess keeps it
+  > and `ShareReturnDialog` shows an inline error + allows retry. Driver hook
+  > `gatherpeer`. **Proof (oriole + raven):** A wiped → recovery-enrolled with a NEW
+  > op key (`73734c4e…` ≠ old `a73c0e67…`) → `gatherpeer` → B accepts → A auto-requests
+  > on connect → B (holding A-old's share) matched A's NEW key **by phrase, not key**
+  > → returned the 154 B card → A auto-fed it → A added 2 paper cards → reconstructed +
+  > **re-rooted under the master** (`adopted master attestation (151 B) — now
+master-rooted`); retry proven (wrong guess kept the prompt, correct phrase on the
+  > same prompt returned the share). The all-from-peers threshold (≥3 peers for 3-of-5)
+  > needs ≥3 devices — the mixed 1-peer + 2-paper run proves the gather feeds the same
+  > accumulator as paper. Remaining Stage 3: 3b (48h cooling-off) + 3c (re-split, v1.x).
 
 ## 8. Doc-vs-code reconciliations (fold in with Stage 1)
 

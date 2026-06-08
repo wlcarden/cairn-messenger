@@ -150,6 +150,7 @@ class MainActivity : FragmentActivity() {
      *   --es simkeymismatch "1"       → simulate a recv key mismatch (downgrade + banner)
      *   --es beginrecovery "1"         → Welcome → recovery passphrase screen (D0038)
      *   --es recoverycard "<card>"     → feed a recovery-card text into the collector
+     *   --es gatherpeer "1"            → pair with a recovery peer to pull a share (D0040 §7)
      *   --es recover "1"               → reconstruct + re-root the identity (D0038)
      *   --es recoveryskip "1"          → leave recovery → contacts
      *   --es entrustshare "<card>"     → entrust a recovery card to the open contact (D0038 §7)
@@ -307,6 +308,10 @@ class MainActivity : FragmentActivity() {
         intent.getStringExtra("recoverycard")?.let {
             Log.i(TAG, "driver: addRecoveryCard len=${it.length}")
             viewModel.addRecoveryCard(it)
+        }
+        intent.getStringExtra("gatherpeer")?.let {
+            Log.i(TAG, "driver: gatherFromPeer")
+            viewModel.gatherFromPeer()
         }
         intent.getStringExtra("recover")?.let {
             Log.i(TAG, "driver: attemptRecovery")

@@ -341,6 +341,14 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     private var recoveryMaster: ByteArray? = null
 
     /**
+     * True while a fresh device is recovering and pairs with a recovery peer to
+     * pull back a held share (D0040 §7, 3a-ii). It re-routes [goLive] so the
+     * pairing returns to the card collector + auto-requests the share, instead of
+     * opening a chat. Set by [gatherFromPeer]; cleared on enter/leave recovery.
+     */
+    private var gatheringFromRecovery = false
+
+    /**
      * The in-flight reconstruct/attest/adopt coroutine (D0038 §5), tracked so
      * [leaveRecovery] can cancel it — otherwise a late completion would write a
      * `Recovery` state over the contact list the user already navigated to.
@@ -510,6 +518,7 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         recoveryCards.clear()
         recoveryCommitment = null
         recoveryMaster = null
+        gatheringFromRecovery = false
         _ui.value = UiState.Recovery(collected = 0, masterName = null)
     }
 
@@ -639,7 +648,22 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         recoveryCards.clear()
         recoveryCommitment = null
         recoveryMaster = null
+        gatheringFromRecovery = false
         showContacts()
+    }
+
+    /**
+     * Recovery gather (D0040 §7, 3a-ii): from the card collector, pair with a
+     * recovery peer to pull back the share you entrusted them. Creates an
+     * invitation (the peer scans/pastes it) and flags [gatheringFromRecovery] so
+     * [goLive] auto-requests the share + returns here instead of opening a chat.
+     * The peer authenticates you by the challenge phrase (3a-i), not your key —
+     * which on this fresh device is new (D0040 §2).
+     */
+    fun gatherFromPeer() {
+        if (ui.value !is UiState.Recovery) return
+        gatheringFromRecovery = true
+        createInvitation()
     }
 
     // ── Peer-share distribution (D0038 §7, Stage 2) ──────────────────────────
@@ -747,23 +771,28 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
      * Approve returning a held share to [prompt] by verifying the [phrase] the
      * requester produced (D0005 / D0040 §3): the phrase is matched against held
      * shares — the fresh-device matcher, since the requester's operational key is
-     * new (D0040 §2). On no match, nothing is returned.
+     * new (D0040 §2). Returns `true` if the phrase matched a held share (the prompt
+     * is then cleared and the share sent); `false` on no match — the prompt is
+     * **kept** so the holder can retry the phrase (a typo must not burn the
+     * exchange and force the requester to re-request). Nothing is sent on no match.
      */
-    fun returnShareByPhrase(prompt: ShareReturnPrompt, phrase: String) {
-        val s = session ?: return
-        _shareReturnPrompts.update { it.filterNot { p -> p.requesterKeyHex == prompt.requesterKeyHex } }
+    fun returnShareByPhrase(prompt: ShareReturnPrompt, phrase: String): Boolean {
+        val s = session ?: return false
         val held = recoveryPeers?.findByPhrase(phrase)
         if (held == null) {
-            Log.w(TAG, "recovery: phrase did NOT match any held share — not returned to ${prompt.requesterName}")
-            return
+            Log.w(TAG, "recovery: phrase did NOT match any held share — not returned to ${prompt.requesterName} (retryable)")
+            return false
         }
-        val recipient = runCatching { prompt.requesterKeyHex.fromHex() }.getOrNull() ?: return
+        // Matched: clear the prompt and send the card back.
+        _shareReturnPrompts.update { it.filterNot { p -> p.requesterKeyHex == prompt.requesterKeyHex } }
+        val recipient = runCatching { prompt.requesterKeyHex.fromHex() }.getOrNull() ?: return false
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) { s.handle.sendRecoveryShare(prompt.connId, recipient, held.card) }
             }.onSuccess { Log.i(TAG, "recovery: phrase verified — returned a held share to ${prompt.requesterName}") }
                 .onFailure { Log.e(TAG, "returnShareByPhrase failed: ${it.message}") }
         }
+        return true
     }
 
     /** Decline returning the held share for [prompt] (D0038 §7). */
@@ -789,6 +818,15 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         pairingJob = null
         connectionId = null
         peerKeyRaw = null
+        // A pairing started from the recovery gather (3a-ii) returns to the card
+        // collector, not the (empty, locked-out) contact list.
+        if (gatheringFromRecovery && ui.value !is UiState.Recovery) {
+            _ui.value = UiState.Recovery(
+                collected = recoveryCards.size,
+                masterName = recoveryMaster?.let { FriendlyName.of(it.toHex()) },
+            )
+            return
+        }
         showContacts()
     }
 
@@ -1082,10 +1120,25 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
             _messages.value =
                 listOf(ChatMessage(msgIdSeq.getAndIncrement(), false, String(firstInbound), now))
         }
+        ensureReceiving()
+        if (gatheringFromRecovery) {
+            // Recovery gather (D0040 §7, 3a-ii): we paired with a recovery peer on
+            // this fresh device — don't open a chat. Ask them to return the share
+            // we entrusted (the peer authenticates us by the challenge phrase, not
+            // our NEW key, D0040 §2) and go back to the card collector. The returned
+            // card auto-feeds addRecoveryCard (handleIncomingRecoveryShare routes to
+            // the collector while we're in Recovery + the request is pending).
+            Log.i(TAG, "recovery: paired with peer ${peerHex.take(12)} — requesting our held share back")
+            requestHeldShare()
+            _ui.value = UiState.Recovery(
+                collected = recoveryCards.size,
+                masterName = recoveryMaster?.let { FriendlyName.of(it.toHex()) },
+            )
+            return
+        }
         // A freshly-paired contact is TOFU-unverified until the user confirms
         // the safety number out of band (D0006 §70).
         _ui.value = UiState.Conversation(myHex, peerHex, name, Trust.UNVERIFIED)
-        ensureReceiving()
     }
 
     /**

@@ -236,9 +236,26 @@ covers it), consistent with how Stage 2 chose the generic store over the
     landed key-11/12). Known UX gap deferred to 3a-ii: a mismatched guess consumes
     the prompt (fails closed, but the dialog should keep open + show an error +
     allow retry instead of forcing the requester to re-request).
-  - **3a-ii — fresh-device gather UX (pending).** Persistent gathering-mode across
-    navigation + the held-shares/set-phrase surfaces + the full blank-device
-    recover-from-peers flow; 2-device validate end-to-end.
+  - **3a-ii — fresh-device gather UX. LANDED + 2-Pixel-proven over Tor.** From the
+    recovery card-collector, `gatherFromPeer()` creates an invite (a `gatheringFromRecovery`
+    flag re-routes `goLive`: a pair started here auto-sends a `recovery_request` and
+    returns to the collector instead of opening a chat); the returned card auto-feeds
+    the existing `addRecoveryCard` path (gated on `ui is Recovery`). `recoveryCards`
+    is VM-scoped so the count survives the pairing navigation; `cancelPairing` returns
+    to the collector. The retry-on-mismatch gap from 3a-i is also fixed:
+    `returnShareByPhrase` returns a Boolean and clears the prompt only on a match, so
+    a wrong guess keeps the prompt and the `ShareReturnDialog` shows an inline error +
+    allows retry. Driver hook `gatherpeer`. **Proof (oriole + raven):** A is wiped →
+    recovery-enrolled with a NEW operational key (`73734c4e…`, ≠ the old `a73c0e67…`)
+    → `gatherpeer` → B accepts → on connect A auto-requests → B (holding A-**old**'s
+    share) is prompted by A's NEW key and matches it **by phrase, not key** (the §2
+    resolution) → returns the 154 B card → A auto-feeds it → A adds 2 paper cards →
+    reconstructs + **re-roots under the master** (`adopted master attestation (151 B)
+— now master-rooted`). Retry proven separately: a wrong guess kept the prompt;
+    the correct phrase on the **same** prompt then returned the share. The
+    all-from-peers threshold (≥3 peers for 3-of-5) needs ≥3 devices (same blocker as
+    D0037 S3); the mixed 1-peer + 2-paper run proves the gather feeds the same
+    accumulator as paper.
 - **Stage 3b — peer-clock cooling-off (≥2 devices).** The scheduled-release record +
   the lazy peer-clock firing + the peer-side manual cancel + the display-only
   countdown. Inserts the 48h delay between 3a's challenge-confirm and the release.

@@ -206,6 +206,7 @@ fun ChatScreen(vm: MessagingViewModel) {
 @Composable
 private fun ShareReturnDialog(p: ShareReturnPrompt, vm: MessagingViewModel) {
     var phrase by remember { mutableStateOf("") }
+    var mismatch by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = { vm.declineReturnShare(p) },
         title = { Text("Return recovery share?") },
@@ -220,19 +221,33 @@ private fun ShareReturnDialog(p: ShareReturnPrompt, vm: MessagingViewModel) {
                 )
                 OutlinedTextField(
                     value = phrase,
-                    onValueChange = { phrase = it },
+                    onValueChange = {
+                        phrase = it
+                        mismatch = false
+                    },
                     label = { Text("Their challenge phrase") },
                     singleLine = true,
+                    isError = mismatch,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 12.dp),
                 )
+                if (mismatch) {
+                    Text(
+                        "That phrase didn't match. Check it with them and try again.",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
             }
         },
         confirmButton = {
             TextButton(
                 enabled = phrase.isNotBlank(),
-                onClick = { vm.returnShareByPhrase(p, phrase) },
+                // On a mismatch the prompt is kept (returnShareByPhrase → false): keep
+                // the dialog open with an error so a typo is retryable, not a re-request.
+                onClick = { if (!vm.returnShareByPhrase(p, phrase)) mismatch = true },
             ) { Text("Verify + return") }
         },
         dismissButton = {
@@ -518,6 +533,22 @@ private fun RecoveryScreen(state: UiState.Recovery, vm: MessagingViewModel) {
                     .fillMaxWidth()
                     .padding(top = 8.dp),
             ) { Text("Scan a card") }
+
+            HorizontalDivider(Modifier.padding(top = 20.dp))
+            Text(
+                "Or pull a share back from someone you entrusted one to. Pair with " +
+                    "them, then tell them — on a channel you trust — the challenge phrase " +
+                    "you agreed; their device returns your share into the count above.",
+                Modifier.padding(top = 16.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(
+                onClick = { vm.gatherFromPeer() },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+            ) { Text("Get a share from a recovery peer") }
 
             if (state.status != null) {
                 Row(
