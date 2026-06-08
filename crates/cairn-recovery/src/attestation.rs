@@ -18,11 +18,13 @@
 use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, SigningKey, VerifyingKey};
 use cairn_envelope::canonical::Value;
 use cairn_envelope::cose_sign1::{CoseSign1, Sign1Builder};
-use cairn_shamir::{Commitment, SECRET_LEN, Share, reconstruct};
+use cairn_shamir::{Commitment, SECRET_LEN, Share, reconstruct, split};
 use ciborium::Value as CiboriumValue;
+use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
+use crate::card::RecoveryCard;
 use crate::error::RecoveryError;
 
 /// Length of the SHA-256 hash output bound to `issuer_cert_hash` per
@@ -356,6 +358,129 @@ pub fn reconstruct_and_attest(
     Ok(signed)
 }
 
+/// The public outputs of an atomic master re-split (D0040 §5).
+///
+/// Everything here is public-or-transportable: the [`SignedMasterAttestation`]
+/// is a public credential, and each [`RecoveryCard`] carries a single Shamir
+/// share (below the reconstruction threshold — reveals nothing about the seed)
+/// plus the public new commitment + master pubkey. The reconstructed master
+/// seed that produced them is **not** here — it never leaves
+/// [`reconstruct_resplit_and_attest`].
+#[derive(Debug, Clone)]
+pub struct ResplitOutput {
+    /// The master-signed attestation binding the master to the new operational
+    /// identity (the hop-#3 credential, identical in kind to what
+    /// [`reconstruct_and_attest`] returns).
+    pub attestation: SignedMasterAttestation,
+    /// The freshly-split recovery cards — one per NEW share, each
+    /// self-contained (share + new commitment + master pubkey), ready to
+    /// re-distribute to recovery peers.
+    pub new_cards: Vec<RecoveryCard>,
+    /// The recovered master public key (the verifier for the new card set).
+    /// Surfaced explicitly so callers need not decode a card to learn it.
+    pub master: VerifyingKey,
+    /// The new share set's commitment. NOTE: this equals the OLD commitment —
+    /// it is `BLAKE3(secret)` and the secret is unchanged across re-split — but
+    /// it is surfaced so callers can store/verify against the new card set
+    /// without reaching into an individual [`RecoveryCard`].
+    pub new_commitment: Commitment,
+}
+
+/// Atomically reconstruct the master, **re-split** it into a fresh share set,
+/// and attest a new operational identity (D0040 §5 — the secret-bearing core
+/// of coercion-resistant re-split).
+///
+/// Runs the master seed's entire lifecycle in one call so the seed never
+/// crosses a boundary:
+///
+/// 1. Reconstruct the seed from the OLD share set (held in `Zeroizing`).
+/// 2. Derive the master key + pubkey.
+/// 3. Re-split the SAME seed into `new_num_shares` fresh shares with a NEW
+///    commitment under `new_threshold` (consuming `rng` for entropy).
+/// 4. Sign the new-operational-identity attestation.
+/// 5. Encode each new share as a self-contained [`RecoveryCard`].
+/// 6. Wipe the seed + master key (`Zeroizing` / `SecretBox` `Drop`).
+///
+/// ## What this does and does NOT guarantee
+///
+/// The secret is **unchanged** — only its *sharing* is refreshed — so the OLD
+/// shares still reconstruct the SAME master. The "old cards can no longer
+/// recover" goal is therefore a **soft** property: it holds only if the honest
+/// holders of the old cards delete them (D0040 §5). The **hard** property this
+/// function provides is non-leaking atomicity: a failure at any step leaks no
+/// master material (everything sensitive is local + zeroized on the way out),
+/// and the new identity is attested only if the whole chain succeeds.
+///
+/// # Errors
+///
+/// - [`RecoveryError::ShamirReconstruct`] if the OLD shares do not reconstruct
+///   to the committed master (insufficient / wrong / tampered cards) —
+///   user-actionable (gather more cards).
+/// - [`RecoveryError::ShamirSplit`] if the fresh split rejects its parameters
+///   (`new_threshold` / `new_num_shares` out of range) or otherwise fails — an
+///   internal fault, distinct from a reconstruct failure.
+/// - [`RecoveryError::CanonicalEncode`] / [`RecoveryError::SignFailed`] from the
+///   attestation construction step.
+pub fn reconstruct_resplit_and_attest<R: CryptoRng + RngCore>(
+    old_master_shares: &[Share],
+    old_master_commitment: &Commitment,
+    new_operational_identity_pubkey: VerifyingKey,
+    new_threshold: u8,
+    new_num_shares: u8,
+    timestamp: u64,
+    rng: &mut R,
+) -> Result<ResplitOutput, RecoveryError> {
+    // 1. Reconstruct the master seed from the OLD shares (Zeroizing wipes it on
+    //    exit). A failure here is the user-actionable "wrong/insufficient
+    //    cards" case.
+    let master_seed: Zeroizing<[u8; SECRET_LEN]> =
+        reconstruct(old_master_shares, old_master_commitment)?;
+
+    // 2. Derive the master key. SigningKey stores the seed in its own
+    //    SecretBox; both it and `master_seed` are wiped at function exit.
+    let master_signing_key = SigningKey::from_seed(&master_seed);
+    let master_pubkey = master_signing_key.verifying_key();
+
+    // 3. Re-split the SAME seed into a fresh share set + NEW commitment. The
+    //    split failure is mapped to the DISTINCT ShamirSplit variant so it is
+    //    not confused with the reconstruct failure above (different
+    //    remediation — see the variant docs).
+    let (new_shares, new_commitment) = split(&master_seed, new_threshold, new_num_shares, rng)
+        .map_err(RecoveryError::ShamirSplit)?;
+
+    // 4. Sign the new-operational-identity attestation (the same hop-#3
+    //    credential reconstruct_and_attest produces).
+    let attestation =
+        MasterAttestation::new(master_pubkey, new_operational_identity_pubkey, timestamp);
+    let signed = attestation.sign(&master_signing_key)?;
+
+    // 5. Encode each fresh share as a self-contained recovery card. The
+    //    commitment + master pubkey are public; the share is below threshold.
+    let commitment_bytes = new_commitment.to_bytes();
+    let master_bytes = master_pubkey.to_bytes();
+    let new_cards: Vec<RecoveryCard> = new_shares
+        .iter()
+        .map(|share| RecoveryCard {
+            id: share.id(),
+            value: *share.bytes(),
+            commitment: commitment_bytes,
+            master: master_bytes,
+        })
+        .collect();
+
+    // 6. Wipe the seed + master key (Zeroizing / SecretBox Drop). Only the
+    //    public ResplitOutput leaves.
+    drop(master_signing_key);
+    drop(master_seed);
+
+    Ok(ResplitOutput {
+        attestation: signed,
+        new_cards,
+        master: master_pubkey,
+        new_commitment,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     // `indexing_slicing` allowed at the test-module level: shares and
@@ -399,6 +524,133 @@ mod tests {
             new_op_identity
         );
         assert_eq!(recovered.attestation().timestamp, 1_700_000_000);
+    }
+
+    #[test]
+    fn resplit_yields_fresh_shares_recovering_the_same_master() {
+        // The atomic re-split core (D0040 §5): reconstruct from a threshold of
+        // OLD cards, re-split into a FRESH set, attest the new op — and the
+        // fresh set must recover the SAME master, under a NEW commitment.
+        let mut rng = OsRng;
+        let (master_sk, old_shares, old_commitment) = provision_master(&mut rng);
+        let master_public = master_sk.verifying_key();
+        let new_op_identity = SigningKey::generate(&mut rng).verifying_key();
+
+        let out = reconstruct_resplit_and_attest(
+            &old_shares[..3],
+            &old_commitment,
+            new_op_identity,
+            3,
+            5,
+            1_700_000_000,
+            &mut rng,
+        )
+        .unwrap();
+
+        // (a) The attestation verifies against the SAME master + binds the new op.
+        let bytes = out.attestation.encode(false).unwrap();
+        let recovered = SignedMasterAttestation::from_bytes(&bytes, &master_public).unwrap();
+        assert_eq!(recovered.attestation().master, master_public);
+        assert_eq!(
+            recovered.attestation().operational_identity,
+            new_op_identity
+        );
+
+        // (b) The explicit-output fields state the contract directly, and each
+        //     card agrees with them: a fresh 5-card set, all carrying the master
+        //     pubkey + the (shared) new commitment.
+        assert_eq!(out.master, master_public, "master surfaced explicitly");
+        assert_eq!(out.new_cards.len(), 5);
+        for card in &out.new_cards {
+            assert_eq!(card.master, master_public.to_bytes());
+            assert_eq!(card.commitment, out.new_commitment.to_bytes());
+        }
+
+        // (c) The NEW shares reconstruct the IDENTICAL master (the secret is
+        //     unchanged; only its sharing is refreshed).
+        let new_shares: Vec<Share> = out.new_cards[..3]
+            .iter()
+            .map(|c| Share::try_from_parts(c.id, Zeroizing::new(c.value)).unwrap())
+            .collect();
+        let new_seed = reconstruct(&new_shares, &out.new_commitment).unwrap();
+        assert_eq!(
+            SigningKey::from_seed(&new_seed).verifying_key(),
+            master_public,
+            "the fresh share set recovers the identical master"
+        );
+
+        // (d) The commitment is UNCHANGED across re-split — it is BLAKE3 of the
+        //     SECRET (the master seed), which re-split leaves invariant; only the
+        //     SHARES are re-randomized. So the freshness witness is on the share
+        //     VALUES, while the commitment is asserted identical.
+        assert_eq!(
+            out.new_cards[0].commitment,
+            old_commitment.to_bytes(),
+            "the commitment is to the unchanged secret, so it is preserved"
+        );
+        let old_values: Vec<[u8; SECRET_LEN]> = old_shares.iter().map(|s| *s.bytes()).collect();
+        let new_values: Vec<[u8; SECRET_LEN]> = out.new_cards.iter().map(|c| c.value).collect();
+        assert_ne!(
+            new_values, old_values,
+            "re-split must draw a fresh polynomial → different share values"
+        );
+
+        // (e) Soft-property witness (D0040 §5): the OLD shares STILL reconstruct
+        //     the same master — re-split does NOT cryptographically invalidate
+        //     them; only honest deletion by their holders does.
+        let old_seed = reconstruct(&old_shares[..3], &old_commitment).unwrap();
+        assert_eq!(
+            SigningKey::from_seed(&old_seed).verifying_key(),
+            master_public,
+            "old shares remain cryptographically valid post-re-split (soft property)"
+        );
+    }
+
+    #[test]
+    fn resplit_with_insufficient_old_shares_fails_reconstruct() {
+        // Only 2 of a 3-of-5 OLD set → the reconstruct step fails BEFORE any
+        // new split, surfacing the user-actionable ShamirReconstruct (not the
+        // internal ShamirSplit).
+        let mut rng = OsRng;
+        let (_master_sk, old_shares, old_commitment) = provision_master(&mut rng);
+        let new_op_identity = SigningKey::generate(&mut rng).verifying_key();
+
+        let err = reconstruct_resplit_and_attest(
+            &old_shares[..2],
+            &old_commitment,
+            new_op_identity,
+            3,
+            5,
+            1_700_000_000,
+            &mut rng,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, RecoveryError::ShamirReconstruct(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn resplit_with_bad_new_parameters_maps_to_shamir_split() {
+        // A valid OLD set reconstructs, but new_threshold > new_num_shares is an
+        // invalid split → the DISTINCT ShamirSplit variant (internal fault),
+        // never mislabeled as a reconstruct failure.
+        let mut rng = OsRng;
+        let (_master_sk, old_shares, old_commitment) = provision_master(&mut rng);
+        let new_op_identity = SigningKey::generate(&mut rng).verifying_key();
+
+        let err = reconstruct_resplit_and_attest(
+            &old_shares[..3],
+            &old_commitment,
+            new_op_identity,
+            5, // threshold ...
+            3, // ... exceeds num_shares → InvalidParameters
+            1_700_000_000,
+            &mut rng,
+        )
+        .unwrap_err();
+        assert!(matches!(err, RecoveryError::ShamirSplit(_)), "got {err:?}");
     }
 
     #[test]

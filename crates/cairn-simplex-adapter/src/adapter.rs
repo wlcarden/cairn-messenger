@@ -165,6 +165,10 @@ pub struct ReceivedMessage {
     /// this side to return the recovery share it holds for them. The caller
     /// surfaces a manual-approval prompt (Stage 2). `None` otherwise.
     pub recovery_request: Option<Vec<u8>>,
+    /// `Some(bytes)` if this is a recovery re-split control message (D0040 §5, 3c):
+    /// `[kind(1)][resplit_id(16)]` — a PREPARE (alongside a key-11 new card), ACK,
+    /// COMMIT, or DISCARD in the atomic re-split two-phase commit. `None` otherwise.
+    pub recovery_control: Option<Vec<u8>>,
 }
 
 /// The optional control fields of a [`MessageEnvelope`] — every send is either a
@@ -179,6 +183,7 @@ struct ControlFields {
     introduction: Option<Vec<u8>>,
     recovery_share: Option<Vec<u8>>,
     recovery_request: Option<Vec<u8>>,
+    recovery_control: Option<Vec<u8>>,
 }
 
 /// One persisted message in a conversation's history per
@@ -475,6 +480,37 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
         Ok(())
     }
 
+    /// Send a **recovery re-split control** message to `recipient` (D0040 §5, 3c):
+    /// the PREPARE / ACK / COMMIT / DISCARD of the atomic-or-non-leaking re-split
+    /// two-phase commit. `control_bytes` is `[kind(1)][resplit_id(16)]`; on a
+    /// PREPARE, `share_bytes` (the peer's NEW re-split card) rides key 11 in the
+    /// same signed + chained envelope so prepare-share + prepare-marker are atomic
+    /// on the wire.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::send`] (transport, sign, storage, or a poisoned chain mutex).
+    pub async fn send_recovery_control(
+        &self,
+        conn: &ConnectionId,
+        recipient_operational_pubkey: &[u8; PUBLIC_KEY_LEN],
+        control_bytes: &[u8],
+        share_bytes: Option<&[u8]>,
+    ) -> Result<(), SimplexAdapterError> {
+        self.send_envelope_inner(
+            conn,
+            recipient_operational_pubkey,
+            &[],
+            ControlFields {
+                recovery_control: Some(control_bytes.to_vec()),
+                recovery_share: share_bytes.map(<[u8]>::to_vec),
+                ..Default::default()
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Send a **read receipt** to `recipient` acknowledging every message this
     /// side has received from them (D0032).
     ///
@@ -548,6 +584,7 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             introduction: control.introduction,
             recovery_share: control.recovery_share,
             recovery_request: control.recovery_request,
+            recovery_control: control.recovery_control,
         };
         let cose = envelope.sign_with(self.identity.device_signer.as_ref())?;
 
@@ -747,6 +784,11 @@ impl<T: SidecarTransport> SimplexAdapter<T> {
             // return / gather), not the message list.
             recovery_share: envelope.recovery_share.clone(),
             recovery_request: envelope.recovery_request.clone(),
+            // A recovery re-split control message (D0040 §5, 3c) carries key 13:
+            // `[kind(1)][resplit_id(16)]` (PREPARE/ACK/COMMIT/DISCARD). A PREPARE
+            // rides alongside key 11 (the new card); the caller routes a `Some` to
+            // the two-phase re-split flow, not the message list.
+            recovery_control: envelope.recovery_control.clone(),
         })
     }
 

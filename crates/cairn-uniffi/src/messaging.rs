@@ -218,6 +218,13 @@ pub struct ReceivedMessageRecord {
     /// this side to return the recovery share it holds for them. The caller
     /// surfaces a manual-approval prompt (Stage 2). `None` otherwise.
     pub recovery_request: Option<Vec<u8>>,
+    /// `Some(bytes)` if this is a recovery re-split control message (D0040 §5 /
+    /// 3c): `[kind(1)][resplit_id(16)]` (PREPARE / ACK / COMMIT / DISCARD). A
+    /// PREPARE arrives alongside `recovery_share` (the new card in key 11); the
+    /// caller routes a `Some` to the two-phase re-split orchestration (store
+    /// pending / ACK / promote-on-COMMIT / discard-on-DISCARD), NOT the message
+    /// list. `None` otherwise.
+    pub recovery_control: Option<Vec<u8>>,
 }
 
 /// One persisted message in a conversation's history (D0026 §3.2).
@@ -481,6 +488,7 @@ impl SimplexAdapterHandle {
             introduction: received.introduction,
             recovery_share: received.recovery_share,
             recovery_request: received.recovery_request,
+            recovery_control: received.recovery_control,
         })
     }
 
@@ -525,6 +533,7 @@ impl SimplexAdapterHandle {
             introduction: received.introduction,
             recovery_share: received.recovery_share,
             recovery_request: received.recovery_request,
+            recovery_control: received.recovery_control,
         })
     }
 
@@ -792,6 +801,54 @@ impl SimplexAdapterHandle {
             .map_err(|_| CairnFfiError::MalformedData)?;
         self.adapter
             .send_recovery_request(&ConnectionId(connection_id), &recipient, &request_bytes)
+            .await
+            .map_err(CairnFfiError::from)?;
+        Ok(())
+    }
+
+    /// Send a **recovery re-split control** message to
+    /// `recipient_operational_pubkey` over `connection_id` (D0040 §5 / 3c): one
+    /// step of the two-phase atomic re-split. `control_bytes` is
+    /// `[kind(1)][resplit_id(16)]` (PREPARE / ACK / COMMIT / DISCARD, envelope
+    /// key 13). For a PREPARE, `new_card_bytes` carries the peer's NEW recovery
+    /// card (rides alongside in envelope key 11) so the peer can stage it pending;
+    /// for ACK / COMMIT / DISCARD pass `None`. An empty-payload, signed + chained
+    /// envelope.
+    ///
+    /// The orchestration (which step to send, to whom, in what order) is the
+    /// shell's; the handle only provides the mechanism. The master seed never
+    /// crosses here — only the peer's single new share does (a PREPARE), exactly
+    /// as for a Stage-2 recovery share.
+    ///
+    /// # Errors
+    ///
+    /// - [`CairnFfiError::MalformedData`] if `recipient_operational_pubkey` is
+    ///   not 32 bytes.
+    /// - The facade mapping of any `SimplexAdapterError`
+    ///   ([`CairnFfiError::SidecarFailure`] when the sidecar is unreachable,
+    ///   [`CairnFfiError::StorageFailure`] on a persist failure).
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+    )]
+    pub async fn send_recovery_control(
+        &self,
+        connection_id: String,
+        recipient_operational_pubkey: Vec<u8>,
+        control_bytes: Vec<u8>,
+        new_card_bytes: Option<Vec<u8>>,
+    ) -> Result<(), CairnFfiError> {
+        let recipient: [u8; PUBLIC_KEY_LEN] = recipient_operational_pubkey
+            .as_slice()
+            .try_into()
+            .map_err(|_| CairnFfiError::MalformedData)?;
+        self.adapter
+            .send_recovery_control(
+                &ConnectionId(connection_id),
+                &recipient,
+                &control_bytes,
+                new_card_bytes.as_deref(),
+            )
             .await
             .map_err(CairnFfiError::from)?;
         Ok(())

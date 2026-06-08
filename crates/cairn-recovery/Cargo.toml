@@ -40,7 +40,13 @@ zeroize = { workspace = true }
 # === Error handling (D0018 §4.2) ===
 thiserror = { workspace = true }
 
+# === CSPRNG for the in-app atomic re-split (D0040 §5) ===
+# The OLD-share reconstruction is RNG-free, but re-splitting the recovered
+# master into a FRESH share set needs entropy (`split` takes a `CryptoRng +
+# RngCore`). Provisioning the FIRST split stays a CLI ceremony (D0004); only
+# re-split runs in-app, so the caller threads its OsRng through.
+rand_core = { workspace = true }
+
 [dev-dependencies]
 proptest = { workspace = true }
 hex-literal = { workspace = true }
-rand_core = { workspace = true }

@@ -326,12 +326,20 @@ impl From<RecoveryError> for CairnFfiError {
                 Self::SignatureVerifyFailed
             }
             // Data-shape faults (malformed CBOR, bad pubkey, encode
-            // fault, out-of-range timestamp).
+            // fault, out-of-range timestamp). The re-split's fresh-split step
+            // (D0040 §5 / 3c) joins here: its dominant failure is invalid
+            // caller-supplied parameters (`new_threshold` / `new_num_shares`
+            // out of range), which is the same "you passed something malformed"
+            // category — and it stays DISTINCT from a reconstruct failure
+            // (ShamirReconstruct → RecoveryFailed, the user-actionable
+            // "wrong/insufficient cards" case), which is the distinction the
+            // separate ShamirSplit variant exists to preserve.
             RecoveryError::MalformedPayload
             | RecoveryError::CanonicalEncode(_)
             | RecoveryError::InvalidPubkeyLength { .. }
             | RecoveryError::InvalidPubkey
-            | RecoveryError::TimestampOutOfRange => Self::MalformedData,
+            | RecoveryError::TimestampOutOfRange
+            | RecoveryError::ShamirSplit(_) => Self::MalformedData,
             // Forward-compat only (RecoveryError is #[non_exhaustive]).
             _ => Self::UnmappedInternal,
         }

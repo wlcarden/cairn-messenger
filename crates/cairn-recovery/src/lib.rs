@@ -54,8 +54,8 @@ pub mod error;
 pub mod peer_store;
 
 pub use attestation::{
-    DOMAIN_TAG, ISSUER_CERT_HASH_LEN, MasterAttestation, SignedMasterAttestation,
-    reconstruct_and_attest,
+    DOMAIN_TAG, ISSUER_CERT_HASH_LEN, MasterAttestation, ResplitOutput, SignedMasterAttestation,
+    reconstruct_and_attest, reconstruct_resplit_and_attest,
 };
 pub use card::{MASTER_PUBKEY_LEN, RecoveryCard, decode_card, encode_card};
 pub use error::RecoveryError;

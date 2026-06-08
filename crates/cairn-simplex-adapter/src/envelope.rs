@@ -73,6 +73,7 @@ const KEY_VOUCH: i64 = 9;
 const KEY_INTRODUCTION: i64 = 10;
 const KEY_RECOVERY_SHARE: i64 = 11;
 const KEY_RECOVERY_REQUEST: i64 = 12;
+const KEY_RECOVERY_CONTROL: i64 = 13;
 
 /// Produces the device-key Ed25519 signature over a Cairn message
 /// envelope's COSE `Sig_structure` (D0006 §9 hop #1).
@@ -186,6 +187,15 @@ pub struct MessageEnvelope {
     /// manual approval, not a payload); a Stage-3 single-use challenge phrase
     /// slots in here. `None` on every other envelope, key 12 OMITTED.
     pub recovery_request: Option<Vec<u8>>,
+    /// OPTIONAL recovery re-split control per D0026 §2.1 key 13 (D0040 §5, 3c).
+    ///
+    /// `Some(bytes)` ONLY on a re-split control envelope (the atomic-or-non-leaking
+    /// re-split two-phase commit): `[kind(1)][resplit_id(16)]` where `kind` is
+    /// PREPARE / ACK / COMMIT / DISCARD. A PREPARE rides alongside key 11 (the new
+    /// re-split card); ACK / COMMIT / DISCARD carry only this control field. `None`
+    /// on every other envelope, in which case key 13 is OMITTED — prior envelope
+    /// kinds stay byte-identical.
+    pub recovery_control: Option<Vec<u8>>,
 }
 
 impl MessageEnvelope {
@@ -257,6 +267,14 @@ impl MessageEnvelope {
                 Value::Bytes(recovery_request.clone()),
             ));
         }
+        // Key 13 (recovery_control) is OPTIONAL (D0040 §5, 3c): appended after key 12
+        // only when present, so non-recovery envelopes stay byte-identical.
+        if let Some(recovery_control) = &self.recovery_control {
+            entries.push((
+                Value::Int(KEY_RECOVERY_CONTROL),
+                Value::Bytes(recovery_control.clone()),
+            ));
+        }
         Value::Map(entries)
             .encode()
             .map_err(|_| SimplexAdapterError::EnvelopeDecodeFailed)
@@ -290,6 +308,7 @@ impl MessageEnvelope {
         let mut introduction: Option<Vec<u8>> = None;
         let mut recovery_share: Option<Vec<u8>> = None;
         let mut recovery_request: Option<Vec<u8>> = None;
+        let mut recovery_control: Option<Vec<u8>> = None;
 
         for (key, value) in entries {
             let CiboriumValue::Integer(key_int_ciborium) = key else {
@@ -355,6 +374,14 @@ impl MessageEnvelope {
                     };
                     recovery_request = Some(b);
                 }
+                // Optional recovery re-split control (D0040 §5, 3c); absent on
+                // non-re-split envelopes, where it stays None.
+                KEY_RECOVERY_CONTROL => {
+                    let CiboriumValue::Bytes(b) = value else {
+                        return Err(SimplexAdapterError::EnvelopeDecodeFailed);
+                    };
+                    recovery_control = Some(b);
+                }
                 _ => {} // forward-compat per D0006 §6.4
             }
         }
@@ -374,6 +401,7 @@ impl MessageEnvelope {
             introduction,
             recovery_share,
             recovery_request,
+            recovery_control,
         })
     }
 
@@ -611,6 +639,7 @@ mod tests {
             introduction: None,
             recovery_share: None,
             recovery_request: None,
+            recovery_control: None,
         };
         (envelope, device_sk, recipient_op_sk)
     }
@@ -687,6 +716,40 @@ mod tests {
             Some(b"recovery-card-bytes".as_ref())
         );
         assert_eq!(recovered.recovery_request.as_deref(), Some(b"req".as_ref()));
+        assert_eq!(recovered, envelope);
+    }
+
+    #[test]
+    fn recovery_control_field_round_trips_and_is_omitted_when_none() {
+        // The re-split control field (key 13, D0040 §5) is `[kind(1)][resplit_id(16)]`.
+        // A non-control envelope omits key 13 entirely (byte-identical to the
+        // pre-D0040 schema); a control envelope round-trips its 17 bytes. A PREPARE
+        // rides alongside key 11 (the new card), so the two coexist in one envelope.
+        let (mut envelope, _, _) = make_envelope();
+        let without = envelope.to_canonical_cbor().unwrap();
+
+        // kind = 1 (PREPARE) + a 16-byte re-split id.
+        let mut control = vec![1u8];
+        control.extend_from_slice(&[0x5Au8; 16]);
+        envelope.recovery_control = Some(control.clone());
+        // A PREPARE carries the new card in key 11 in the SAME envelope.
+        envelope.recovery_share = Some(b"new-card-for-peer".to_vec());
+        let with = envelope.to_canonical_cbor().unwrap();
+        assert_ne!(
+            without, with,
+            "key 13 must change the encoding when present"
+        );
+
+        let recovered = MessageEnvelope::from_canonical_cbor(&with).unwrap();
+        assert_eq!(
+            recovered.recovery_control.as_deref(),
+            Some(control.as_slice())
+        );
+        assert_eq!(
+            recovered.recovery_share.as_deref(),
+            Some(b"new-card-for-peer".as_ref()),
+            "a PREPARE carries the new card in key 11 alongside the key-13 control"
+        );
         assert_eq!(recovered, envelope);
     }
 

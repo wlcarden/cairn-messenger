@@ -36,8 +36,12 @@
 //! provisioning.
 
 use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, VerifyingKey};
-use cairn_recovery::{SignedMasterAttestation, decode_card, reconstruct_and_attest};
+use cairn_recovery::{
+    SignedMasterAttestation, decode_card, encode_card, reconstruct_and_attest,
+    reconstruct_resplit_and_attest,
+};
 use cairn_shamir::{COMMITMENT_LEN, Commitment, SECRET_LEN, Share};
+use rand_core::OsRng;
 use zeroize::Zeroizing;
 
 use crate::error::CairnFfiError;
@@ -234,6 +238,127 @@ pub fn recovery_reconstruct_and_attest(
     signed.encode(false).map_err(CairnFfiError::from)
 }
 
+/// The public outputs of an atomic master re-split (D0040 §5 / 3c) as they
+/// cross the FFI boundary.
+///
+/// Everything here is public-or-transportable: the `attestation` is a public
+/// credential; each entry in `new_cards` is a paper-card text carrying a single
+/// Shamir share (below the reconstruction threshold) plus the public commitment
+/// and master pubkey. The reconstructed master seed is NOT here — it was
+/// reconstructed, re-split, used to sign, and zeroized entirely Rust-side inside
+/// [`recovery_resplit_and_attest`]. Becomes a `uniffi::Record` under the feature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "uniffi-bindings", derive(uniffi::Record))]
+pub struct ResplitResultRecord {
+    /// The freshly-split recovery cards as paper-card text (`CAIRN-RECOVERY-…`),
+    /// one per new share. These are BOTH the owner's new local kit AND what is
+    /// sent to each recovery peer in a PREPARE (key 11 alongside the key-13
+    /// control).
+    pub new_cards: Vec<String>,
+    /// The encoded signed master attestation of the new operational identity
+    /// (the hop-#3 credential to persist + distribute).
+    pub attestation: Vec<u8>,
+    /// The recovered master Ed25519 public key (32 bytes).
+    pub master_pubkey: Vec<u8>,
+    /// The new share set's commitment (32 bytes). NOTE: equals the prior
+    /// commitment — it commits to the unchanged master seed — surfaced so the
+    /// shell can persist/verify against the new card set without decoding a card.
+    pub new_commitment: Vec<u8>,
+}
+
+/// Reconstruct the master, **re-split** it into a fresh share set, and attest a
+/// new operational identity — the secret-bearing core of coercion-resistant
+/// re-split (D0040 §5 / 3c).
+///
+/// The shell gathers a threshold of the user's OLD shares (typically returned by
+/// recovery peers) and passes them in with the OLD commitment; Rust reconstructs
+/// the master seed, re-splits it into `new_num_shares` fresh shares under
+/// `new_threshold` with a NEW commitment, signs the new-operational-identity
+/// attestation, encodes each new share as a paper card, and zeroizes the seed.
+/// **The master seed never crosses to Kotlin** — the entire lifecycle runs in
+/// this one call (the structural non-leaking property of D0040 §5).
+///
+/// The returned cards recover the SAME master (the secret is unchanged; only its
+/// sharing is refreshed). "Old cards can no longer recover" is therefore a SOFT
+/// property — it holds only once the honest holders of the old cards delete them.
+///
+/// # Errors
+///
+/// - [`CairnFfiError::MalformedData`] if `old_commitment` is not
+///   [`COMMITMENT_LEN`] bytes, `new_operational_identity_pubkey` is not a valid
+///   Ed25519 key, any share's `value` is not [`SECRET_LEN`] bytes / has a zero
+///   id, OR the fresh split rejects its parameters (`new_threshold` /
+///   `new_num_shares` out of range) — all caller-supplied-data faults, kept
+///   DISTINCT from the reconstruct failure below.
+/// - [`CairnFfiError::RecoveryFailed`] if the OLD shares do not reconstruct to
+///   the committed master (insufficient / wrong / tampered cards) — the
+///   user-actionable "gather more cards" case.
+#[cfg_attr(feature = "uniffi-bindings", uniffi::export)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "UniFFI exports take owned arguments by value; the FFI layer owns the lowered buffers"
+)]
+pub fn recovery_resplit_and_attest(
+    shares: Vec<ShareRecord>,
+    old_commitment: Vec<u8>,
+    new_operational_identity_pubkey: Vec<u8>,
+    new_threshold: u8,
+    new_num_shares: u8,
+    timestamp: u64,
+) -> Result<ResplitResultRecord, CairnFfiError> {
+    let commitment_bytes: [u8; COMMITMENT_LEN] = old_commitment
+        .as_slice()
+        .try_into()
+        .map_err(|_| CairnFfiError::MalformedData)?;
+    let old_commitment = Commitment::from_bytes(commitment_bytes);
+
+    let pubkey_bytes: [u8; PUBLIC_KEY_LEN] = new_operational_identity_pubkey
+        .as_slice()
+        .try_into()
+        .map_err(|_| CairnFfiError::MalformedData)?;
+    let new_operational =
+        VerifyingKey::from_bytes(&pubkey_bytes).map_err(|_| CairnFfiError::MalformedData)?;
+
+    // Rehydrate each OLD ShareRecord into a typed Share. The value bytes go
+    // straight into a Zeroizing buffer so the only copy Rust keeps is wiped on
+    // drop.
+    let shares: Vec<Share> = shares
+        .into_iter()
+        .map(|share| -> Result<Share, CairnFfiError> {
+            let value: [u8; SECRET_LEN] = share
+                .value
+                .as_slice()
+                .try_into()
+                .map_err(|_| CairnFfiError::MalformedData)?;
+            Share::try_from_parts(share.id, Zeroizing::new(value))
+                .map_err(|_| CairnFfiError::MalformedData)
+        })
+        .collect::<Result<_, _>>()?;
+
+    // The master seed is reconstructed, re-split, used to sign, and zeroized
+    // entirely inside this call; only the public ResplitOutput is returned. The
+    // fresh split draws entropy from the OS CSPRNG.
+    let mut rng = OsRng;
+    let out = reconstruct_resplit_and_attest(
+        &shares,
+        &old_commitment,
+        new_operational,
+        new_threshold,
+        new_num_shares,
+        timestamp,
+        &mut rng,
+    )?;
+
+    let attestation = out.attestation.encode(false).map_err(CairnFfiError::from)?;
+    let new_cards: Vec<String> = out.new_cards.iter().map(encode_card).collect();
+    Ok(ResplitResultRecord {
+        new_cards,
+        attestation,
+        master_pubkey: out.master.to_bytes().to_vec(),
+        new_commitment: out.new_commitment.to_bytes().to_vec(),
+    })
+}
+
 /// Verify a signed master attestation against the expected master
 /// pubkey, returning its public fields (D0027 §2.2) — hop #3.
 ///
@@ -387,7 +512,10 @@ mod tests {
         let salt = vec![7u8; 16];
         let h1 = recovery_phrase_hash(salt.clone(), "open sesame".to_string()).unwrap();
         let h2 = recovery_phrase_hash(salt.clone(), "open sesame".to_string()).unwrap();
-        assert_eq!(h1, h2, "same (salt, phrase) → same hash (set + verify must agree)");
+        assert_eq!(
+            h1, h2,
+            "same (salt, phrase) → same hash (set + verify must agree)"
+        );
         assert_eq!(h1.len(), 32);
 
         // A different phrase under the same salt → different hash.
@@ -432,6 +560,107 @@ mod tests {
             .to_vec();
         records[0].value.truncate(31); // no longer SECRET_LEN
         let err = recovery_reconstruct_and_attest(records, commitment, new_op, 1_700_000_000)
+            .unwrap_err();
+        assert_eq!(err, CairnFfiError::MalformedData);
+    }
+
+    #[test]
+    fn resplit_round_trips_through_ffi() {
+        // The 3c FFI core: 3 OLD cards → re-split into a fresh 3-of-5 + attest.
+        let (records, commitment, master_pubkey) = split_master();
+        let new_op = SigningKey::generate(&mut OsRng)
+            .verifying_key()
+            .to_bytes()
+            .to_vec();
+
+        let out = recovery_resplit_and_attest(
+            records[..3].to_vec(),
+            commitment.clone(),
+            new_op.clone(),
+            3,
+            5,
+            1_700_000_000,
+        )
+        .unwrap();
+
+        // 5 fresh cards; the recovered master + (unchanged) commitment surfaced.
+        assert_eq!(out.new_cards.len(), 5);
+        assert_eq!(out.master_pubkey, master_pubkey);
+        assert_eq!(
+            out.new_commitment, commitment,
+            "commitment is to the unchanged secret"
+        );
+
+        // The attestation verifies against the recovered master + binds the new op.
+        let rec =
+            recovery_verify_master_attestation(out.attestation, master_pubkey.clone()).unwrap();
+        assert_eq!(rec.master, master_pubkey);
+        assert_eq!(rec.operational_identity, new_op);
+
+        // The FRESH cards decode and reconstruct the IDENTICAL master: feed 3 new
+        // cards back through decode + reconstruct_and_attest, and it verifies
+        // against the same master pubkey.
+        let new_shares: Vec<ShareRecord> = out.new_cards[..3]
+            .iter()
+            .map(|c| recovery_decode_card(c.clone()).unwrap().share)
+            .collect();
+        let att2 = recovery_reconstruct_and_attest(
+            new_shares,
+            out.new_commitment.clone(),
+            new_op,
+            1_700_000_001,
+        )
+        .unwrap();
+        let rec2 = recovery_verify_master_attestation(att2, master_pubkey.clone()).unwrap();
+        assert_eq!(
+            rec2.master, master_pubkey,
+            "the fresh card set recovers the identical master"
+        );
+
+        // Freshness witness: the new card texts differ from the old (a new
+        // polynomial was drawn, not the old set echoed back).
+        let old_card_ids: Vec<u8> = records.iter().map(|r| r.id).collect();
+        let new_decoded: Vec<RecoveryCardRecord> = out
+            .new_cards
+            .iter()
+            .map(|c| recovery_decode_card(c.clone()).unwrap())
+            .collect();
+        for nd in &new_decoded {
+            // same ids (1..=5), but a fresh value for each.
+            assert!(old_card_ids.contains(&nd.share.id));
+            let old = records.iter().find(|r| r.id == nd.share.id).unwrap();
+            assert_ne!(
+                nd.share.value, old.value,
+                "each fresh share value must differ from the old"
+            );
+        }
+    }
+
+    #[test]
+    fn resplit_insufficient_old_shares_maps_to_recovery_failed() {
+        // 2 of a 3-of-5 OLD set → reconstruct fails BEFORE any new split →
+        // the user-actionable RecoveryFailed (not an internal split fault).
+        let (records, commitment, _master) = split_master();
+        let new_op = SigningKey::generate(&mut OsRng)
+            .verifying_key()
+            .to_bytes()
+            .to_vec();
+        let err = recovery_resplit_and_attest(records[..2].to_vec(), commitment, new_op, 3, 5, 1)
+            .unwrap_err();
+        assert_eq!(err, CairnFfiError::RecoveryFailed);
+    }
+
+    #[test]
+    fn resplit_bad_new_parameters_maps_to_malformed_data() {
+        // A valid OLD set reconstructs, but new_threshold > new_num_shares is an
+        // invalid split → MalformedData (a caller-supplied-parameter fault),
+        // kept distinct from the user-actionable RecoveryFailed of a bad OLD set.
+        let (records, commitment, _master) = split_master();
+        let new_op = SigningKey::generate(&mut OsRng)
+            .verifying_key()
+            .to_bytes()
+            .to_vec();
+        let err = recovery_resplit_and_attest(records[..3].to_vec(), commitment, new_op, 5, 3, 1)
             .unwrap_err();
         assert_eq!(err, CairnFfiError::MalformedData);
     }

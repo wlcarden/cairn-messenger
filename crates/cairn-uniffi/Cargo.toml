@@ -60,6 +60,13 @@ cairn-recovery = { path = "../cairn-recovery" }
 #     in RecoveryError, not directly. ===
 cairn-shamir = { path = "../cairn-shamir" }
 
+# === CSPRNG (OsRng) for the recovery module's in-app atomic re-split
+#     (D0040 §5 / 3c): recovery_resplit_and_attest threads an OsRng into
+#     cairn-recovery's fresh split. OsRng -> getrandom reads the OS CSPRNG
+#     (/dev/urandom on Android). The OTHER recovery ops (reconstruct/attest)
+#     are RNG-free; only re-split needs entropy. ===
+rand_core = { workspace = true }
+
 # === Memory hygiene (D0018 §1.6): the recovery + storage modules wrap
 #     incoming secret bytes (Shamir shares, the storage passphrase) in
 #     Zeroizing before use so Rust's only copy is wiped on drop. ===
@@ -113,9 +120,9 @@ android_logger = { workspace = true }
 # tokens + signed trust-graph ops) to exercise the verify+marshal path
 # the Kotlin shell will drive — mirroring cairn-trust-graph's own
 # signed-op test fixture. The token/op builders come from cairn-identity
-# + cairn-trust-graph (already normal deps); rand_core (OsRng) mints the
-# ephemeral test keys.
-rand_core = { workspace = true }
+# + cairn-trust-graph (already normal deps). rand_core (OsRng) — used to
+# mint ephemeral test keys — is now a NORMAL dependency (the re-split FFI
+# needs it at runtime), so it is not repeated here.
 # The transparency module's async exports are `#[tokio::test]`-driven
 # (the single tokio runtime the async_runtime="tokio" attribute
 # registers). Same =1.40.0 pin the async I/O crates use.

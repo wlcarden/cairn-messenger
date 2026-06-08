@@ -60,4 +60,16 @@ pub enum RecoveryError {
     /// against key-substitution.
     #[error("master attestation master pubkey does not match expected master pubkey")]
     MasterPubkeyMismatch,
+    /// Re-splitting the reconstructed master into a fresh share set
+    /// failed (D0040 §5 atomic re-split). Deliberately distinct from
+    /// [`Self::ShamirReconstruct`]: a re-split runs two Shamir steps —
+    /// reconstruct the OLD set, then split a NEW one — and the two have
+    /// different remediation. A reconstruct failure is user-actionable
+    /// (insufficient / wrong / tampered old cards → gather more); a split
+    /// failure is an internal parameter or RNG fault. No `#[from]`: the
+    /// `ShamirError` source is shared with `ShamirReconstruct`, so the
+    /// re-split call site maps this variant explicitly to preserve the
+    /// distinction.
+    #[error("master re-split failed: {0}")]
+    ShamirSplit(cairn_shamir::ShamirError),
 }
