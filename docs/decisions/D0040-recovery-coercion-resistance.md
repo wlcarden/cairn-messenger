@@ -275,12 +275,44 @@ pattern + a 2-device on-device proof, mirroring how Stages 1–2 shipped.
   days, peers notice).
 - 3c (atomic re-split) keeps a **failed/interrupted** recovery from leaking the
   master and keeps **old shares** from re-recovering after a legitimate recovery.
-- **Residual (named):** the off-device phrase storage is the weak point at this tier
-  (D0005); a peer who is _both_ compromised _and_ coerced past the phrase + the 48h
-  is outside the model; 3-of-5 peer compromise reaching the master is the
-  acknowledged architectural tradeoff (status doc OUT-OF-SCOPE row). The cooling-off
-  trades **availability** (recovery takes ≥48h) for coercion-resistance — acceptable
-  per D0005; the fresh-identity path is the low-latency alternative.
+
+> **What SHIPPED 3a does NOT do (adversarial-review correction, 2026-06-08).** The
+> shipped slice is 3a **only** (3b cooling-off is deferred). Shipped-3a-alone is
+> exactly the **pre-shared-challenges-only** configuration D0005 considered and
+> **rejected as a _standalone_ defense** — because the phrase releases the share
+> _immediately_ on confirm, so it adds **nothing against a _coerced owner_** who can
+> produce the phrase under live duress. 3a's resistance is scoped to **remote
+> impersonation** of the request; **coercion-resistance proper begins at 3b.** Any
+> reading of "coercion-resistance LANDED" against the shipped state is an overclaim —
+> the status doc and LANDED notes were corrected to say "impersonation".
+
+- **Residual (named):**
+  - **Off-device phrase storage** is the weak point at this tier (D0005) — the owner
+    keeps the phrase in memory/paper; shoulder-surf or coercion yields it.
+  - **Peer-side at-rest + cross-peer reuse.** The peer stores the phrase as a salted
+    **single SHA-256** (not a stretched KDF). It is only safe at-rest under the
+    encrypted, device-bound store AND **independent, high-entropy per-peer phrases**;
+    a _reused_ or low-entropy phrase brute-forced from one exfiltrated peer hash
+    defeats the **live** challenge at the _other_ peers holding the threshold shares.
+    Hardening (Argon2id stretch and/or a generated high-entropy phrase, + per-peer
+    independence) is deferred (task; see the docstring caveat in `RecoveryPeerStore`).
+  - **Online guessing is now bounded** (review remediation): a wrong phrase is
+    retryable for typos but only up to `MAX_PHRASE_ATTEMPTS` per prompt, after which
+    the prompt is dropped and the requester must re-request — restoring D0005's
+    single-use _cost_ per guess. A persisted cross-request lockout + single-use
+    renewal-on-success (D0005 M2) are the stronger, deferred forms.
+  - **First-card gather poisoning** (review): a hostile peer can return a card from a
+    different split; if gathered _before_ any paper card it anchors the collector on
+    the attacker's commitment → denial-of-recovery + a spoofed master name in the UI
+    (no forgery — the Rust BLAKE3 commitment check at reconstruct still rejects a
+    false master). Mitigation (require a paper anchor first / don't anchor on returned
+    cards) is deferred.
+  - A peer who is _both_ compromised _and_ coerced past the phrase + the 48h is
+    outside the model; 3-of-5 peer compromise reaching the master is the acknowledged
+    architectural tradeoff (status doc OUT-OF-SCOPE row).
+- The cooling-off trades **availability** (recovery takes ≥48h) for
+  coercion-resistance — acceptable per D0005; the fresh-identity path is the
+  low-latency alternative.
 
 ## Reversibility
 

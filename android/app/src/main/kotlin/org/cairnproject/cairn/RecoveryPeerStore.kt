@@ -30,11 +30,17 @@ class RecoveryPeerStore(private val storage: StorageHandle) {
     /** A held recovery share: the card we hold + whether a challenge phrase is set. */
     data class Held(val giverKeyHex: String, val card: ByteArray, val hasPhrase: Boolean)
 
-    /** Hold a recovery card [cardText] for [giverKeyHex] (no phrase yet). */
-    fun hold(giverKeyHex: String, cardText: ByteArray) {
+    /**
+     * Hold a recovery card [cardText] for [giverKeyHex] (no phrase yet). Returns
+     * `true` only if the card actually persisted — a swallowed storage failure here
+     * would silently drop a share the giver believes we are holding, so the caller
+     * must not log "now HOLDING" on a `false`.
+     */
+    fun hold(giverKeyHex: String, cardText: ByteArray): Boolean {
         val value = ByteArray(SALT_LEN + HASH_LEN) + cardText // zero salt+hash → "no phrase"
-        runCatching { storage.put(CATEGORY, giverKeyHex.fromHex(), value) }
-            .onFailure { Log.w(TAG, "recovery: hold failed: ${it.message}") }
+        return runCatching { storage.put(CATEGORY, giverKeyHex.fromHex(), value) }
+            .onFailure { Log.e(TAG, "recovery: hold failed (share NOT persisted): ${it.message}") }
+            .isSuccess
     }
 
     /** Set/replace the challenge phrase for the share held for [giverKeyHex] (D0005). */

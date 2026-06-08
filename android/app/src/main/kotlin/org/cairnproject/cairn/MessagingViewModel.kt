@@ -349,6 +349,17 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     private var gatheringFromRecovery = false
 
     /**
+     * Per-requester wrong-phrase attempt counter (D0040 §3, review remediation).
+     * The 3a-ii "retry on mismatch" fix removed the de-facto rate limit (a wrong
+     * guess used to burn the prompt + force a re-request); without a cap that is an
+     * unbounded online guessing oracle against the phrase, contradicting D0005's
+     * single-use intent. We cap at [MAX_PHRASE_ATTEMPTS] per prompt: typos are
+     * absorbed, but on exhaustion the prompt is dropped so the requester must
+     * re-request (re-incurring the Tor round-trip — the restored friction).
+     */
+    private val phraseAttempts = mutableMapOf<String, Int>()
+
+    /**
      * The in-flight reconstruct/attest/adopt coroutine (D0038 §5), tracked so
      * [leaveRecovery] can cancel it — otherwise a late completion would write a
      * `Recovery` state over the contact list the user already navigated to.
@@ -459,6 +470,17 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Leave the terminal error screen (C3) — back to contacts if the session is up. */
     fun dismissFailure() {
+        // A gather pairing that Failed: consume the latch and return to the card
+        // collector, not the contact list (review remediation — keeps recovery alive
+        // and stops a stuck flag from mis-routing the next normal pairing).
+        if (gatheringFromRecovery) {
+            gatheringFromRecovery = false
+            _ui.value = UiState.Recovery(
+                collected = recoveryCards.size,
+                masterName = recoveryMaster?.let { FriendlyName.of(it.toHex()) },
+            )
+            return
+        }
         if (session != null) showContacts() else _ui.value = UiState.Locked(false, null)
     }
 
@@ -519,6 +541,8 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         recoveryCommitment = null
         recoveryMaster = null
         gatheringFromRecovery = false
+        pendingShareRequests.clear()
+        phraseAttempts.clear()
         _ui.value = UiState.Recovery(collected = 0, masterName = null)
     }
 
@@ -616,6 +640,9 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                 recoveryCards.clear()
                 recoveryCommitment = null
                 recoveryMaster = null
+                gatheringFromRecovery = false // recovery done — drop the gather latch
+                pendingShareRequests.clear()
+                phraseAttempts.clear()
                 _ui.value = UiState.Recovery(
                     collected = shares.size,
                     masterName = FriendlyName.of(rec.master.toHex()),
@@ -649,6 +676,8 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         recoveryCommitment = null
         recoveryMaster = null
         gatheringFromRecovery = false
+        pendingShareRequests.clear()
+        phraseAttempts.clear()
         showContacts()
     }
 
@@ -697,9 +726,19 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
      * an active recovery) rather than treated as a new hold.
      */
     fun requestHeldShare() {
-        val s = session ?: return
         val connId = connectionId ?: return
         val peer = peerKeyRaw ?: return
+        requestHeldShareTo(connId, peer)
+    }
+
+    /**
+     * Send a recovery_request to an EXPLICIT [connId]/[peer] (D0038 §7). Taking the
+     * target by parameter — rather than re-reading the shared `connectionId`/
+     * `peerKeyRaw` fields — keeps an interleaving pairing (e.g. an introduction
+     * accepted mid-gather) from clobbering the recipient (review remediation).
+     */
+    private fun requestHeldShareTo(connId: String, peer: ByteArray) {
+        val s = session ?: return
         val peerHex = peer.toHex()
         pendingShareRequests.add(peerHex)
         viewModelScope.launch {
@@ -726,8 +765,18 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
             val cardText = runCatching { String(share) }.getOrNull()
             if (cardText != null && ui.value is UiState.Recovery) addRecoveryCard(cardText)
         } else {
-            recoveryPeers?.hold(giverHex, share)
-            Log.i(TAG, "recovery: now HOLDING a recovery share for ${contact.displayName} (${share.size}B)")
+            // HOLD on behalf of the giver. The store write is blocking SQLite — keep
+            // it off the recv loop's Main dispatcher — and only log success if it
+            // actually persisted (else the giver thinks we hold a share we dropped).
+            val peers = recoveryPeers ?: return
+            viewModelScope.launch {
+                val ok = withContext(Dispatchers.IO) { peers.hold(giverHex, share) }
+                if (ok) {
+                    Log.i(TAG, "recovery: now HOLDING a recovery share for ${contact.displayName} (${share.size}B)")
+                } else {
+                    Log.e(TAG, "recovery: FAILED to persist ${contact.displayName}'s share — NOT holding it")
+                }
+            }
         }
     }
 
@@ -739,16 +788,34 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
     private fun handleIncomingRecoveryRequest(contact: Contact) {
         // 3a: gate on holding ANY share — a fresh-device requester's NEW key won't
         // match a specific held share, so the challenge phrase (verified at the
-        // approval) is the matcher, not the key (D0040 §2).
-        if (recoveryPeers?.hasAnyHeld() != true) {
-            Log.i(TAG, "recovery: ${contact.displayName} requested a share but we hold none — ignored")
-            return
-        }
+        // approval) is the matcher, not the key (D0040 §2). hasAnyHeld() is blocking
+        // SQLite — run it off the recv loop's Main dispatcher.
+        val peers = recoveryPeers ?: return
         val prompt = ShareReturnPrompt(contact.peerKeyHex, contact.displayName, contact.connId)
-        _shareReturnPrompts.update { cur ->
-            if (cur.any { it.requesterKeyHex == prompt.requesterKeyHex }) cur else cur + prompt
+        viewModelScope.launch {
+            if (!withContext(Dispatchers.IO) { peers.hasAnyHeld() }) {
+                Log.i(TAG, "recovery: ${contact.displayName} requested a share but we hold none — ignored")
+                return@launch
+            }
+            phraseAttempts.remove(prompt.requesterKeyHex) // fresh prompt → fresh attempt budget
+            var enqueued = false
+            _shareReturnPrompts.update { cur ->
+                when {
+                    cur.any { it.requesterKeyHex == prompt.requesterKeyHex } -> cur
+                    // Anti-flood: bound the queue like the introduction queue does.
+                    cur.size >= MAX_PENDING_SHARE_RETURNS -> cur
+                    else -> {
+                        enqueued = true
+                        cur + prompt
+                    }
+                }
+            }
+            if (enqueued) {
+                Log.i(TAG, "recovery: ${contact.displayName} asked for a held share — verify their phrase to return it")
+            } else {
+                Log.w(TAG, "recovery: share-return prompt from ${contact.displayName} dropped (already queued or queue full)")
+            }
         }
-        Log.i(TAG, "recovery: ${contact.displayName} asked for a held share — verify their phrase to return it")
     }
 
     /** Set the challenge phrase for the share held for [giverKeyHex] (D0040 §3). */
@@ -773,17 +840,31 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
      * shares — the fresh-device matcher, since the requester's operational key is
      * new (D0040 §2). Returns `true` if the phrase matched a held share (the prompt
      * is then cleared and the share sent); `false` on no match — the prompt is
-     * **kept** so the holder can retry the phrase (a typo must not burn the
-     * exchange and force the requester to re-request). Nothing is sent on no match.
+     * **kept** so the holder can retry a typo, BUT only up to [MAX_PHRASE_ATTEMPTS]
+     * misses, after which the prompt is dropped and the requester must re-request.
+     * That bound restores D0005's single-use intent: a wrong guess again *costs* a
+     * round-trip, so this is not an unbounded online phrase-guessing oracle.
+     * Nothing is sent on no match.
      */
     fun returnShareByPhrase(prompt: ShareReturnPrompt, phrase: String): Boolean {
         val s = session ?: return false
         val held = recoveryPeers?.findByPhrase(phrase)
         if (held == null) {
-            Log.w(TAG, "recovery: phrase did NOT match any held share — not returned to ${prompt.requesterName} (retryable)")
+            val misses = (phraseAttempts[prompt.requesterKeyHex] ?: 0) + 1
+            if (misses >= MAX_PHRASE_ATTEMPTS) {
+                phraseAttempts.remove(prompt.requesterKeyHex)
+                _shareReturnPrompts.update { it.filterNot { p -> p.requesterKeyHex == prompt.requesterKeyHex } }
+                Log.w(TAG, "recovery: $MAX_PHRASE_ATTEMPTS wrong phrase attempts for ${prompt.requesterName} — prompt dropped, they must request again")
+            } else {
+                phraseAttempts[prompt.requesterKeyHex] = misses
+                if (BuildConfig.DEBUG) {
+                    Log.w(TAG, "recovery: phrase did NOT match for ${prompt.requesterName} (attempt $misses/$MAX_PHRASE_ATTEMPTS) — retryable")
+                }
+            }
             return false
         }
-        // Matched: clear the prompt and send the card back.
+        // Matched: clear the attempt counter + prompt and send the card back.
+        phraseAttempts.remove(prompt.requesterKeyHex)
         _shareReturnPrompts.update { it.filterNot { p -> p.requesterKeyHex == prompt.requesterKeyHex } }
         val recipient = runCatching { prompt.requesterKeyHex.fromHex() }.getOrNull() ?: return false
         viewModelScope.launch {
@@ -797,13 +878,14 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Decline returning the held share for [prompt] (D0038 §7). */
     fun declineReturnShare(prompt: ShareReturnPrompt) {
+        phraseAttempts.remove(prompt.requesterKeyHex)
         _shareReturnPrompts.update { it.filterNot { p -> p.requesterKeyHex == prompt.requesterKeyHex } }
         Log.i(TAG, "recovery: declined returning a share to ${prompt.requesterName}")
     }
 
     /** Act on the HEAD share-return prompt — for the adb driver (D0040 §3). */
-    fun approveFirstShareReturn(phrase: String) =
-        _shareReturnPrompts.value.firstOrNull()?.let { returnShareByPhrase(it, phrase) }
+    fun approveFirstShareReturn(phrase: String): Boolean =
+        _shareReturnPrompts.value.firstOrNull()?.let { returnShareByPhrase(it, phrase) } ?: false
 
     fun declineFirstShareReturn() = _shareReturnPrompts.value.firstOrNull()?.let { declineReturnShare(it) }
 
@@ -819,8 +901,11 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
         connectionId = null
         peerKeyRaw = null
         // A pairing started from the recovery gather (3a-ii) returns to the card
-        // collector, not the (empty, locked-out) contact list.
-        if (gatheringFromRecovery && ui.value !is UiState.Recovery) {
+        // collector, not the (empty, locked-out) contact list. Consume the latch so
+        // an abandoned gather can't mis-route a later normal pairing (review remediation).
+        val wasGathering = gatheringFromRecovery
+        gatheringFromRecovery = false
+        if (wasGathering && ui.value !is UiState.Recovery) {
             _ui.value = UiState.Recovery(
                 collected = recoveryCards.size,
                 masterName = recoveryMaster?.let { FriendlyName.of(it.toHex()) },
@@ -1129,7 +1214,10 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
             // card auto-feeds addRecoveryCard (handleIncomingRecoveryShare routes to
             // the collector while we're in Recovery + the request is pending).
             Log.i(TAG, "recovery: paired with peer ${peerHex.take(12)} — requesting our held share back")
-            requestHeldShare()
+            // Single-shot latch: consume it now so a later NORMAL pairing isn't
+            // mis-routed into an unsolicited recovery_request (review remediation).
+            gatheringFromRecovery = false
+            requestHeldShareTo(connId, peer)
             _ui.value = UiState.Recovery(
                 collected = recoveryCards.size,
                 masterName = recoveryMaster?.let { FriendlyName.of(it.toHex()) },
@@ -1927,6 +2015,12 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
          * bound. Generous for honest use; far below an abuse volume.
          */
         const val MAX_PENDING_INTRODUCTIONS = 16
+
+        /** Wrong-phrase guesses tolerated per share-return prompt before it is dropped (D0040 §3). */
+        const val MAX_PHRASE_ATTEMPTS = 5
+
+        /** Cap on queued share-return prompts — anti-flood, mirrors [MAX_PENDING_INTRODUCTIONS] (D0040 §3). */
+        const val MAX_PENDING_SHARE_RETURNS = 8
 
         /**
          * Bound on the minter's wait for the acceptor's first (hello) envelope
