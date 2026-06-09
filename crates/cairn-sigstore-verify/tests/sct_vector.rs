@@ -101,3 +101,25 @@ fn reports_sct_missing_on_a_cert_without_one() {
         "got {result:?}"
     );
 }
+
+#[test]
+fn malformed_inputs_fail_closed_without_panic() {
+    // The SCT path parses an ATTACKER-CONTROLLED cert (the bundle's
+    // `fulcio_cert_der`) with a hand-rolled DER walk, so every malformed
+    // input must return an error, never panic and never spuriously accept.
+    let leaf = leaf_der();
+    let issuer = issuer_der();
+    let ctlog = ctlog_pubkey_der();
+
+    // Garbage / truncated / empty leaf DER.
+    assert!(verify_embedded_sct(b"\xFF\x00not-a-cert", &issuer, &ctlog).is_err());
+    let mut truncated = leaf.clone();
+    truncated.truncate(40);
+    assert!(verify_embedded_sct(&truncated, &issuer, &ctlog).is_err());
+    assert!(verify_embedded_sct(&[], &[], &[]).is_err());
+
+    // A real SCT-bearing leaf, but a garbage CT-log key (not a P-256 SPKI).
+    assert!(verify_embedded_sct(&leaf, &issuer, b"not-a-key").is_err());
+    // Real leaf + real CT key, but a garbage issuer cert (no SPKI to hash).
+    assert!(verify_embedded_sct(&leaf, b"\x00garbage", &ctlog).is_err());
+}
