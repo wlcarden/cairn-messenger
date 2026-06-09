@@ -164,6 +164,9 @@ class MainActivity : FragmentActivity() {
      *   --es resplit "<c1>;<c2>;<c3>"  → atomic re-split from current cards to the open peer (D0040 §5)
      *   --es resplitdeadline "<ms>"    → shorten the re-split ACK deadline (debug, D0040 §5)
      *   --es resplitabort "1"          → force the non-leaking re-split abort path (D0040 §5)
+     *   --es vrbundle "<b64>" --es vrroots "<b64>" → verify a cairn-release bundle
+     *                                  on-device (base64 of the .cbor + roots.json; D0041)
+     *   --es vrprior "<hex>"           → (with vrbundle) expected predecessor manifest hash
      *   --es quickenroll "<pass>"     → enroll quick unlock (shows the BiometricPrompt)
      *   --es quickunlock "1"          → quick-unlock prompt (decrypt → unlock)
      *   --es quickdisable "1"         → delete the wrapped passphrase + Keystore key
@@ -330,6 +333,25 @@ class MainActivity : FragmentActivity() {
         intent.getStringExtra("resplitabort")?.let {
             Log.i(TAG, "driver: abortResplitNow")
             viewModel.abortResplitNow()
+        }
+        // Release-verification (D0041 / R4): verify a cairn-release bundle
+        // on-device through the FFI. Inputs cross as base64 extras (not files):
+        // `vrbundle` = base64(release-bundle.cbor), `vrroots` = base64(release-
+        // roots.json). `vrprior`, if present, is the expected predecessor manifest
+        // hash (the rollback-resistance check).
+        intent.getStringExtra("vrbundle")?.let { bundleB64 ->
+            val rootsB64 = intent.getStringExtra("vrroots")
+            if (rootsB64 == null) {
+                Log.w(TAG, "driver: verifyReleaseBundle missing --es vrroots")
+            } else {
+                val prior = intent.getStringExtra("vrprior")
+                Log.i(
+                    TAG,
+                    "driver: verifyReleaseBundle bundleB64=${bundleB64.length} " +
+                        "rootsB64=${rootsB64.length} prior=${prior?.take(12) ?: "none"}",
+                )
+                viewModel.verifyReleaseBundle(bundleB64, rootsB64, prior)
+            }
         }
         intent.getStringExtra("simkeymismatch")?.let {
             Log.i(TAG, "driver: simulateKeyMismatch")

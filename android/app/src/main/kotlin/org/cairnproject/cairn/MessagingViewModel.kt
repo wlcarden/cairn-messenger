@@ -4,6 +4,7 @@
 package org.cairnproject.cairn
 
 import android.app.Application
+import android.util.Base64
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -22,9 +23,12 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONObject
 import uniffi.cairn_uniffi.CairnFfiException
 import uniffi.cairn_uniffi.IntroductionKindFfi
 import uniffi.cairn_uniffi.IntroductionMessageRecord
+import uniffi.cairn_uniffi.ReleaseRootsRecord
+import uniffi.cairn_uniffi.ReleaseVerifierHandle
 import uniffi.cairn_uniffi.ShareRecord
 import uniffi.cairn_uniffi.StrengthFfi
 import uniffi.cairn_uniffi.decodeIntroductionMessage
@@ -844,6 +848,59 @@ class MessagingViewModel(app: Application) : AndroidViewModel(app) {
                     Log.e(TAG, "requestHeldShare failed: ${it.message}")
                     pendingShareRequests.remove(peerHex)
                 }
+        }
+    }
+
+    /**
+     * Release-verification driver (D0041 / R4): replay the full on-device
+     * `verify_release` over a producer-emitted release bundle against its pinned
+     * roots, through the FFI [ReleaseVerifierHandle] (Fulcio + OIDC + manifest
+     * COSE + Rekor + rollback + Sigsum). The verifier composes over this
+     * session's unlocked storage; on success it logs the decoded manifest, on
+     * failure the facade error tag — no proof bytes cross.
+     *
+     * Inputs cross as intent extras, NOT files — matching the rest of the driver
+     * surface (cards/invites/resplit blobs) and sidestepping the platform's
+     * app-sandbox file-injection restrictions. [bundleB64] is base64 of
+     * `release-bundle.cbor`; [rootsB64] is base64 of `release-roots.json` text;
+     * [expectedPriorHex], if non-blank, is the predecessor manifest's 64-hex
+     * SHA-256 (the rollback-resistance check), blank/null skips it (genesis).
+     * DEBUG-only (the whole driver surface is gated to debug builds).
+     */
+    fun verifyReleaseBundle(bundleB64: String, rootsB64: String, expectedPriorHex: String?) {
+        val s = session ?: run {
+            Log.w(TAG, "verifyrelease: no unlocked session — unlock first")
+            return
+        }
+        viewModelScope.launch {
+            runCatching {
+                val bundle = Base64.decode(bundleB64.trim(), Base64.DEFAULT)
+                val json = JSONObject(String(Base64.decode(rootsB64.trim(), Base64.DEFAULT)))
+                val roots = ReleaseRootsRecord(
+                    fulcioRootPem = json.getString("fulcio_root_pem"),
+                    rekorPubkeyPem = json.getString("rekor_pubkey_pem"),
+                    oidcIssuer = json.getString("oidc_issuer"),
+                    oidcEmail = json.getString("oidc_email"),
+                    sigsumLogPubkey = json.getString("sigsum_log_pubkey_hex").fromHex(),
+                    witnessesToml = json.getString("witnesses_toml"),
+                )
+                val expectedPrior = expectedPriorHex?.trim()?.takeIf { it.isNotEmpty() }?.fromHex()
+                val verifier = ReleaseVerifierHandle(s.storage, roots)
+                val verified = withContext(Dispatchers.IO) { verifier.verify(bundle, expectedPrior) }
+                verified to (expectedPrior != null)
+            }.onSuccess { (verified, rollbackChecked) ->
+                Log.i(
+                    TAG,
+                    "verifyrelease: OK version=${verified.version} " +
+                        "artifacts=${verified.artifacts.size} ts=${verified.releaseTimestamp} " +
+                        "rollback=${if (rollbackChecked) "checked" else "skipped"}",
+                )
+                verified.artifacts.forEach {
+                    Log.i(TAG, "verifyrelease:   ${it.name} sha256=${it.sha256.toHex()}")
+                }
+            }.onFailure { e ->
+                Log.w(TAG, "verifyrelease: FAILED ${e::class.simpleName}: ${e.message}")
+            }
         }
     }
 
