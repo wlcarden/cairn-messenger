@@ -48,7 +48,7 @@ use anyhow::{Context, Result};
 use base64::Engine as _;
 use cairn_crypto::ed25519::SigningKey;
 use cairn_sigstore_verify::{
-    ArtifactHash, RekorBundle, ReleaseBundle, ReleaseManifest, SHA256_LEN,
+    ArtifactHash, RekorBundle, ReleaseBundle, ReleaseManifest, SHA256_LEN, hashedrekord_leaf_hash,
 };
 use cairn_sigsum_client::witness::{
     build_cosignature_signed_message, build_tree_head_note, witness_key_hash,
@@ -180,8 +180,17 @@ pub fn produce(
     // `cosign verify-blob` the same (manifest, signature) pair.
     let manifest_signature = sign_manifest_detached(&dev_sk, &manifest_cbor);
 
-    // (4) Rekor inclusion proof + signed checkpoint over the signing event.
-    let (rekor_bundle, rekor_pubkey_pem) = mint_rekor_bundle(&manifest_signature)?;
+    // (4) Rekor inclusion proof + signed checkpoint over the signing
+    // event. The leaf is the hashedrekord commitment to (artifact hash,
+    // detached signature, Fulcio cert) so the verifier's §6.6 entry-type
+    // binding accepts it (artifact hash = SHA-256 of the signed blob,
+    // which is `manifest_cbor`).
+    let manifest_artifact_hash = sha256(&manifest_cbor);
+    let (rekor_bundle, rekor_pubkey_pem) = mint_rekor_bundle(
+        &manifest_artifact_hash,
+        &manifest_signature,
+        &fulcio_cert_der,
+    )?;
 
     // (6) Sigsum tree leaf bound to the release-leaf hash
     // (`SHA-256(detached_signature)`; D0042 §3) + a witness-cosigned head
@@ -435,17 +444,23 @@ fn b64(bytes: &[u8]) -> String {
 }
 
 /// A valid synthetic Rekor bundle: a 5-leaf tree with the signing-event
-/// leaf at index 2 (the RFC 6962 leaf hash of the detached signature — a
-/// real `hashedrekord` commits to the signing event, D0042 §3), a C2SP
-/// checkpoint signed by a fresh P-256 key. Returns the bundle + the
-/// pinned Rekor pubkey PEM.
-fn mint_rekor_bundle(signing_event: &[u8]) -> Result<(RekorBundle, String)> {
+/// leaf at index 2 — the real `hashedrekord` leaf hash committing to the
+/// artifact hash + detached signature + Fulcio cert (D0042 §6.6), so the
+/// verifier's entry-type binding accepts it — plus a C2SP checkpoint
+/// signed by a fresh P-256 key. Returns the bundle + the pinned Rekor
+/// pubkey PEM.
+fn mint_rekor_bundle(
+    artifact_sha256: &[u8; 32],
+    signature_der: &[u8],
+    cert_der: &[u8],
+) -> Result<(RekorBundle, String)> {
     let sk = P256SigningKey::random(&mut OsRng);
     let mut leaves: Vec<[u8; 32]> = (0..5)
         .map(|i| rfc6962_leaf(format!("cairn-rekor-pad-{i}").as_bytes()))
         .collect();
-    // The index-2 leaf is the real signing-event entry.
-    leaves[2] = rfc6962_leaf(signing_event);
+    // The index-2 leaf is the real signing-event entry: the hashedrekord
+    // leaf the verifier reconstructs from the manifest + signature + cert.
+    leaves[2] = hashedrekord_leaf_hash(artifact_sha256, signature_der, cert_der);
     let root = mth(&leaves);
     let proof = audit_path(2, &leaves);
     let note = format!("rekor.cairn.invalid/self-minted\n5\n{}\n", b64(&root));

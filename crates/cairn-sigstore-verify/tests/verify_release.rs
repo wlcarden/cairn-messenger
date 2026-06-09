@@ -38,7 +38,7 @@ use base64::Engine as _;
 use cairn_crypto::ed25519::SigningKey;
 use cairn_sigstore_verify::{
     ArtifactHash, RekorBundle, ReleaseBundle, ReleaseManifest, SigstoreVerifier,
-    SigstoreVerifierConfig, SigstoreVerifyError,
+    SigstoreVerifierConfig, SigstoreVerifyError, hashedrekord_leaf_hash,
 };
 use cairn_sigsum_client::witness::{
     build_cosignature_signed_message, build_tree_head_note, witness_key_hash,
@@ -134,13 +134,20 @@ fn b64(bytes: &[u8]) -> String {
 }
 
 /// A valid Rekor bundle (5-leaf tree, target index 2) with a C2SP
-/// checkpoint signed by a fresh P-256 key. Returns the bundle + the
-/// pinned Rekor pubkey PEM.
-fn make_rekor_bundle() -> (RekorBundle, Vec<u8>) {
+/// checkpoint signed by a fresh P-256 key. The index-2 leaf is the real
+/// `hashedrekord` leaf binding the signing event (artifact hash + detached
+/// signature + Fulcio cert; D0042 §6.6) so the verifier's entry-type bind
+/// accepts it. Returns the bundle + the pinned Rekor pubkey PEM.
+fn make_rekor_bundle(
+    artifact_sha256: &[u8; 32],
+    signature_der: &[u8],
+    cert_der: &[u8],
+) -> (RekorBundle, Vec<u8>) {
     let sk = P256SigningKey::random(&mut OsRng);
-    let leaves: Vec<[u8; 32]> = (0..5)
+    let mut leaves: Vec<[u8; 32]> = (0..5)
         .map(|i| leaf_hash(format!("rekor-leaf-{i}").as_bytes()))
         .collect();
+    leaves[2] = hashedrekord_leaf_hash(artifact_sha256, signature_der, cert_der);
     let root = mth(&leaves);
     let proof = audit_path(2, &leaves);
     let note = format!("rekor.example/test\n5\n{}\n", b64(&root));
@@ -388,7 +395,9 @@ fn valid_fixture() -> Fixture {
     let leaf_der = make_leaf(&root, &root_key, &dev_kp, ISSUER, EMAIL);
     let (manifest_bytes, manifest_signature) =
         detached_signed_manifest(&dev_sk, PRIOR_HASH.to_vec());
-    let (rekor_bundle, rekor_pem) = make_rekor_bundle();
+    let artifact_sha256: [u8; 32] = Sha256::digest(&manifest_bytes).into();
+    let (rekor_bundle, rekor_pem) =
+        make_rekor_bundle(&artifact_sha256, &manifest_signature, &leaf_der);
 
     // Sigsum proof bound to THIS release's leaf hash (the shared
     // SHA-256-of-signature-bytes primitive over the detached signature,
@@ -468,7 +477,9 @@ async fn rejects_manifest_signed_by_wrong_key() {
     let imposter_sk = P256SigningKey::random(&mut OsRng);
     let (manifest_bytes, manifest_signature) =
         detached_signed_manifest(&imposter_sk, PRIOR_HASH.to_vec());
-    let (rekor_bundle, rekor_pem) = make_rekor_bundle();
+    let artifact_sha256: [u8; 32] = Sha256::digest(&manifest_bytes).into();
+    let (rekor_bundle, rekor_pem) =
+        make_rekor_bundle(&artifact_sha256, &manifest_signature, &leaf_der);
     let sigsum_log = make_sigsum_log();
     let bundle = ReleaseBundle {
         manifest_bytes,
@@ -523,6 +534,29 @@ async fn rejects_tampered_rekor_inclusion_proof() {
     let err = verifier.verify_release(&fx.bundle, None).await.unwrap_err();
     assert!(
         matches!(err, SigstoreVerifyError::RekorInclusionProofVerifyFailed),
+        "got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn rejects_rekor_entry_for_a_different_signing_event() {
+    // The "bundle someone else's real proof" attack (D0042 §6.6): swap in a
+    // FULLY VALID Rekor inclusion proof + checkpoint for an UNRELATED
+    // hashedrekord leaf (a different artifact hash). The inclusion proof
+    // (step 4) verifies, but the entry-type binding (step 4b) reconstructs
+    // THIS manifest's leaf and finds it does not match -> rejected.
+    let mut fx = valid_fixture();
+    let unrelated_artifact = [0x77u8; 32];
+    let (other_rekor, other_pem) = make_rekor_bundle(
+        &unrelated_artifact,
+        &fx.bundle.manifest_signature,
+        &fx.bundle.fulcio_cert_der,
+    );
+    fx.bundle.rekor_bundle = other_rekor;
+    let verifier = make_verifier(fx.fulcio_root_pem, other_pem, ISSUER, &fx.sigsum_log);
+    let err = verifier.verify_release(&fx.bundle, None).await.unwrap_err();
+    assert!(
+        matches!(err, SigstoreVerifyError::RekorEntryBindingFailed),
         "got {err:?}"
     );
 }

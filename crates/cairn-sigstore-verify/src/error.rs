@@ -90,6 +90,14 @@ pub enum SigstoreVerifyError {
     #[error("sigstore-verify: rekor signed checkpoint did not verify against the pinned key")]
     RekorCheckpointVerifyFailed,
 
+    /// The Rekor entry proven included is not THIS signing event: the
+    /// `hashedrekord` leaf hash reconstructed from the manifest's artifact
+    /// hash + the detached signature + the Fulcio cert does not equal the
+    /// bundle's proven-included leaf hash (D0042 §6.6). Without this bind, a
+    /// valid inclusion proof for an unrelated logged entry would pass.
+    #[error("sigstore-verify: rekor entry is not bound to this manifest + signature + cert")]
+    RekorEntryBindingFailed,
+
     /// A Rekor log-entry HTTP response (online mode per D0024 §6.4)
     /// could not be parsed into a `RekorBundle`: malformed JSON,
     /// missing inclusion-proof fields, bad hex/base64, or a malformed

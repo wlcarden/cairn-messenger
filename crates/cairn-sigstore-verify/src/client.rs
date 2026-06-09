@@ -19,7 +19,11 @@
 //!    D0042 §3).
 //! 4. Verify the Rekor inclusion proof + signed checkpoint
 //!    ([`crate::rekor::verify_rekor_inclusion`]) against the pinned
-//!    Rekor key (D0024 §3).
+//!    Rekor key (D0024 §3), then **bind** the proven-included entry to
+//!    this signing event: the reconstructed `hashedrekord` leaf hash
+//!    ([`crate::rekor::hashedrekord_leaf_hash`] over the manifest's
+//!    artifact hash + detached signature + Fulcio cert) must equal the
+//!    bundle's leaf (D0042 §6.6).
 //! 5. Enforce `prior_release_hash` rollback resistance (D0024 §4.2).
 //! 6. Verify the witness-cosigned Sigsum-anchored release-log inclusion
 //!    (D0024 §5) offline via
@@ -47,6 +51,7 @@ use cairn_envelope::canonical::Value;
 use cairn_sigsum_client::{EmittedLeaf, RetryBudget, SigsumClient};
 use p256::ecdsa::Signature;
 use p256::ecdsa::signature::Verifier as _;
+use sha2::{Digest, Sha256};
 // `Url` is used only by the online `fetch_*` path (gated below).
 #[cfg(feature = "online-rekor")]
 use url::Url;
@@ -56,7 +61,7 @@ use crate::decode::{decode_canonical_map, int_to_u64, into_bytes, into_text};
 use crate::error::SigstoreVerifyError;
 use crate::fulcio::validate_cert_chain;
 use crate::manifest::ReleaseManifest;
-use crate::rekor::{RekorBundle, verify_rekor_inclusion};
+use crate::rekor::{RekorBundle, hashedrekord_leaf_hash, verify_rekor_inclusion};
 // `RekorCheckpoint` + `parse_rekor_log_entry` are used only by the
 // online `fetch_*` path (gated below); importing them unconditionally
 // would be an unused import in the default offline build.
@@ -395,7 +400,9 @@ impl SigstoreVerifier {
     ///    `manifest_bytes` against that key (the cosign sign-blob model;
     ///    D0042 §3 — third parties can `cosign verify-blob` the same pair).
     /// 4. Verify the Rekor inclusion proof + signed checkpoint
-    ///    ([`verify_rekor_inclusion`]) against the pinned Rekor key.
+    ///    ([`verify_rekor_inclusion`]) against the pinned Rekor key, then
+    ///    bind the proven-included entry to this signing event via
+    ///    [`hashedrekord_leaf_hash`] (D0042 §6.6).
     /// 5. Enforce rollback resistance: the manifest's
     ///    `prior_release_hash` must equal `expected_predecessor_hash`
     ///    when supplied (D0024 §4.2).
@@ -420,7 +427,8 @@ impl SigstoreVerifier {
     /// [`SigstoreVerifyError::OidcEmailMismatch`],
     /// [`SigstoreVerifyError::ManifestSignatureVerifyFailed`],
     /// [`SigstoreVerifyError::RekorInclusionProofVerifyFailed`] /
-    /// [`SigstoreVerifyError::RekorCheckpointVerifyFailed`],
+    /// [`SigstoreVerifyError::RekorCheckpointVerifyFailed`] /
+    /// [`SigstoreVerifyError::RekorEntryBindingFailed`],
     /// [`SigstoreVerifyError::ManifestPriorHashMismatch`],
     /// [`SigstoreVerifyError::SigsumReleaseLog`] (the wrapped Sigsum
     /// failure pinpoints the cause).
@@ -460,6 +468,23 @@ impl SigstoreVerifier {
         // (4) Rekor inclusion proof + signed checkpoint (offline, against
         // the pinned Rekor key).
         verify_rekor_inclusion(&bundle.rekor_bundle, &self.rekor_pubkey_pem)?;
+
+        // (4b) Entry-type binding (D0042 §6.6): the inclusion proof above
+        // only proves "an entry with this leaf hash is in Rekor". Bind it to
+        // THIS signing event by reconstructing the `hashedrekord` leaf hash
+        // from the manifest's artifact hash + the detached signature + the
+        // Fulcio cert (the cosign sign-blob entry commits to all three), and
+        // requiring it to equal the proven-included leaf. Without this, a
+        // valid inclusion proof for an unrelated logged entry would pass.
+        let artifact_sha256: [u8; 32] = Sha256::digest(&bundle.manifest_bytes).into();
+        let expected_rekor_leaf = hashedrekord_leaf_hash(
+            &artifact_sha256,
+            &bundle.manifest_signature,
+            &bundle.fulcio_cert_der,
+        );
+        if expected_rekor_leaf != bundle.rekor_bundle.leaf_hash {
+            return Err(SigstoreVerifyError::RekorEntryBindingFailed);
+        }
 
         // (5) Rollback resistance (D0024 §4.2).
         if let Some(expected) = expected_predecessor_hash

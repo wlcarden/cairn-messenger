@@ -359,6 +359,96 @@ fn rfc6962_leaf_hash(leaf_data: &[u8]) -> [u8; 32] {
     arr
 }
 
+/// Lowercase-hex encode.
+fn hex_lower(bytes: &[u8]) -> String {
+    use core::fmt::Write as _;
+    let mut s = String::with_capacity(bytes.len().saturating_mul(2));
+    for b in bytes {
+        // write! to a String is infallible (the std::fmt contract); the
+        // result is discarded rather than `unwrap`ed.
+        let _ = write!(&mut s, "{b:02x}");
+    }
+    s
+}
+
+/// PEM-encode a certificate's DER exactly as Go's `pem.Encode` (and thus
+/// `cosign`) does: `-----BEGIN CERTIFICATE-----\n` + standard-padded
+/// base64 wrapped at 64 columns (LF after every line) +
+/// `-----END CERTIFICATE-----\n`. The Rekor `hashedrekord`
+/// `publicKey.content` is the base64 of exactly this PEM, so reproducing
+/// it byte-for-byte is what lets the verifier rebind the entry to the cert
+/// (D0042 §6.6).
+fn pem_encode_cert(der: &[u8]) -> String {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(der);
+    let mut out = String::from("-----BEGIN CERTIFICATE-----\n");
+    for chunk in b64.as_bytes().chunks(64) {
+        // base64 output is ASCII, so each chunk is valid UTF-8.
+        if let Ok(line) = core::str::from_utf8(chunk) {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out.push_str("-----END CERTIFICATE-----\n");
+    out
+}
+
+/// Build the canonical Rekor `hashedrekord` v0.0.1 entry body (D0042 §6.6).
+///
+/// For a `cosign sign-blob`-style signing event: the artifact SHA-256
+/// (lowercase hex), the detached signature (base64 DER), and the signing
+/// certificate (base64 of its PEM).
+///
+/// The bytes are sorted-key compact JSON — Rekor's canonicalization. We
+/// build it with `serde_json` (its `Map` is `BTreeMap`-sorted and `to_vec`
+/// is space-free; the keys are written alphabetically so the order is
+/// stable regardless of the `preserve_order` feature). Byte-exactness is
+/// proven against a real captured Rekor entry in
+/// `tests/rekor_gha_binding.rs`.
+#[must_use]
+pub fn build_hashedrekord_body(
+    artifact_sha256: &[u8; 32],
+    signature_der: &[u8],
+    cert_der: &[u8],
+) -> Vec<u8> {
+    let body = serde_json::json!({
+        "apiVersion": "0.0.1",
+        "kind": "hashedrekord",
+        "spec": {
+            "data": { "hash": { "algorithm": "sha256", "value": hex_lower(artifact_sha256) } },
+            "signature": {
+                "content": base64::engine::general_purpose::STANDARD.encode(signature_der),
+                "publicKey": {
+                    "content": base64::engine::general_purpose::STANDARD
+                        .encode(pem_encode_cert(cert_der).as_bytes())
+                }
+            }
+        }
+    });
+    // `to_vec` over a `Value` built from literals is infallible; an empty
+    // fallback would only yield a non-matching leaf hash (fails closed).
+    serde_json::to_vec(&body).unwrap_or_default()
+}
+
+/// The Rekor Merkle **leaf hash** for a `hashedrekord` signing event:
+/// `SHA-256(0x00 || canonical_body)` (D0042 §6.6).
+///
+/// The verifier reconstructs this from the manifest's artifact hash + the
+/// detached signature + the Fulcio cert and checks it equals the leaf hash
+/// the inclusion proof proves is logged — binding the Rekor entry to
+/// **this** signing event, not merely "an entry is included".
+#[must_use]
+pub fn hashedrekord_leaf_hash(
+    artifact_sha256: &[u8; 32],
+    signature_der: &[u8],
+    cert_der: &[u8],
+) -> [u8; 32] {
+    rfc6962_leaf_hash(&build_hashedrekord_body(
+        artifact_sha256,
+        signature_der,
+        cert_der,
+    ))
+}
+
 // === Online mode: parse a Rekor v1 `GET /api/v1/log/entries/{uuid}`
 // response into a `RekorBundle` (D0024 §6.4). ===
 

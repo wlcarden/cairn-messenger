@@ -108,5 +108,8 @@ pub use compose::release_leaf_hash_for_signature;
 pub use error::SigstoreVerifyError;
 pub use fulcio::{ExpectedIdentity, validate_cert_chain, validate_cert_chain_with_identity};
 pub use manifest::{ArtifactHash, ReleaseManifest, SHA256_LEN};
-pub use rekor::{RekorBundle, RekorCheckpoint, parse_rekor_log_entry, verify_rekor_inclusion};
+pub use rekor::{
+    RekorBundle, RekorCheckpoint, build_hashedrekord_body, hashedrekord_leaf_hash,
+    parse_rekor_log_entry, verify_rekor_inclusion,
+};
 pub use sct::verify_embedded_sct;

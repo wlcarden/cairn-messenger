@@ -246,10 +246,20 @@ follow-ons.
    SCT-less cert all reject. **Wiring into the mandatory verify path** (so
    every Fulcio validation checks the SCT) lands with §5 — the CT-log key
    becomes a pinned config input then; today it is a standalone capability.
-6. **Rekor entry-type binding.** Confirm the verifier binds the Rekor
-   `hashedrekord` entry to **this** manifest + cert (not merely "an entry
-   is included") — the cosign `sign-blob` entry commits to the artifact
-   hash + the signature + the cert.
+6. **Rekor entry-type binding — ✓ LANDED (2026-06-09).** Confirmed the
+   gap: the verifier proved Rekor _inclusion_ of a producer-supplied leaf
+   hash but never bound it to the signing event, so a valid inclusion proof
+   for an unrelated logged entry would pass. Closed it: `verify_release`
+   step 4 now reconstructs the `hashedrekord` leaf hash from the manifest's
+   artifact hash + the detached signature + the Fulcio cert
+   (`rekor::hashedrekord_leaf_hash` / `build_hashedrekord_body`) and
+   requires it to equal the proven-included leaf (new error
+   `RekorEntryBindingFailed`). The canonical-body reconstruction (sorted-key
+   JSON + cosign-exact PEM re-encode + base64) is validated **byte-exact**
+   against a real captured production entry (`tests/rekor_gha_binding.rs`,
+   no new dependency — `serde_json` was already pinned), and
+   `tests/verify_release.rs` proves a valid proof for a _different_ signing
+   event is rejected. The `cairn-release` producer emits the bound leaf.
 
 ## 7. Proof targets
 
