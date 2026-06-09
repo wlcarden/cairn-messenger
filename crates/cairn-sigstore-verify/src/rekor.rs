@@ -55,9 +55,10 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use cairn_envelope::canonical::Value;
-use ciborium::Value as CiboriumValue;
 
-use crate::decode::{array_of_array_32, bytes_to_array_32, int_to_u64, into_bytes, key_to_i64};
+use crate::decode::{
+    array_of_array_32, bytes_to_array_32, decode_canonical_map, int_to_u64, into_bytes,
+};
 use crate::error::SigstoreVerifyError;
 
 /// Bundled Rekor inclusion proof + signed checkpoint per D0024 §3.
@@ -148,18 +149,15 @@ impl RekorBundle {
     /// schema structural error (wrong top-level type, non-integer key,
     /// wrong field type, or wrong-length fixed-width field).
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, SigstoreVerifyError> {
-        let parsed: CiboriumValue = ciborium::de::from_reader(bytes)
-            .map_err(|_| SigstoreVerifyError::ReleaseBundleDecodeFailed)?;
-        let CiboriumValue::Map(entries) = parsed else {
-            return Err(SigstoreVerifyError::ReleaseBundleDecodeFailed);
-        };
+        let entries =
+            decode_canonical_map(bytes).ok_or(SigstoreVerifyError::ReleaseBundleDecodeFailed)?;
         let mut leaf_hash: Option<[u8; 32]> = None;
         let mut leaf_index: Option<u64> = None;
         let mut proof_nodes: Option<Vec<[u8; 32]>> = None;
         let mut checkpoint_note: Option<Vec<u8>> = None;
         let mut checkpoint_signature: Option<Vec<u8>> = None;
         for (key, value) in entries {
-            match key_to_i64(&key)? {
+            match key {
                 KEY_REKOR_LEAF_HASH => leaf_hash = Some(bytes_to_array_32(value)?),
                 KEY_REKOR_LEAF_INDEX => leaf_index = Some(int_to_u64(&value)?),
                 KEY_REKOR_PROOF_NODES => proof_nodes = Some(array_of_array_32(value)?),
@@ -749,6 +747,48 @@ mod tests {
                 b"-----BEGIN PUBLIC KEY-----\nnope\n-----END PUBLIC KEY-----"
             ),
             Err(SigstoreVerifyError::RekorCheckpointVerifyFailed)
+        ));
+    }
+
+    /// Re-encode `valid` canonical-CBOR map bytes with the first `(key,
+    /// value)` entry duplicated, to exercise the duplicate-key strictness
+    /// gate (D0041 §6.3) without hand-assembling CBOR.
+    fn duplicate_first_map_key(valid: &[u8]) -> Vec<u8> {
+        let value: ciborium::Value = ciborium::de::from_reader(valid).unwrap();
+        let ciborium::Value::Map(mut entries) = value else {
+            panic!("expected a top-level CBOR map");
+        };
+        let first = entries[0].clone();
+        entries.push(first);
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&ciborium::Value::Map(entries), &mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn rekor_bundle_rejects_trailing_bytes() {
+        // The canonical wire form is exactly one CBOR item; a trailing byte
+        // is a malleability vector the strict decoder must reject (D0041 §6.3).
+        let sk = SigningKey::random(&mut OsRng);
+        let (bundle, _pem) = make_valid_bundle(&sk, 5, 2);
+        let mut bytes = bundle.to_canonical_cbor().unwrap();
+        bytes.push(0x00);
+        assert!(matches!(
+            RekorBundle::from_canonical_cbor(&bytes),
+            Err(SigstoreVerifyError::ReleaseBundleDecodeFailed)
+        ));
+    }
+
+    #[test]
+    fn rekor_bundle_rejects_duplicate_key() {
+        // Duplicate integer keys are non-canonical (D0018 §2.3) and a
+        // parser-differential footgun; the strict decoder must reject them.
+        let sk = SigningKey::random(&mut OsRng);
+        let (bundle, _pem) = make_valid_bundle(&sk, 5, 2);
+        let dup = duplicate_first_map_key(&bundle.to_canonical_cbor().unwrap());
+        assert!(matches!(
+            RekorBundle::from_canonical_cbor(&dup),
+            Err(SigstoreVerifyError::ReleaseBundleDecodeFailed)
         ));
     }
 }

@@ -41,11 +41,10 @@
 use cairn_envelope::canonical::Value;
 use cairn_envelope::cose_sign1::CoseSign1;
 use cairn_sigsum_client::{EmittedLeaf, RetryBudget, SigsumClient};
-use ciborium::Value as CiboriumValue;
 use url::Url;
 
 use crate::compose::release_leaf_hash_for_envelope_bytes;
-use crate::decode::{int_to_u64, into_bytes, into_text, key_to_i64};
+use crate::decode::{decode_canonical_map, int_to_u64, into_bytes, into_text};
 use crate::error::SigstoreVerifyError;
 use crate::fulcio::validate_cert_chain;
 use crate::manifest::{RELEASE_MANIFEST_AAD, ReleaseManifest};
@@ -204,11 +203,8 @@ impl ReleaseBundle {
     /// schema structural error, including a malformed nested
     /// `RekorBundle` / Sigsum `EmittedLeaf`.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, SigstoreVerifyError> {
-        let parsed: CiboriumValue = ciborium::de::from_reader(bytes)
-            .map_err(|_| SigstoreVerifyError::ReleaseBundleDecodeFailed)?;
-        let CiboriumValue::Map(entries) = parsed else {
-            return Err(SigstoreVerifyError::ReleaseBundleDecodeFailed);
-        };
+        let entries =
+            decode_canonical_map(bytes).ok_or(SigstoreVerifyError::ReleaseBundleDecodeFailed)?;
         let mut manifest_envelope_bytes: Option<Vec<u8>> = None;
         let mut fulcio_cert_der: Option<Vec<u8>> = None;
         let mut rekor_bundle: Option<RekorBundle> = None;
@@ -217,7 +213,7 @@ impl ReleaseBundle {
         let mut sigsum_tree_head_body: Option<String> = None;
         let mut sigsum_inclusion_proof_body: Option<String> = None;
         for (key, value) in entries {
-            match key_to_i64(&key)? {
+            match key {
                 KEY_BUNDLE_MANIFEST_ENVELOPE => manifest_envelope_bytes = Some(into_bytes(value)?),
                 KEY_BUNDLE_FULCIO_CERT_DER => fulcio_cert_der = Some(into_bytes(value)?),
                 KEY_BUNDLE_REKOR => {
@@ -740,5 +736,45 @@ mod tests {
             recovered.checkpoint_signature,
             original.checkpoint_signature
         );
+    }
+
+    /// Re-encode `valid` canonical-CBOR map bytes with the first `(key,
+    /// value)` entry duplicated, so the first integer key appears twice.
+    /// Exercises the duplicate-key strictness gate (D0041 §6.3) without
+    /// hand-assembling CBOR.
+    fn duplicate_first_map_key(valid: &[u8]) -> Vec<u8> {
+        let value: ciborium::Value = ciborium::de::from_reader(valid).unwrap();
+        let ciborium::Value::Map(mut entries) = value else {
+            panic!("expected a top-level CBOR map");
+        };
+        let first = entries[0].clone();
+        entries.push(first);
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&ciborium::Value::Map(entries), &mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn release_bundle_rejects_trailing_bytes() {
+        // The canonical wire form is exactly one CBOR item; a trailing byte
+        // is a malleability vector the strict decoder must reject (D0041 §6.3).
+        let mut bytes = make_release_bundle().to_canonical_cbor().unwrap();
+        bytes.push(0x00);
+        assert!(matches!(
+            ReleaseBundle::from_canonical_cbor(&bytes),
+            Err(SigstoreVerifyError::ReleaseBundleDecodeFailed)
+        ));
+    }
+
+    #[test]
+    fn release_bundle_rejects_duplicate_key() {
+        // Duplicate integer keys are non-canonical (D0018 §2.3) and a
+        // parser-differential footgun; the strict decoder must reject them.
+        let valid = make_release_bundle().to_canonical_cbor().unwrap();
+        let dup = duplicate_first_map_key(&valid);
+        assert!(matches!(
+            ReleaseBundle::from_canonical_cbor(&dup),
+            Err(SigstoreVerifyError::ReleaseBundleDecodeFailed)
+        ));
     }
 }

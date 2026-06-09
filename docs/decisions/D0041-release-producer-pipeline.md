@@ -236,16 +236,61 @@ flagged by the review:**
   TOFU), and verifier-enforced `versionCode` monotonicity (passed into
   `verify_release`, not a Kotlin-side check a future driver could forget).
 
-### 6.3 Tracked separately
+### 6.3 Canonical-CBOR decode strictness — release decoders LANDED; cross-cutting extension tracked separately
 
-- **Canonical-CBOR decode strictness** — the bundle decode (like every
-  canonical-CBOR decoder in the workspace) accepts trailing bytes,
-  non-minimal encodings, and duplicate keys; the encoder is strict but the
-  decoders do not re-check canonicality. Contained here (the bundle's
-  contents are cryptographically re-verified), but a cross-cutting strictness
-  gate + a `fuzz_release_bundle` target are spun off as a separate workspace
-  follow-up (it touches the envelope/trust-graph/identity/recovery/sigsum
-  decoders + the test-vector corpus, beyond this pipeline).
+**Landed (post-decision follow-up).** A forward-compat-safe strictness gate
+now closes two malleability vectors in the release-pipeline decoders:
+`ReleaseBundle`, `RekorBundle`, `ReleaseManifest`, and the Sigsum
+`EmittedLeaf` (plus the local-cache `TreeHead` / `InclusionProof` that share
+the file). The gate rejects **trailing bytes** after the single canonical
+CBOR item and **duplicate integer keys** — both forbidden by the canonical
+encoder (D0018 §2.3). It does this via a shared `decode_canonical_map`
+helper (`cairn-sigstore-verify::decode`, mirrored locally in
+`cairn-sigsum-client::cache`) that all four release decoders route through.
+Unknown integer keys are still **preserved** (the caller's `_` arm skips
+them), so forward-compatibility per D0006 §6.4 is intact — this is why the
+gate is _not_ re-encode-and-compare (that would reject a newer producer's
+added keys). Each decoder gained round-trip + trailing-byte + duplicate-key
+unit tests, and a `fuzz_release_bundle` libFuzzer target asserts two
+invariants on arbitrary bytes: **never panic** (the `ReleaseBundle` map
+nests `RekorBundle` + `EmittedLeaf` as CBOR byte strings, so one target
+transitively fuzzes three decoders; `ReleaseManifest` is fuzzed on the same
+input as the fourth) and **idempotent re-encode**
+(`encode(decode(b)) == encode(decode(encode(decode(b))))`).
+
+**Explicitly NOT closed (contained residual).** The gate does **not** reject
+non-minimal integer heads or indefinite-length items — that needs a raw
+canonical-form validator that conflicts with `ciborium`'s decode model. The
+residual is contained: the manifest payload is byte-pinned by its
+`COSE_Sign1` signature (a non-minimal manifest fails the signature check),
+the rollback chain hashes the canonical _re-encoding_
+(`canonical_self_hash`), the `release_leaf_hash` binds to the COSE signature
+bytes (not the manifest CBOR), and every nested proof (Rekor checkpoint
+signature, Sigsum cosignature) is verified independently of its CBOR
+encoding. Trailing-bytes + duplicate-keys are the malleability vectors
+closeable without breaking forward-compat; the rest are cryptographically
+re-verified downstream.
+
+**Still tracked separately — the cross-cutting extension.** Applying the
+same gate to the envelope / trust-graph / identity / recovery decoders
+(`cose_sign1.rs`, `op.rs`, `token.rs`, `introduction.rs`, `vouch.rs`,
+`cascade/timer.rs`, `peer_store.rs`) is deferred to its own unit, for three
+evidenced reasons: (1) **right home is `cairn-envelope`, not copy-paste** —
+those eight-plus sites use the inline `from_reader` + match pattern, and
+`canonical.rs` already reserves the decode-strictness surface as "deferred
+to next surface" (encode-only today); the clean landing promotes
+`decode_canonical_map` into `cairn_envelope::canonical` and routes all
+decoders through it, a cross-crate refactor; (2) **wider, deployed,
+cross-party blast radius** — those decoders consume peer-exchanged and
+on-device-persisted data already round-tripped between the two Pixels (trust
+ops, capability tokens, recovery shares, cascade timers), so a
+decode-behaviour change warrants its own two-device regression + D0018 §2.4
+test-vector-corpus re-run; (3) **lower marginal value** —
+`TrustGraphOp`/`CapabilityToken` payloads are extracted from _inside_ a
+`COSE_Sign1` signature (`signed.rs`, `token.rs`), so the signature already
+byte-pins them, whereas the release `ReleaseBundle`/`RekorBundle`/
+`EmittedLeaf` are parsed straight off a downloaded artifact with no outer
+signature — which is exactly why they were the priority surface.
 
 ## 7. Reversibility
 

@@ -40,6 +40,10 @@ cairn-identity = { path = "../crates/cairn-identity" }
 cairn-recovery = { path = "../crates/cairn-recovery" }
 cairn-shamir = { path = "../crates/cairn-shamir" }
 cairn-trust-graph = { path = "../crates/cairn-trust-graph" }
+# Release-pipeline decode boundary (D0024 §6.4 / D0041 §6.3). Pulls the
+# full sigstore-verify dep tree into the fuzz build; the fuzz package is
+# a standalone workspace, so this does not affect the main build graph.
+cairn-sigstore-verify = { path = "../crates/cairn-sigstore-verify" }
 
 # === CBOR decoder (used directly by the fuzz_canonical_cbor target
 # for the upstream ciborium decode boundary; the per-schema targets
@@ -89,5 +93,11 @@ doc = false
 [[bin]]
 name = "fuzz_master_attestation"
 path = "fuzz_targets/fuzz_master_attestation.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_release_bundle"
+path = "fuzz_targets/fuzz_release_bundle.rs"
 test = false
 doc = false

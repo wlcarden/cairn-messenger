@@ -174,11 +174,10 @@ impl ReleaseManifest {
     /// [`SigstoreVerifyError::ManifestDecodeFailed`] for any CBOR or
     /// schema structural error.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, SigstoreVerifyError> {
-        let parsed: CiboriumValue = ciborium::de::from_reader(bytes)
-            .map_err(|_| SigstoreVerifyError::ManifestDecodeFailed)?;
-        let CiboriumValue::Map(entries) = parsed else {
-            return Err(SigstoreVerifyError::ManifestDecodeFailed);
-        };
+        // Strict canonical map decode (D0041 §6.3): rejects trailing bytes +
+        // duplicate keys; unknown integer keys are still tolerated (D0006 §6.4).
+        let entries = crate::decode::decode_canonical_map(bytes)
+            .ok_or(SigstoreVerifyError::ManifestDecodeFailed)?;
 
         let mut version: Option<String> = None;
         let mut artifact_sha256: Option<Vec<ArtifactHash>> = None;
@@ -186,12 +185,7 @@ impl ReleaseManifest {
         let mut release_timestamp: Option<u64> = None;
         let mut prior_release_hash: Option<Vec<u8>> = None;
 
-        for (key, value) in entries {
-            let CiboriumValue::Integer(key_int_ciborium) = key else {
-                return Err(SigstoreVerifyError::ManifestDecodeFailed);
-            };
-            let key_int = i64::try_from(i128::from(key_int_ciborium))
-                .map_err(|_| SigstoreVerifyError::ManifestDecodeFailed)?;
+        for (key_int, value) in entries {
             match key_int {
                 KEY_MANIFEST_VERSION => {
                     let CiboriumValue::Text(s) = value else {
@@ -425,5 +419,45 @@ mod tests {
             m_a.canonical_self_hash().unwrap(),
             m_b.canonical_self_hash().unwrap()
         );
+    }
+
+    /// Re-encode `valid` canonical-CBOR map bytes with the first `(key,
+    /// value)` entry duplicated, to exercise the duplicate-key strictness
+    /// gate (D0041 §6.3) without hand-assembling CBOR.
+    fn duplicate_first_map_key(valid: &[u8]) -> Vec<u8> {
+        let value: ciborium::Value = ciborium::de::from_reader(valid).unwrap();
+        let ciborium::Value::Map(mut entries) = value else {
+            panic!("expected a top-level CBOR map");
+        };
+        let first = entries[0].clone();
+        entries.push(first);
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&ciborium::Value::Map(entries), &mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn manifest_rejects_trailing_bytes() {
+        // The canonical wire form is exactly one CBOR item; a trailing byte
+        // is a malleability vector the strict decoder must reject (D0041 §6.3).
+        // The manifest payload is also COSE-signature-pinned in the full
+        // verify path, but the codec itself rejects this independently.
+        let mut bytes = make_manifest().to_canonical_cbor().unwrap();
+        bytes.push(0x00);
+        assert!(matches!(
+            ReleaseManifest::from_canonical_cbor(&bytes),
+            Err(SigstoreVerifyError::ManifestDecodeFailed)
+        ));
+    }
+
+    #[test]
+    fn manifest_rejects_duplicate_key() {
+        // Duplicate integer keys are non-canonical (D0018 §2.3) and a
+        // parser-differential footgun; the strict decoder must reject them.
+        let dup = duplicate_first_map_key(&make_manifest().to_canonical_cbor().unwrap());
+        assert!(matches!(
+            ReleaseManifest::from_canonical_cbor(&dup),
+            Err(SigstoreVerifyError::ManifestDecodeFailed)
+        ));
     }
 }

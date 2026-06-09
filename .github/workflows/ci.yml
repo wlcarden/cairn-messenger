@@ -162,7 +162,8 @@ jobs:
           cd fuzz
           for target in fuzz_envelope_parse fuzz_canonical_cbor \
                         fuzz_shamir_reconstruct fuzz_capability_token \
-                        fuzz_trust_graph_op fuzz_master_attestation; do
+                        fuzz_trust_graph_op fuzz_master_attestation \
+                        fuzz_release_bundle; do
             echo "::group::$target"
             cargo +nightly fuzz run "$target" -- -max_total_time=60
             echo "::endgroup::"

@@ -32,6 +32,8 @@
 //! drop) or doesn't (no partial state); the AEAD-sealed row is
 //! self-contained.
 
+use std::io::Cursor;
+
 use cairn_envelope::canonical::Value;
 use ciborium::Value as CiboriumValue;
 use sha2::{Digest, Sha256};
@@ -206,21 +208,12 @@ impl EmittedLeaf {
     /// [`SigsumError::MalformedCacheRecord`] for any CBOR / schema
     /// structural error.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, SigsumError> {
-        let parsed: CiboriumValue =
-            ciborium::de::from_reader(bytes).map_err(|_| SigsumError::MalformedCacheRecord)?;
-        let CiboriumValue::Map(entries) = parsed else {
-            return Err(SigsumError::MalformedCacheRecord);
-        };
+        let entries = decode_canonical_map(bytes).ok_or(SigsumError::MalformedCacheRecord)?;
         let mut message: Option<[u8; 32]> = None;
         let mut signature: Option<[u8; 64]> = None;
         let mut key_hash: Option<[u8; 32]> = None;
         let mut observed_at: Option<u64> = None;
-        for (key, value) in entries {
-            let CiboriumValue::Integer(key_int_ciborium) = key else {
-                return Err(SigsumError::MalformedCacheRecord);
-            };
-            let key_int = i64::try_from(i128::from(key_int_ciborium))
-                .map_err(|_| SigsumError::MalformedCacheRecord)?;
+        for (key_int, value) in entries {
             match key_int {
                 KEY_EMITTED_MESSAGE => message = Some(bytes_to_array_32(value)?),
                 KEY_EMITTED_SIGNATURE => signature = Some(bytes_to_array_64(value)?),
@@ -296,11 +289,7 @@ impl TreeHead {
     /// [`SigsumError::MalformedCacheRecord`] for any CBOR / schema
     /// structural error.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, SigsumError> {
-        let parsed: CiboriumValue =
-            ciborium::de::from_reader(bytes).map_err(|_| SigsumError::MalformedCacheRecord)?;
-        let CiboriumValue::Map(entries) = parsed else {
-            return Err(SigsumError::MalformedCacheRecord);
-        };
+        let entries = decode_canonical_map(bytes).ok_or(SigsumError::MalformedCacheRecord)?;
 
         let mut tree_size: Option<u64> = None;
         let mut root_hash: Option<[u8; 32]> = None;
@@ -308,12 +297,7 @@ impl TreeHead {
         let mut cosignatures: Option<Vec<Cosignature>> = None;
         let mut observed_at: Option<u64> = None;
 
-        for (key, value) in entries {
-            let CiboriumValue::Integer(key_int_ciborium) = key else {
-                return Err(SigsumError::MalformedCacheRecord);
-            };
-            let key_int = i64::try_from(i128::from(key_int_ciborium))
-                .map_err(|_| SigsumError::MalformedCacheRecord)?;
+        for (key_int, value) in entries {
             match key_int {
                 KEY_TREE_HEAD_TREE_SIZE => {
                     tree_size = Some(int_to_u64(&value)?);
@@ -397,11 +381,7 @@ impl InclusionProof {
     /// [`SigsumError::MalformedCacheRecord`] for any CBOR / schema
     /// structural error.
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, SigsumError> {
-        let parsed: CiboriumValue =
-            ciborium::de::from_reader(bytes).map_err(|_| SigsumError::MalformedCacheRecord)?;
-        let CiboriumValue::Map(entries) = parsed else {
-            return Err(SigsumError::MalformedCacheRecord);
-        };
+        let entries = decode_canonical_map(bytes).ok_or(SigsumError::MalformedCacheRecord)?;
 
         let mut leaf_hash: Option<LeafHash> = None;
         let mut tree_size: Option<u64> = None;
@@ -409,12 +389,7 @@ impl InclusionProof {
         let mut leaf_index: Option<u64> = None;
         let mut observed_at: Option<u64> = None;
 
-        for (key, value) in entries {
-            let CiboriumValue::Integer(key_int_ciborium) = key else {
-                return Err(SigsumError::MalformedCacheRecord);
-            };
-            let key_int = i64::try_from(i128::from(key_int_ciborium))
-                .map_err(|_| SigsumError::MalformedCacheRecord)?;
+        for (key_int, value) in entries {
             match key_int {
                 KEY_INCLUSION_LEAF_HASH => {
                     leaf_hash = Some(LeafHash::from_bytes(bytes_to_array_32(value)?));
@@ -496,6 +471,42 @@ pub fn cache_record_id_for_inclusion_proof(
 }
 
 // === Internal decode helpers ===
+
+/// Decode the top-level canonical integer-keyed CBOR map with the
+/// forward-compat-safe strictness checks (D0041 §6.3): reject **trailing
+/// bytes** after the map (the wire form is exactly one CBOR item) and
+/// reject **duplicate integer keys** — both forbidden by the canonical
+/// encoder (D0018 §2.3). Unknown integer keys are PRESERVED so the
+/// caller's `_` arm still tolerates a newer producer (D0006 §6.4).
+///
+/// Returns `None` on any structural problem; the caller maps it to
+/// [`SigsumError::MalformedCacheRecord`]. Mirrors
+/// `cairn_sigstore_verify::decode::decode_canonical_map`; kept local
+/// because the error type differs (cache vs release-bundle decode).
+fn decode_canonical_map(bytes: &[u8]) -> Option<Vec<(i64, CiboriumValue)>> {
+    let mut cursor = Cursor::new(bytes);
+    let value: CiboriumValue = ciborium::de::from_reader(&mut cursor).ok()?;
+    if cursor.position() != u64::try_from(bytes.len()).ok()? {
+        return None; // trailing bytes after the single canonical item
+    }
+    let CiboriumValue::Map(entries) = value else {
+        return None;
+    };
+    let mut out = Vec::with_capacity(entries.len());
+    let mut seen: Vec<i64> = Vec::with_capacity(entries.len());
+    for (key, val) in entries {
+        let CiboriumValue::Integer(ki) = key else {
+            return None;
+        };
+        let ki = i64::try_from(i128::from(ki)).ok()?;
+        if seen.contains(&ki) {
+            return None; // duplicate key — non-canonical, parser-differential footgun
+        }
+        seen.push(ki);
+        out.push((ki, val));
+    }
+    Some(out)
+}
 
 fn int_to_u64(value: &CiboriumValue) -> Result<u64, SigsumError> {
     let CiboriumValue::Integer(v) = value else {
@@ -723,5 +734,89 @@ mod tests {
     #[test]
     fn malformed_emitted_leaf_cbor_rejected() {
         assert!(EmittedLeaf::from_canonical_cbor(b"\xFF\x00not-cbor").is_err());
+    }
+
+    /// Re-encode `valid` canonical-CBOR map bytes with the first `(key,
+    /// value)` entry duplicated, to exercise the duplicate-key strictness
+    /// gate (D0041 §6.3) without hand-assembling CBOR.
+    fn duplicate_first_map_key(valid: &[u8]) -> Vec<u8> {
+        let value: CiboriumValue = ciborium::de::from_reader(valid).unwrap();
+        let CiboriumValue::Map(mut entries) = value else {
+            panic!("expected a top-level CBOR map");
+        };
+        let first = entries[0].clone();
+        entries.push(first);
+        let mut out = Vec::new();
+        ciborium::ser::into_writer(&CiboriumValue::Map(entries), &mut out).unwrap();
+        out
+    }
+
+    fn sample_emitted_leaf() -> EmittedLeaf {
+        EmittedLeaf {
+            message: [0x11u8; 32],
+            signature: [0x22u8; 64],
+            key_hash: [0x33u8; 32],
+            observed_at: 1_700_000_000,
+        }
+    }
+
+    #[test]
+    fn emitted_leaf_rejects_trailing_bytes() {
+        // EmittedLeaf rides in the release bundle, so its decode is the
+        // attacker-reachable cache decoder; the wire form is exactly one
+        // CBOR item and a trailing byte must be rejected (D0041 §6.3).
+        let mut bytes = sample_emitted_leaf().to_canonical_cbor().unwrap();
+        bytes.push(0x00);
+        assert!(matches!(
+            EmittedLeaf::from_canonical_cbor(&bytes),
+            Err(SigsumError::MalformedCacheRecord)
+        ));
+    }
+
+    #[test]
+    fn emitted_leaf_rejects_duplicate_key() {
+        let dup = duplicate_first_map_key(&sample_emitted_leaf().to_canonical_cbor().unwrap());
+        assert!(matches!(
+            EmittedLeaf::from_canonical_cbor(&dup),
+            Err(SigsumError::MalformedCacheRecord)
+        ));
+    }
+
+    #[test]
+    fn tree_head_rejects_trailing_bytes() {
+        let mut bytes = make_tree_head().to_canonical_cbor().unwrap();
+        bytes.push(0x00);
+        assert!(matches!(
+            TreeHead::from_canonical_cbor(&bytes),
+            Err(SigsumError::MalformedCacheRecord)
+        ));
+    }
+
+    #[test]
+    fn tree_head_rejects_duplicate_key() {
+        let dup = duplicate_first_map_key(&make_tree_head().to_canonical_cbor().unwrap());
+        assert!(matches!(
+            TreeHead::from_canonical_cbor(&dup),
+            Err(SigsumError::MalformedCacheRecord)
+        ));
+    }
+
+    #[test]
+    fn inclusion_proof_rejects_trailing_bytes() {
+        let mut bytes = make_inclusion_proof().to_canonical_cbor().unwrap();
+        bytes.push(0x00);
+        assert!(matches!(
+            InclusionProof::from_canonical_cbor(&bytes),
+            Err(SigsumError::MalformedCacheRecord)
+        ));
+    }
+
+    #[test]
+    fn inclusion_proof_rejects_duplicate_key() {
+        let dup = duplicate_first_map_key(&make_inclusion_proof().to_canonical_cbor().unwrap());
+        assert!(matches!(
+            InclusionProof::from_canonical_cbor(&dup),
+            Err(SigsumError::MalformedCacheRecord)
+        ));
     }
 }
