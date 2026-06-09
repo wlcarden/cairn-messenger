@@ -1,7 +1,16 @@
 # D0041 — Release-producer pipeline: `cairn-release` + on-device verify (the D0024 §6 producer side)
 
-**Status:** Accepted (phase 1 — self-minted roots — landed + on-device-proven)
+**Status:** Accepted (phase 1 — self-minted roots — pipeline _mechanics_ proven on-device; **NOT** an external-trust-anchor / real-Sigstore proof — see §3 + §6)
 **Date:** 2026-06-08
+
+> **Read this before citing "on-device-proven."** Phase 1 pins roots the
+> producer minted in the same `build`. The on-device run proves
+> producer↔verifier byte-agreement and the FFI/wire mechanics — it does
+> **not** prove anything against a real adversary, and a green
+> `verify_release` here means only "this bundle is internally consistent
+> with its own bundled roots," which anyone who can run `cairn-release
+build` can forge. Real adversarial value begins at phase 2 (§6), gated
+> on the real Sigstore keyless client.
 
 ## Context
 
@@ -162,13 +171,47 @@ matters more than any later release, because every subsequent
 
 ## 6. What this does NOT cover (deferred)
 
-Phase 1 proves the pipeline mechanics. The full v1 release/distribution
-pipeline additionally needs:
+Phase 1 proves the pipeline mechanics. These deferrals are **not
+equivalent** — one class gates whether the stack has any adversarial value
+at all; the rest are additive. The review (2026-06-08) sharpened this
+ranking.
+
+### 6.1 Hard blockers — the stack verifies nothing forgery-resistant until these land
 
 - **A real Sigstore keyless client** (Fulcio cert-request + Rekor upload +
-  an OIDC token source) — phase 2; the crate is verify-only today.
-- **The Sigsum log + recruited witness pool** (D0015 min-3/2-of-3,
-  Q5/funding-gated) + a live log to `emit_leaf` against.
+  an OIDC token source) — phase 2; the crate is verify-only today. **This
+  is load-bearing for the _whole_ stack:** until it lands, the pinned
+  "trust roots" are self-minted, so every downstream check (Fulcio chain,
+  OIDC pin, Rekor inclusion, Sigsum) is verifying attacker-forgeable
+  material. A green `verify_release` means "internally consistent with its
+  bundled roots," forgeable by anyone who can run `cairn-release build`.
+- **A real, recruited Sigsum log + witness pool** to `emit_leaf` against
+  (D0015 min-3/2-of-3, Q5/funding-gated). Same property: a synthetic log +
+  self-minted witnesses prove nothing an adversary couldn't reproduce.
+
+**Phase-2 prerequisites that MUST land _with_ the real roots (not after),
+flagged by the review:**
+
+- **Fulcio path-validation constraints** — `validate_cert_chain`
+  (`fulcio.rs`) currently checks chain signatures + validity + OIDC pins
+  but **not** RFC 5280 BasicConstraints (CA flag/pathlen), KeyUsage
+  `keyCertSign`, or EKU. Benign under a single coordinated self-minted
+  root; against the real public Fulcio root this is the "any leaf is a CA"
+  confusion class and must be enforced **with** the real root, not later.
+- **Compiled-in production roots, not caller-supplied.** The FFI
+  `ReleaseVerifierHandle::new` accepts a `ReleaseRootsRecord` from the
+  caller (correct for per-build synthetic roots; unreachable in release
+  builds today via the `BuildConfig.DEBUG` driver gate). Production roots
+  must be a baked-in constant the FFI does **not** accept from the caller
+  (or verified against a baked-in digest), so the phase-1 "roots from
+  outside" shape cannot survive into production by inertia.
+- **Type-gate the unused online verify path.** `SigstoreVerifier` exposes
+  `fetch_*` online methods on the same type as the "offline" `verify_release`;
+  the air-gap (D0024 §6.4) is preserved only by calling convention. Gate
+  the online path behind a feature or document it as out-of-scope for v1.
+
+### 6.2 Additive (the pipeline is meaningful without these; they widen/operationalize it)
+
 - **APK Signature Scheme v3 signing wiring** in Gradle (no `signingConfig`
   today) + the long-lived-key provisioning ceremony (the
   `apk-signing-custody.md` runbook is written; the ceremony has not run).
@@ -179,10 +222,30 @@ pipeline additionally needs:
 - **Distribution channels** — F-Droid (primary; source-built, reproducibility
   tension), Accrescent (own signing model), project direct download
   (domain + hosting).
-- **Client-side update discovery** (the in-app fetch of the latest bundle,
-  over the Tor-only posture) + monotonic-`versionCode` enforcement —
-  `verify(expected_prior)` provides the rollback _check_; the _fetch +
-  stored-predecessor_ loop is not yet wired.
+- **Client-side update discovery + downgrade resistance** (the in-app fetch
+  of the latest bundle, over the Tor-only posture). `verify(expected_prior)`
+  provides the rollback _check_, but the hash chain alone does **not**
+  establish "newest" (it links N→N-1). Sound downgrade resistance requires
+  the deferred client to (a) durably store the predecessor hash and pass it
+  as `expected_prior`, AND (b) refuse a lower `version`/`versionCode`.
+  `release_timestamp`/`version` are NOT verifier-checked anti-rollback
+  inputs (clarified in `manifest.rs`). Two API improvements should land
+  **with** that loop: a three-state expectation
+  (`ExpectGenesis`/`ExpectPredecessor`/`NoCheck`) so a client can assert
+  "must be genesis" (today's bare `Option` cannot, enabling forked-genesis
+  TOFU), and verifier-enforced `versionCode` monotonicity (passed into
+  `verify_release`, not a Kotlin-side check a future driver could forget).
+
+### 6.3 Tracked separately
+
+- **Canonical-CBOR decode strictness** — the bundle decode (like every
+  canonical-CBOR decoder in the workspace) accepts trailing bytes,
+  non-minimal encodings, and duplicate keys; the encoder is strict but the
+  decoders do not re-check canonicality. Contained here (the bundle's
+  contents are cryptographically re-verified), but a cross-cutting strictness
+  gate + a `fuzz_release_bundle` target are spun off as a separate workspace
+  follow-up (it touches the envelope/trust-graph/identity/recovery/sigsum
+  decoders + the test-vector corpus, beyond this pipeline).
 
 ## 7. Reversibility
 

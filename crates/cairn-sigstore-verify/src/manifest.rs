@@ -28,6 +28,14 @@
 //! manifest whose `prior_release_hash` references a release whose
 //! hash predates N — detectable by the client's stored release-log
 //! state.
+//!
+//! **The chain alone does NOT establish "newest."** It links N→N-1; it
+//! does not, by itself, prevent serving a validly-signed *older* release.
+//! Downgrade resistance requires the CLIENT to (a) pass its stored
+//! predecessor hash as `expected_predecessor_hash` and (b) refuse a
+//! lower version/`versionCode`. `release_timestamp` and `version` are
+//! carried for identification but are NOT verifier-checked anti-rollback
+//! inputs — monotonicity is the client's obligation (D0041 §6, deferred).
 
 use cairn_envelope::canonical::Value;
 use ciborium::Value as CiboriumValue;
@@ -204,6 +212,15 @@ impl ReleaseManifest {
                     let CiboriumValue::Bytes(b) = value else {
                         return Err(SigstoreVerifyError::ManifestDecodeFailed);
                     };
+                    // Exactly zero-length (genesis) or a 32-byte SHA-256 link —
+                    // reject any other length so "genesis vs linked" is a total,
+                    // validated distinction with no ambiguous third state (review
+                    // remediation). The rollback check (D0024 §4.2) compares this
+                    // against a `[u8; 32]`, so a wrong length already fails closed;
+                    // rejecting at decode makes the intent explicit.
+                    if !b.is_empty() && b.len() != SHA256_LEN {
+                        return Err(SigstoreVerifyError::ManifestDecodeFailed);
+                    }
                     prior_release_hash = Some(b);
                 }
                 _ => {} // forward-compat per D0006 §6.4
@@ -340,6 +357,20 @@ mod tests {
         let bytes = original.to_canonical_cbor().unwrap();
         let recovered = ReleaseManifest::from_canonical_cbor(&bytes).unwrap();
         assert_eq!(recovered, original);
+    }
+
+    #[test]
+    fn manifest_rejects_wrong_length_prior_release_hash() {
+        // {0, 32} only — a 5-byte prior is neither a valid genesis (empty)
+        // nor a valid 32-byte chain link, so decode must reject it (review
+        // remediation: make "genesis vs linked" a total, validated distinction).
+        let mut m = make_manifest();
+        m.prior_release_hash = vec![0xABu8; 5];
+        let bytes = m.to_canonical_cbor().unwrap();
+        assert!(matches!(
+            ReleaseManifest::from_canonical_cbor(&bytes),
+            Err(SigstoreVerifyError::ManifestDecodeFailed)
+        ));
     }
 
     #[test]

@@ -421,7 +421,12 @@ impl From<SigstoreVerifyError> for CairnFfiError {
             | SigstoreVerifyError::ManifestPriorHashMismatch
             | SigstoreVerifyError::ManifestSignatureVerifyFailed => Self::SigstoreVerifyFailed,
             SigstoreVerifyError::ManifestDecodeFailed
-            | SigstoreVerifyError::ReleaseBundleDecodeFailed => Self::MalformedData,
+            | SigstoreVerifyError::ReleaseBundleDecodeFailed
+            // A malformed online Rekor HTTP response is a decode fault, sibling
+            // to ManifestDecodeFailed (not reachable from the offline bundled
+            // verify_release today, but mapped explicitly so it never degrades
+            // to UnmappedInternal if an online-fetch export is ever added).
+            | SigstoreVerifyError::RekorResponseMalformed => Self::MalformedData,
             SigstoreVerifyError::SigsumReleaseLog(_) => Self::SigsumVerifyFailed,
             SigstoreVerifyError::Storage(_) => Self::StorageFailure,
             _ => Self::UnmappedInternal,

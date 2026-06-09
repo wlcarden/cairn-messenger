@@ -68,12 +68,18 @@ use zeroize::Zeroizing;
 
 use crate::roots::{ReleaseRoots, to_hex};
 
-/// The self-minted OIDC identity the synthetic Fulcio leaf carries. In
-/// D0041 phase 2 these become the project's pinned real OIDC issuer +
-/// developer email (D0024 §1.1).
-const SELF_MINTED_ISSUER: &str = "https://accounts.google.com";
-/// The self-minted developer email (SAN) the synthetic leaf carries.
-const SELF_MINTED_EMAIL: &str = "releases@cairn-project.org";
+/// The self-minted OIDC identity the synthetic Fulcio leaf carries.
+///
+/// DELIBERATELY a non-resolvable `.invalid` (RFC 6761) value, NOT a real
+/// OIDC issuer: it must be structurally incapable of matching a phase-2
+/// real-issuer pin, so a phase-1 synthetic bundle can never be confused
+/// for (or mixed into) a real Sigstore signing event. In D0041 phase 2
+/// these become the project's pinned REAL OIDC issuer + developer email
+/// (D0024 §1.1) — a config change, not these synthetic constants.
+const SELF_MINTED_ISSUER: &str = "https://oidc.self-minted.cairn.invalid";
+/// The self-minted developer email (SAN) the synthetic leaf carries —
+/// also a `.invalid` domain for the same non-confusability reason.
+const SELF_MINTED_EMAIL: &str = "releases@self-minted.cairn.invalid";
 /// Fulcio leaf validity window (inclusive of any plausible build time
 /// through 2030). The Rekor-attested signing time must fall inside it.
 const LEAF_NOT_BEFORE: (i32, u8, u8) = (2020, 1, 1);
@@ -145,7 +151,7 @@ pub fn produce(
             sha256: sha256(&a.bytes),
         })
         .collect();
-    let build_provenance_json = build_provenance(version, &artifact_hashes, release_timestamp);
+    let build_provenance_json = build_provenance(version, &artifact_hashes, release_timestamp)?;
     let build_provenance_sha256 = sha256(&build_provenance_json);
 
     let manifest = ReleaseManifest {
@@ -228,7 +234,18 @@ fn sha256(bytes: &[u8]) -> [u8; SHA256_LEN] {
 /// its SHA-256. The `buildType` names this the self-minted producer so a
 /// reader is not misled into thinking a hermetic/reproducible build
 /// produced it (D0004 defers reproducible builds to v1.5).
-fn build_provenance(version: &str, artifacts: &[ArtifactHash], release_timestamp: u64) -> Vec<u8> {
+///
+/// # Errors
+///
+/// Propagates a `serde_json` serialization failure. Unreachable for this
+/// fixed literal, but a release producer must refuse to emit rather than
+/// silently sign over a degenerate (empty) provenance document — a genesis
+/// mistake anchors the chain permanently (D0041 §5).
+fn build_provenance(
+    version: &str,
+    artifacts: &[ArtifactHash],
+    release_timestamp: u64,
+) -> Result<Vec<u8>> {
     let subjects: Vec<serde_json::Value> = artifacts
         .iter()
         .map(|a| {
@@ -253,9 +270,9 @@ fn build_provenance(version: &str, artifacts: &[ArtifactHash], release_timestamp
             },
         },
     });
-    let mut bytes = serde_json::to_vec_pretty(&statement).unwrap_or_default();
+    let mut bytes = serde_json::to_vec_pretty(&statement).context("encode build provenance")?;
     bytes.push(b'\n');
-    bytes
+    Ok(bytes)
 }
 
 // ===================================================================
@@ -369,6 +386,15 @@ const fn largest_pow2_below(n: usize) -> usize {
 }
 
 fn mth(leaves: &[[u8; 32]]) -> [u8; 32] {
+    // RFC 6962 has no empty-tree Merkle head; the producer never builds one
+    // (callers pass a fixed ≥1-leaf tree). Assert the invariant in debug
+    // rather than silently substituting an attacker-predictable all-zero
+    // root for an unrepresentable input (review remediation; the workspace
+    // forbids `panic!`/`unreachable!`, so this is a debug_assert).
+    debug_assert!(
+        !leaves.is_empty(),
+        "mth must not be called on an empty tree"
+    );
     match leaves.len() {
         0 | 1 => leaves.first().copied().unwrap_or([0u8; 32]),
         n => {
