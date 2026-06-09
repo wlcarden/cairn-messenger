@@ -105,6 +105,6 @@ mod decode;
 pub use client::{ReleaseBundle, SigstoreVerifier, SigstoreVerifierConfig, VerifiedRelease};
 pub use compose::release_leaf_hash_for_signature;
 pub use error::SigstoreVerifyError;
-pub use fulcio::validate_cert_chain;
+pub use fulcio::{ExpectedIdentity, validate_cert_chain, validate_cert_chain_with_identity};
 pub use manifest::{ArtifactHash, ReleaseManifest, SHA256_LEN};
 pub use rekor::{RekorBundle, RekorCheckpoint, parse_rekor_log_entry, verify_rekor_inclusion};

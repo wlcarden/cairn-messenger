@@ -62,6 +62,12 @@ pub enum SigstoreVerifyError {
     #[error("sigstore-verify: oidc email claim did not match the pinned developer identity")]
     OidcEmailMismatch,
 
+    /// The SAN identity in the Fulcio cert did not match the pinned
+    /// non-email identity — the CI workflow **URI** identity per D0042 §6.4
+    /// (`https://github.com/ORG/REPO/.github/workflows/…@REF`).
+    #[error("sigstore-verify: oidc SAN identity did not match the pinned CI workflow identity")]
+    OidcIdentityMismatch,
+
     /// The Rekor inclusion proof's Merkle path did not verify per
     /// D0024 §3.
     #[error("sigstore-verify: rekor inclusion proof Merkle path did not verify")]

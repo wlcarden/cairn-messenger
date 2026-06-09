@@ -62,8 +62,59 @@ use crate::error::SigstoreVerifyError;
 /// the chain walk so a malformed/cyclic bundle cannot loop forever.
 const MAX_CHAIN_DEPTH: usize = 8;
 
-/// Validate a Fulcio-issued signing certificate per D0024 §2 / D0042 §3
-/// and return the developer's ECDSA P-256 signing key.
+/// The pinned Sigstore signing identity, matched against the leaf's SAN
+/// (D0024 §1.1 / D0042 §6.4).
+///
+/// Sigstore binds the OIDC identity into the cert's Subject Alternative
+/// Name, in a shape that depends on the signing flow:
+///
+/// - [`ExpectedIdentity::Email`] — a developer-interactive release: a SAN
+///   `rfc822Name` (the developer's verified email).
+/// - [`ExpectedIdentity::Uri`] — the CI keyless model (D0042 §2): a SAN
+///   `uniformResourceIdentifier`, the GitHub Actions workflow identity
+///   `https://github.com/ORG/REPO/.github/workflows/…@REF`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpectedIdentity<'a> {
+    /// A SAN `rfc822Name` developer email.
+    Email(&'a str),
+    /// A SAN URI CI workflow identity.
+    Uri(&'a str),
+}
+
+/// Validate a Fulcio-issued signing certificate against a pinned
+/// **developer-email** identity per D0024 §2 / D0042 §3 and return the
+/// developer's ECDSA P-256 signing key.
+///
+/// Thin wrapper over [`validate_cert_chain_with_identity`] with
+/// [`ExpectedIdentity::Email`] — the developer-email release path, which
+/// D0042 §6.4 leaves unchanged. CI (SAN-URI) releases call the general
+/// form directly.
+///
+/// # Errors
+///
+/// As [`validate_cert_chain_with_identity`], with the identity mismatch
+/// surfaced as [`SigstoreVerifyError::OidcEmailMismatch`].
+pub fn validate_cert_chain(
+    signing_cert_der: &[u8],
+    pinned_root_pem: &[u8],
+    expected_oidc_issuer: &str,
+    expected_oidc_email: &str,
+    rekor_signing_time_unix: u64,
+) -> Result<VerifyingKey, SigstoreVerifyError> {
+    validate_cert_chain_with_identity(
+        signing_cert_der,
+        pinned_root_pem,
+        expected_oidc_issuer,
+        ExpectedIdentity::Email(expected_oidc_email),
+        rekor_signing_time_unix,
+    )
+}
+
+/// Validate a Fulcio-issued signing certificate and return the
+/// developer's ECDSA P-256 signing key (D0024 §2 / D0042 §3).
+///
+/// Pins the OIDC issuer + the SAN identity ([`ExpectedIdentity`] — a
+/// developer email or a CI workflow URI).
 ///
 /// # Errors
 ///
@@ -73,14 +124,16 @@ const MAX_CHAIN_DEPTH: usize = 8;
 ///   not ECDSA P-256.
 /// - [`SigstoreVerifyError::FulcioCertExpiredAtSigningTime`] — the
 ///   Rekor-attested signing time falls outside the cert validity window.
-/// - [`SigstoreVerifyError::OidcIssuerMismatch`] /
-///   [`SigstoreVerifyError::OidcEmailMismatch`] — the cert's OIDC
-///   claims do not match the pinned values.
-pub fn validate_cert_chain(
+/// - [`SigstoreVerifyError::OidcIssuerMismatch`] — the cert's OIDC issuer
+///   claim does not match the pinned issuer.
+/// - [`SigstoreVerifyError::OidcEmailMismatch`] /
+///   [`SigstoreVerifyError::OidcIdentityMismatch`] — the cert's SAN does
+///   not carry the pinned email / CI workflow URI identity.
+pub fn validate_cert_chain_with_identity(
     signing_cert_der: &[u8],
     pinned_root_pem: &[u8],
     expected_oidc_issuer: &str,
-    expected_oidc_email: &str,
+    expected_identity: ExpectedIdentity<'_>,
     rekor_signing_time_unix: u64,
 ) -> Result<VerifyingKey, SigstoreVerifyError> {
     let (_, leaf) = X509Certificate::from_der(signing_cert_der)
@@ -137,9 +190,18 @@ pub fn validate_cert_chain(
         return Err(SigstoreVerifyError::OidcIssuerMismatch);
     }
 
-    // (4) OIDC email pin (SAN rfc822Name).
-    if !san_has_email(&leaf, expected_oidc_email)? {
-        return Err(SigstoreVerifyError::OidcEmailMismatch);
+    // (4) OIDC identity pin: a SAN rfc822Name (developer email) or a SAN
+    // URI (CI workflow identity; D0042 §6.4). The Fulcio SAN is marked
+    // critical, so the identity is always present to match against.
+    let identity_ok = match expected_identity {
+        ExpectedIdentity::Email(email) => san_has_email(&leaf, email)?,
+        ExpectedIdentity::Uri(uri) => san_has_uri(&leaf, uri)?,
+    };
+    if !identity_ok {
+        return Err(match expected_identity {
+            ExpectedIdentity::Email(_) => SigstoreVerifyError::OidcEmailMismatch,
+            ExpectedIdentity::Uri(_) => SigstoreVerifyError::OidcIdentityMismatch,
+        });
     }
 
     // Extract the ECDSA P-256 signing key from the leaf SPKI (the Fulcio
@@ -264,6 +326,29 @@ fn san_has_email(
     for name in &san.value.general_names {
         if let GeneralName::RFC822Name(email) = name
             && *email == expected_email
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Return `true` if the cert's SAN contains a
+/// `uniformResourceIdentifier` equal to `expected_uri` — the CI workflow
+/// identity (D0042 §6.4). Matched as an exact string (the Fulcio GitHub
+/// Actions identity is the fully-qualified
+/// `https://github.com/ORG/REPO/.github/workflows/…@REF`, including the
+/// git ref, so an exact compare pins the precise workflow + ref).
+fn san_has_uri(cert: &X509Certificate, expected_uri: &str) -> Result<bool, SigstoreVerifyError> {
+    let san = cert
+        .subject_alternative_name()
+        .map_err(|_| SigstoreVerifyError::FulcioChainInvalid)?;
+    let Some(san) = san else {
+        return Ok(false);
+    };
+    for name in &san.value.general_names {
+        if let GeneralName::URI(uri) = name
+            && *uri == expected_uri
         {
             return Ok(true);
         }
