@@ -60,8 +60,9 @@ use p256::ecdsa::{Signature as P256Signature, VerifyingKey as P256VerifyingKey};
 use p256::pkcs8::{EncodePublicKey as _, LineEnding};
 use rand_core::OsRng;
 use rcgen::{
-    BasicConstraints, Certificate, CertificateParams, CustomExtension, DnType, IsCa, KeyPair,
-    PKCS_ECDSA_P384_SHA384, PKCS_ED25519, SanType, date_time_ymd,
+    BasicConstraints, Certificate, CertificateParams, CustomExtension, DnType,
+    ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P384_SHA384, PKCS_ED25519,
+    SanType, date_time_ymd,
 };
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -306,6 +307,9 @@ fn mint_root() -> Result<(Certificate, KeyPair)> {
     let key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).context("generate root keypair")?;
     let mut params = CertificateParams::default();
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    // Model the real Fulcio CA profile so the synthetic bundle exercises
+    // the verifier's RFC 5280 keyCertSign check (D0024 §2 / D0041 §6.1).
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
     params
         .distinguished_name
         .push(DnType::CommonName, "Cairn self-minted release root");
@@ -318,6 +322,10 @@ fn mint_root() -> Result<(Certificate, KeyPair)> {
 fn mint_leaf(root: &Certificate, root_key: &KeyPair, dev_kp: &KeyPair) -> Result<Vec<u8>> {
     let mut params = CertificateParams::default();
     params.is_ca = IsCa::NoCa;
+    // Real Fulcio code-signing leaf profile: digitalSignature KeyUsage +
+    // id-kp-codeSigning EKU, both enforced by the verifier (D0041 §6.1).
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::CodeSigning];
     params.not_before = date_time_ymd(LEAF_NOT_BEFORE.0, LEAF_NOT_BEFORE.1, LEAF_NOT_BEFORE.2);
     params.not_after = date_time_ymd(LEAF_NOT_AFTER.0, LEAF_NOT_AFTER.1, LEAF_NOT_AFTER.2);
     params

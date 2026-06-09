@@ -192,12 +192,21 @@ ranking.
 **Phase-2 prerequisites that MUST land _with_ the real roots (not after),
 flagged by the review:**
 
-- **Fulcio path-validation constraints** — `validate_cert_chain`
-  (`fulcio.rs`) currently checks chain signatures + validity + OIDC pins
-  but **not** RFC 5280 BasicConstraints (CA flag/pathlen), KeyUsage
-  `keyCertSign`, or EKU. Benign under a single coordinated self-minted
-  root; against the real public Fulcio root this is the "any leaf is a CA"
-  confusion class and must be enforced **with** the real root, not later.
+- **Fulcio path-validation constraints — ✓ LANDED (2026-06-08).**
+  `validate_cert_chain` (`fulcio.rs`) now enforces RFC 5280 §6.1.4 on top
+  of the chain signatures + validity + OIDC pins: every cert used as an
+  **issuer** must assert `BasicConstraints` `cA = TRUE` (the "any leaf is
+  a CA" confusion check), its `pathLenConstraint` is checked against the
+  intermediates below it, and its `KeyUsage` (if present) must permit
+  `keyCertSign`; the **leaf** must NOT assert `cA`, its `KeyUsage` (if
+  present) must permit `digitalSignature`, and it must carry an
+  `ExtendedKeyUsage` including code-signing (the Fulcio profile). The
+  synthetic producer (`cairn-release`) was updated to mint
+  profile-correct certs (CA `keyCertSign`+`cRLSign`; leaf
+  `digitalSignature` + `codeSigning` EKU) so the round-trip exercises
+  every new check, and five negative tests cover each constraint
+  (`fulcio.rs`). NameConstraints / policy processing remain out of scope
+  (Fulcio uses neither).
 - **Compiled-in production roots, not caller-supplied.** The FFI
   `ReleaseVerifierHandle::new` accepts a `ReleaseRootsRecord` from the
   caller (correct for per-build synthetic roots; unreachable in release

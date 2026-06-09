@@ -56,8 +56,9 @@ use p256::ecdsa::{Signature as P256Signature, VerifyingKey as P256VerifyingKey};
 use p256::pkcs8::{EncodePublicKey as _, LineEnding};
 use rand_core::OsRng;
 use rcgen::{
-    BasicConstraints, Certificate, CertificateParams, CustomExtension, DnType, IsCa, KeyPair,
-    PKCS_ECDSA_P384_SHA384, PKCS_ED25519, SanType, date_time_ymd,
+    BasicConstraints, Certificate, CertificateParams, CustomExtension, DnType,
+    ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P384_SHA384, PKCS_ED25519,
+    SanType, date_time_ymd,
 };
 use sha2::{Digest, Sha256};
 use url::Url;
@@ -167,6 +168,7 @@ fn make_root() -> (Certificate, KeyPair) {
     let key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
     let mut params = CertificateParams::default();
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
     params
         .distinguished_name
         .push(DnType::CommonName, "Test Fulcio Root");
@@ -204,6 +206,8 @@ fn make_leaf(
 ) -> Vec<u8> {
     let mut params = CertificateParams::default();
     params.is_ca = IsCa::NoCa;
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::CodeSigning];
     params.not_before = date_time_ymd(2020, 1, 1);
     params.not_after = date_time_ymd(2030, 1, 1);
     params

@@ -29,17 +29,25 @@
 //! be Ed25519 so the manifest `COSE_Sign1` (Ed25519-only per
 //! `cairn_envelope`) verifies against it.
 //!
-//! ## v1 path-validation scope
+//! ## Path-validation constraints (D0041 §6.1 hardening)
 //!
-//! v1 enforces signature-chain validity to a pinned self-signed root +
-//! the validity window + the OIDC pins. It does NOT yet enforce the
-//! full RFC 5280 path-validation constraint set (BasicConstraints CA
-//! flag + path-length, KeyUsage `keyCertSign`, ExtendedKeyUsage,
-//! NameConstraints). For the pinned-root threat model (the root is a
-//! coordinated release-bundled trust anchor, not a public web PKI), the
-//! signature chain + the OIDC-identity pins are the load-bearing
-//! checks; the remaining constraint enforcement is a hardening
-//! follow-up tracked against D0024 §2.
+//! Beyond the signature chain, validity window, and OIDC pins, the
+//! validator enforces the RFC 5280 §6.1.4 constraints that close the
+//! "any leaf is a CA" confusion class — a phase-2 prerequisite that must
+//! land WITH the real Fulcio root, not after (against the single
+//! self-minted root the gap is latent; against the real root → leaf
+//! chain it is exploitable):
+//!
+//! - Every cert used as an **issuer** must assert `BasicConstraints`
+//!   `cA = TRUE`; its `pathLenConstraint` (if present) is checked against
+//!   the intermediates below it; and its `KeyUsage` (if present) must
+//!   permit `keyCertSign`.
+//! - The **leaf** must NOT assert `cA = TRUE`, its `KeyUsage` (if
+//!   present) must permit `digitalSignature`, and it must carry an
+//!   `ExtendedKeyUsage` that includes code-signing (the Fulcio profile).
+//!
+//! Still out of scope for v1: NameConstraints and policy-constraint
+//! processing (Fulcio does not use them; tracked against D0024 §2).
 
 use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, VerifyingKey};
 use x509_parser::der_parser::oid;
@@ -91,9 +99,18 @@ pub fn validate_cert_chain(
     }
 
     // (1) Chain validation: walk leaf -> issuer -> ... -> self-signed
-    // root in the bundle, verifying each link. The leaf is never
-    // self-trusted; it must verify against a bundle CA.
+    // root in the bundle, verifying each link AND the RFC 5280 CA
+    // constraints (BasicConstraints cA + pathLen, KeyUsage keyCertSign)
+    // on every cert used as an issuer. The leaf is never self-trusted; it
+    // must verify against a bundle CA.
     verify_chain_to_root(&leaf, &cas)?;
+
+    // (1b) End-entity constraints: the leaf must NOT be usable as a CA
+    // and must carry the Fulcio code-signing ExtendedKeyUsage. Enforced
+    // alongside the chain CA-constraints (not later) so the "any leaf is
+    // a CA" confusion class cannot survive into the real-root phase
+    // (D0024 §2; D0041 §6.1).
+    enforce_leaf_constraints(&leaf)?;
 
     // (2) Validity window: the cert must have been valid at the
     // Rekor-attested signing time.
@@ -135,6 +152,9 @@ fn verify_chain_to_root(
     cas: &[X509Certificate],
 ) -> Result<(), SigstoreVerifyError> {
     let mut current = leaf;
+    // Number of intermediate CA certs already traversed below the issuer
+    // about to be checked (RFC 5280 §6.1.4 pathLenConstraint accounting).
+    let mut intermediates_below: u32 = 0;
     for _ in 0..MAX_CHAIN_DEPTH {
         // Find the issuer cert in the pinned bundle.
         let issuer = cas
@@ -147,14 +167,83 @@ fn verify_chain_to_root(
         current
             .verify_signature(Some(issuer.public_key()))
             .map_err(|_| SigstoreVerifyError::FulcioChainInvalid)?;
+
+        // The issuer is being USED as a CA, so enforce RFC 5280 §6.1.4:
+        // BasicConstraints must be present with cA = TRUE. This is THE
+        // anti-confusion check ("any leaf is a CA") — without it, an
+        // end-entity cert whose subject DN matches an `issuer` field
+        // would be silently trusted to sign sub-certificates.
+        let bc = issuer
+            .basic_constraints()
+            .map_err(|_| SigstoreVerifyError::FulcioChainInvalid)?
+            .ok_or(SigstoreVerifyError::FulcioChainInvalid)?;
+        if !bc.value.ca {
+            return Err(SigstoreVerifyError::FulcioChainInvalid);
+        }
+        // pathLenConstraint, if asserted, bounds the number of
+        // intermediate CAs that may appear below this issuer.
+        if let Some(max_below) = bc.value.path_len_constraint
+            && intermediates_below > max_below
+        {
+            return Err(SigstoreVerifyError::FulcioChainInvalid);
+        }
+        // KeyUsage, if asserted, must permit keyCertSign for a cert that
+        // signs other certificates.
+        if let Some(ku) = issuer
+            .key_usage()
+            .map_err(|_| SigstoreVerifyError::FulcioChainInvalid)?
+            && !ku.value.key_cert_sign()
+        {
+            return Err(SigstoreVerifyError::FulcioChainInvalid);
+        }
+
         // The issuer is a pinned-bundle cert; if it is self-signed it is
         // the trust anchor and the chain is complete.
         if issuer.subject() == issuer.issuer() {
             return Ok(());
         }
         current = issuer;
+        // The just-validated issuer becomes an intermediate below the
+        // next issuer up the chain.
+        intermediates_below = intermediates_below.saturating_add(1);
     }
     Err(SigstoreVerifyError::FulcioChainInvalid)
+}
+
+/// Enforce RFC 5280 end-entity constraints on the leaf signing cert per
+/// the Fulcio code-signing profile (D0024 §2):
+///
+/// - **Not a CA.** A `BasicConstraints` with `cA = TRUE` is rejected — a
+///   release-signing leaf must be an end entity, never an issuer.
+/// - **KeyUsage.** If asserted, it must permit `digitalSignature` (the
+///   leaf key signs the manifest `COSE_Sign1`).
+/// - **ExtendedKeyUsage.** Must be present and include `id-kp-codeSigning`
+///   (or `anyExtendedKeyUsage`) — Fulcio issues code-signing certs with
+///   this EKU, and requiring it blocks substitution of a Fulcio cert
+///   issued for some other purpose under the same identity.
+fn enforce_leaf_constraints(leaf: &X509Certificate) -> Result<(), SigstoreVerifyError> {
+    if let Some(bc) = leaf
+        .basic_constraints()
+        .map_err(|_| SigstoreVerifyError::FulcioChainInvalid)?
+        && bc.value.ca
+    {
+        return Err(SigstoreVerifyError::FulcioChainInvalid);
+    }
+    if let Some(ku) = leaf
+        .key_usage()
+        .map_err(|_| SigstoreVerifyError::FulcioChainInvalid)?
+        && !ku.value.digital_signature()
+    {
+        return Err(SigstoreVerifyError::FulcioChainInvalid);
+    }
+    let eku = leaf
+        .extended_key_usage()
+        .map_err(|_| SigstoreVerifyError::FulcioChainInvalid)?
+        .ok_or(SigstoreVerifyError::FulcioChainInvalid)?;
+    if !(eku.value.code_signing || eku.value.any) {
+        return Err(SigstoreVerifyError::FulcioChainInvalid);
+    }
+    Ok(())
 }
 
 /// Return `true` if the cert's SAN contains an `rfc822Name` equal to
@@ -199,8 +288,9 @@ fn extract_ed25519_key(cert: &X509Certificate) -> Result<VerifyingKey, SigstoreV
 mod tests {
     use super::*;
     use rcgen::{
-        BasicConstraints, Certificate, CertificateParams, CustomExtension, DnType, IsCa, KeyPair,
-        PKCS_ECDSA_P256_SHA256, PKCS_ECDSA_P384_SHA384, PKCS_ED25519, SanType, date_time_ymd,
+        BasicConstraints, Certificate, CertificateParams, CustomExtension, DnType,
+        ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
+        PKCS_ECDSA_P384_SHA384, PKCS_ED25519, SanType, date_time_ymd,
     };
 
     const ISSUER: &str = "https://accounts.example.org";
@@ -209,11 +299,19 @@ mod tests {
     const SIGNING_TIME: u64 = 1_717_200_000; // ~2024-06
 
     /// A self-signed ECDSA P-384 CA (exercises ring's P-384 chain-sig
-    /// verification — the Fulcio root is P-384).
+    /// verification — the Fulcio root is P-384) with the standard CA
+    /// KeyUsage (`keyCertSign` + `cRLSign`).
     fn make_root() -> (Certificate, KeyPair) {
+        make_root_ku(vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign])
+    }
+
+    /// A self-signed P-384 CA with a caller-chosen KeyUsage set, so a
+    /// negative test can build a CA that omits `keyCertSign`.
+    fn make_root_ku(key_usages: Vec<KeyUsagePurpose>) -> (Certificate, KeyPair) {
         let key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
         let mut params = CertificateParams::default();
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params.key_usages = key_usages;
         params
             .distinguished_name
             .push(DnType::CommonName, "Test Fulcio Root");
@@ -221,8 +319,9 @@ mod tests {
         (cert, key)
     }
 
-    /// A leaf cert signed by `root`, carrying the Fulcio OIDC issuer
-    /// extension + a SAN email, with the given key algorithm + validity.
+    /// A valid Fulcio-profile leaf signed by `root`: end-entity (not a
+    /// CA), `digitalSignature` KeyUsage, `codeSigning` EKU, plus the OIDC
+    /// issuer extension + SAN email, with the given key algorithm.
     fn make_leaf(
         root: &Certificate,
         root_key: &KeyPair,
@@ -230,9 +329,37 @@ mod tests {
         email: &str,
         alg: &'static rcgen::SignatureAlgorithm,
     ) -> Vec<u8> {
+        make_leaf_with(
+            root,
+            root_key,
+            issuer,
+            email,
+            alg,
+            IsCa::NoCa,
+            vec![KeyUsagePurpose::DigitalSignature],
+            vec![ExtendedKeyUsagePurpose::CodeSigning],
+        )
+    }
+
+    /// A leaf with a caller-chosen CA flag + KeyUsage + ExtendedKeyUsage,
+    /// for the path-validation negative tests. Always carries the Fulcio
+    /// OIDC issuer extension + SAN email + the 2020-2030 validity window.
+    #[allow(clippy::too_many_arguments)]
+    fn make_leaf_with(
+        root: &Certificate,
+        root_key: &KeyPair,
+        issuer: &str,
+        email: &str,
+        alg: &'static rcgen::SignatureAlgorithm,
+        is_ca: IsCa,
+        key_usages: Vec<KeyUsagePurpose>,
+        extended_key_usages: Vec<ExtendedKeyUsagePurpose>,
+    ) -> Vec<u8> {
         let key = KeyPair::generate_for(alg).unwrap();
         let mut params = CertificateParams::default();
-        params.is_ca = IsCa::NoCa;
+        params.is_ca = is_ca;
+        params.key_usages = key_usages;
+        params.extended_key_usages = extended_key_usages;
         params.not_before = date_time_ymd(2020, 1, 1);
         params.not_after = date_time_ymd(2030, 1, 1);
         params
@@ -342,6 +469,112 @@ mod tests {
             EMAIL,
             SIGNING_TIME,
         );
+        assert!(matches!(
+            result,
+            Err(SigstoreVerifyError::FulcioChainInvalid)
+        ));
+    }
+
+    // === RFC 5280 path-validation constraints (D0041 §6.1) ===
+
+    #[test]
+    fn rejects_issuer_that_is_not_a_ca() {
+        // THE "any leaf is a CA" check: pin a self-signed END-ENTITY
+        // (BasicConstraints cA = FALSE) as the trust anchor and sign the
+        // leaf with it. The chain signature verifies, but a non-CA must
+        // never be trusted to issue certificates.
+        let key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).unwrap();
+        let mut p = CertificateParams::default();
+        p.is_ca = IsCa::ExplicitNoCa; // BasicConstraints present, cA = false
+        p.distinguished_name.push(DnType::CommonName, "Not A CA");
+        let pseudo_root = p.self_signed(&key).unwrap();
+        let leaf = make_leaf(&pseudo_root, &key, ISSUER, EMAIL, &PKCS_ED25519);
+        let result = validate_cert_chain(
+            &leaf,
+            pseudo_root.pem().as_bytes(),
+            ISSUER,
+            EMAIL,
+            SIGNING_TIME,
+        );
+        assert!(matches!(
+            result,
+            Err(SigstoreVerifyError::FulcioChainInvalid)
+        ));
+    }
+
+    #[test]
+    fn rejects_issuer_without_key_cert_sign() {
+        // A CA (cA = TRUE) whose KeyUsage omits keyCertSign must not be
+        // trusted to sign certificates (RFC 5280 §4.2.1.3).
+        let (root, root_key) = make_root_ku(vec![KeyUsagePurpose::CrlSign]);
+        let leaf = make_leaf(&root, &root_key, ISSUER, EMAIL, &PKCS_ED25519);
+        let result = validate_cert_chain(&leaf, root.pem().as_bytes(), ISSUER, EMAIL, SIGNING_TIME);
+        assert!(matches!(
+            result,
+            Err(SigstoreVerifyError::FulcioChainInvalid)
+        ));
+    }
+
+    #[test]
+    fn rejects_leaf_asserting_ca() {
+        // A signing leaf that claims cA = TRUE is rejected: a release
+        // signing cert must be an end entity, never an issuer.
+        let (root, root_key) = make_root();
+        let leaf = make_leaf_with(
+            &root,
+            &root_key,
+            ISSUER,
+            EMAIL,
+            &PKCS_ED25519,
+            IsCa::Ca(BasicConstraints::Unconstrained),
+            vec![KeyUsagePurpose::KeyCertSign],
+            vec![ExtendedKeyUsagePurpose::CodeSigning],
+        );
+        let result = validate_cert_chain(&leaf, root.pem().as_bytes(), ISSUER, EMAIL, SIGNING_TIME);
+        assert!(matches!(
+            result,
+            Err(SigstoreVerifyError::FulcioChainInvalid)
+        ));
+    }
+
+    #[test]
+    fn rejects_leaf_missing_code_signing_eku() {
+        // No ExtendedKeyUsage at all -> rejected (the Fulcio code-signing
+        // profile requires id-kp-codeSigning).
+        let (root, root_key) = make_root();
+        let leaf = make_leaf_with(
+            &root,
+            &root_key,
+            ISSUER,
+            EMAIL,
+            &PKCS_ED25519,
+            IsCa::NoCa,
+            vec![KeyUsagePurpose::DigitalSignature],
+            vec![],
+        );
+        let result = validate_cert_chain(&leaf, root.pem().as_bytes(), ISSUER, EMAIL, SIGNING_TIME);
+        assert!(matches!(
+            result,
+            Err(SigstoreVerifyError::FulcioChainInvalid)
+        ));
+    }
+
+    #[test]
+    fn rejects_leaf_with_wrong_eku() {
+        // An EKU that is present but excludes code-signing (and is not
+        // anyExtendedKeyUsage) -> rejected.
+        let (root, root_key) = make_root();
+        let leaf = make_leaf_with(
+            &root,
+            &root_key,
+            ISSUER,
+            EMAIL,
+            &PKCS_ED25519,
+            IsCa::NoCa,
+            vec![KeyUsagePurpose::DigitalSignature],
+            vec![ExtendedKeyUsagePurpose::ServerAuth],
+        );
+        let result = validate_cert_chain(&leaf, root.pem().as_bytes(), ISSUER, EMAIL, SIGNING_TIME);
         assert!(matches!(
             result,
             Err(SigstoreVerifyError::FulcioChainInvalid)
