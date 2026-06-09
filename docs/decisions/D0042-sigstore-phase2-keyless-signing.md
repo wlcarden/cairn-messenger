@@ -223,6 +223,20 @@ item 5): a pinned CT-log key is a config input
 matching CT key reaches the config, SCT verification is mandatory by
 construction — no code change.
 
+**Provisioning requirement (from the 2026-06-09 adversarial review).** A
+two-lens adversarial review of the phase-2 verifier (SCT DER byte-surgery +
+the orchestration) found **no bugs** — no panics on attacker-controlled
+certs, no forgery/spurious-accept, no bypass — and one provisioning hazard:
+because `ctlog_pubkey_pem` is `Option`, a future provisioner could pair a
+**real** Fulcio root with `None` and silently disable the SCT defense (the
+guard against a Fulcio leaf that was never CT-logged). The mitigation is a
+hard rule, enforced at provisioning time rather than by a brittle
+root-fingerprint check: **filling `PRODUCTION_ROOTS` (or any real-Fulcio
+config) MUST set the matching CT-log key.** This is now stated at both the
+config field and the `PRODUCTION_ROOTS` const. The review's minor
+robustness notes (explicit length-prefix guards in the precert blob builder;
+a `der_len`/`read_tlv` length-domain assert) were applied the same day.
+
 ## 6. Verifier adaptations phase 2 forces
 
 The verifier is real but was built + tested against the **synthetic Ed25519

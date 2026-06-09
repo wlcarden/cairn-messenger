@@ -93,6 +93,18 @@ pub struct SigstoreVerifierConfig {
     /// Sigstore roots, where every leaf is CT-logged); `None` skips SCT
     /// verification (synthetic roots / the phase-1 producer, whose rcgen
     /// leaves carry no SCT).
+    ///
+    /// **Provisioning invariant (phase-3 / D0042 §5):** any verifier built
+    /// with a **real** Fulcio root (`fulcio_root_pem`) MUST also set this to
+    /// the matching CT-log key. The embedded SCT is the defense against a
+    /// Fulcio compromise (or any leaf issued without being CT-logged): with a
+    /// real Fulcio root but `None` here, such a leaf passes chain validation
+    /// and the OIDC pins, and the verifier accepts it with the CT-transparency
+    /// check silently disabled. `None` is therefore valid **only** for the
+    /// synthetic-root / dev path. The enforcement point is root provisioning:
+    /// when `cairn-uniffi`'s `PRODUCTION_ROOTS` (currently `None`) is filled,
+    /// it must carry a CT-log key wired through here. The matching pair lives
+    /// in `crate::anchors` (e.g. `PROD_FULCIO_CHAIN_PEM` + `PROD_CTLOG_PUBKEY_PEM`).
     pub ctlog_pubkey_pem: Option<Vec<u8>>,
     /// Expected OIDC issuer URL per D0024 §1.1.
     pub expected_oidc_issuer: String,

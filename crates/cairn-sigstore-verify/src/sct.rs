@@ -126,6 +126,15 @@ fn der_len(n: usize) -> Vec<u8> {
     while bytes.first() == Some(&0) {
         bytes.remove(0);
     }
+    // `read_tlv` (the decoder) accepts at most a 4-byte length-of-length, so
+    // this encoder shares that ≤4 GB domain. Inputs here are sub-slices of a
+    // size-bounded bundle cert, so a >4-byte length is unreachable; the
+    // assert catches a future misuse on unbounded data rather than attacker
+    // input.
+    debug_assert!(
+        bytes.len() <= 4,
+        "der_len exceeds read_tlv's 4-byte length-of-length domain"
+    );
     let mut out = vec![0x80 | (bytes.len() as u8)];
     out.extend_from_slice(&bytes);
     out
@@ -292,24 +301,40 @@ fn parse_sct(sct: &[u8]) -> Option<ParsedSct<'_>> {
     })
 }
 
-/// Build the `digitally-signed` precert blob the CT log signed over.
-fn precert_signed_blob(sct: &ParsedSct, issuer_key_hash: &[u8; 32], precert_tbs: &[u8]) -> Vec<u8> {
+/// Build the `digitally-signed` precert blob the CT log signed over, or
+/// `None` if a field would not fit its TLS length prefix.
+///
+/// RFC 6962 types `tbs_certificate` as `opaque<1..2^24-1>` and
+/// `ct_extensions` as `opaque<0..2^16-1>`. The guard rejects an oversized
+/// field **explicitly** (a `None` the caller treats as "this SCT does not
+/// verify") rather than silently truncating the length prefix and relying
+/// on the downstream ECDSA mismatch to fail closed — same outcome, but the
+/// rejection is legible and short-circuits before the signature work.
+fn precert_signed_blob(
+    sct: &ParsedSct,
+    issuer_key_hash: &[u8; 32],
+    precert_tbs: &[u8],
+) -> Option<Vec<u8>> {
+    if precert_tbs.len() > 0xFF_FFFF || sct.extensions.len() > 0xFFFF {
+        return None;
+    }
     let mut b = Vec::with_capacity(44 + precert_tbs.len() + sct.extensions.len());
     b.push(0); // sct_version = v1
     b.push(0); // signature_type = certificate_timestamp
     b.extend_from_slice(&sct.timestamp.to_be_bytes());
     b.extend_from_slice(&[0x00, 0x01]); // entry_type = precert_entry(1)
     b.extend_from_slice(issuer_key_hash);
-    // tbs_certificate: 24-bit length prefix.
+    // tbs_certificate: 24-bit length prefix (bounds-checked above, so the
+    // `as u8` truncations are exact).
     let l = precert_tbs.len();
     b.push((l >> 16) as u8);
     b.push((l >> 8) as u8);
     b.push(l as u8);
     b.extend_from_slice(precert_tbs);
-    // ct_extensions: 16-bit length prefix.
+    // ct_extensions: 16-bit length prefix (bounds-checked above).
     b.extend_from_slice(&(sct.extensions.len() as u16).to_be_bytes());
     b.extend_from_slice(sct.extensions);
-    b
+    Some(b)
 }
 
 /// Verify that `leaf_der` embeds an SCT issued by the **pinned** CT log
@@ -362,7 +387,9 @@ pub fn verify_embedded_sct(
         let Ok(sig) = Signature::from_der(sct.signature_der) else {
             continue;
         };
-        let blob = precert_signed_blob(&sct, &issuer_key_hash, &precert_tbs);
+        let Some(blob) = precert_signed_blob(&sct, &issuer_key_hash, &precert_tbs) else {
+            continue; // a field overflows its TLS length prefix
+        };
         if ctlog_key.verify(&blob, &sig).is_ok() {
             return Ok(());
         }

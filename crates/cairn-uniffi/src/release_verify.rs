@@ -64,6 +64,12 @@ const SHA256_LEN: usize = 32;
 /// that forces phase 2 to provision real roots rather than inherit phase
 /// 1's caller-supplied shape. (`None` of a non-`const`-constructible type
 /// is itself a valid `const`.)
+///
+/// **When provisioning this, set [`ReleaseRootsRecord::ctlog_pubkey_pem`]**
+/// to the matching CT-log key (a real Fulcio root without it silently
+/// disables the embedded-SCT / CT-transparency defense — see that field's
+/// docs and `SigstoreVerifierConfig::ctlog_pubkey_pem`). The proven
+/// Fulcio+CT+Rekor anchor triples live in `cairn_sigstore_verify::anchors`.
 const PRODUCTION_ROOTS: Option<ReleaseRootsRecord> = None;
 
 /// The pinned release trust roots (the typed form of `cairn-release`'s
