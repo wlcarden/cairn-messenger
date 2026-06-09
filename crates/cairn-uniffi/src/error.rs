@@ -420,7 +420,8 @@ impl From<SigstoreVerifyError> for CairnFfiError {
             | SigstoreVerifyError::RekorCheckpointVerifyFailed
             | SigstoreVerifyError::ManifestPriorHashMismatch
             | SigstoreVerifyError::ManifestSignatureVerifyFailed => Self::SigstoreVerifyFailed,
-            SigstoreVerifyError::ManifestDecodeFailed => Self::MalformedData,
+            SigstoreVerifyError::ManifestDecodeFailed
+            | SigstoreVerifyError::ReleaseBundleDecodeFailed => Self::MalformedData,
             SigstoreVerifyError::SigsumReleaseLog(_) => Self::SigsumVerifyFailed,
             SigstoreVerifyError::Storage(_) => Self::StorageFailure,
             _ => Self::UnmappedInternal,
@@ -706,6 +707,16 @@ mod tests {
         assert_eq!(
             CairnFfiError::from(SigstoreVerifyError::RekorCheckpointVerifyFailed),
             CairnFfiError::SigstoreVerifyFailed
+        );
+    }
+
+    #[test]
+    fn sigstore_bundle_decode_maps_to_malformed_data() {
+        // The offline-install wire-format decode fault (R1) joins the
+        // manifest-decode bucket rather than degrading to UnmappedInternal.
+        assert_eq!(
+            CairnFfiError::from(SigstoreVerifyError::ReleaseBundleDecodeFailed),
+            CairnFfiError::MalformedData
         );
     }
 

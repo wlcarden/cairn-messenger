@@ -123,6 +123,7 @@ pub mod identity;
 pub mod messaging;
 pub mod never_export_gate;
 pub mod recovery;
+pub mod release_verify;
 pub mod storage;
 pub mod tor;
 pub mod transparency;
@@ -147,6 +148,9 @@ pub use messaging::{
 pub use recovery::{
     MasterAttestationRecord, RecoveryCardRecord, ShareRecord, recovery_decode_card,
     recovery_reconstruct_and_attest, recovery_verify_master_attestation,
+};
+pub use release_verify::{
+    ReleaseArtifactRecord, ReleaseRootsRecord, ReleaseVerifierHandle, VerifiedReleaseRecord,
 };
 pub use storage::{StorageHandle, StrongBoxKeyMaterial};
 pub use tor::{NetworkStateFfi, TorControlConfig, TorTransportHandle};
