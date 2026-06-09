@@ -403,11 +403,18 @@ verification + its mandatory-path wiring (5), and Rekor entry-type binding
   / governance) and the Sigsum anchor (funding-gated) — not for any missing
   capture. SCT enforcement is dark in a shipped build only for lack of a
   matching pinned key reaching the config, not for lack of wiring.
-- **2b — OIDC-gated (CI milestone).** A real GitHub Actions staging
-  `cosign sign-blob` run produces a real `ReleaseBundle` that
-  `verify_release` accepts against the pinned staging roots —
-  end-to-end real-Sigstore. Gated on the GHA workflow + the staging OIDC
-  identity setup. This is the `auditable-release` CI job D0041 §6.2 names.
+- **2b — OIDC-gated (CI milestone). Scaffolded — ✓ (2026-06-09); awaits a
+  GitHub repo to run.** A real GitHub Actions `cosign sign-blob` run produces
+  a real `ReleaseBundle` that `verify_release` accepts — end-to-end
+  real-Sigstore. The producer + workflow are now **in-tree**: the URI-identity
+  wiring (§6.4), the `build-manifest` + `ingest-cosign` CLI (§4),
+  `.github/workflows/release-sign.yml`, and the operator runbook
+  (`docs/runbooks/2b-keyless-release-sign.md`). The remaining gate is **not
+  code** — it is ambient/infra: a GitHub repo with Actions (OIDC is ambient,
+  Fulcio/Rekor are free public services, cosign auto-installs; no accounts or
+  keys). Run it via `workflow_dispatch` (defaults to staging per §1). This is
+  the `auditable-release` CI job D0041 §6.2 names. The Sigsum half stays
+  synthetic (§8) until the log + witnesses are recruited.
 
 ## 8. The other §6.1 hard blocker: Sigsum recruitment
 

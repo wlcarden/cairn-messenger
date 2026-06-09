@@ -1,0 +1,151 @@
+# 2b — real keyless release-sign proof (D0042 §4 / §7).
+#
+# Proves the producer→verifier loop against REAL Sigstore keyless signing:
+# GitHub Actions ambient OIDC -> `cosign sign-blob` -> `cairn-release
+# ingest-cosign` -> `cairn-release verify`. The Sigstore half (Fulcio cert +
+# detached signature + Rekor inclusion + embedded SCT) is real; the Sigsum
+# half is synthetic until a log + witnesses are recruited (D0042 §8).
+#
+# This is the workflow the D0042 §7 "2b" proof target names. It is manual
+# (`workflow_dispatch`) — the proof is on-demand, not per-push. Defaults to
+# Sigstore STAGING per D0042 §1 (production is phase 3). The ONLY thing you
+# provide is this repo on GitHub with Actions enabled; OIDC is ambient and
+# Fulcio/Rekor are free public services.
+#
+# Caveats (Sigstore staging is best-effort and can be reset): if a step
+# fails on staging state, re-run, or flip `environment` to `production`
+# (zero extra config — production cosign is the default). The cosign-staging
+# incantation below (URLs + --insecure-ignore-sct) is the spot most likely
+# to need a per-cosign-version tweak; the SCT is still EMBEDDED in the cert
+# and our verifier checks it against the pinned CT key regardless.
+
+name: release-sign (2b proof)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Sigstore environment to sign against"
+        type: choice
+        options: [staging, production]
+        default: staging
+
+permissions:
+  id-token: write # ambient OIDC for keyless cosign (the whole point)
+  contents: read
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: sigstore/cosign-installer@v3
+
+      - uses: dtolnay/rust-toolchain@stable # rust-toolchain.toml pins 1.91 per-dir
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build cairn-release
+        run: cargo build -p cairn-release --release
+
+      - name: Pick the artifact to sign
+        run: |
+          # For the 2b MECHANISM proof, sign a small deterministic file.
+          # For a real release, replace this with the built APK path.
+          printf 'cairn 2b keyless release-sign proof\n' > artifact.bin
+          echo "ARTIFACT=artifact.bin" >> "$GITHUB_ENV"
+
+      - name: Resolve Sigstore endpoints
+        run: |
+          if [ "${{ inputs.environment }}" = "production" ]; then
+            echo "FULCIO_URL=https://fulcio.sigstore.dev"     >> "$GITHUB_ENV"
+            echo "REKOR_URL=https://rekor.sigstore.dev"       >> "$GITHUB_ENV"
+            echo "TROOT=https://raw.githubusercontent.com/sigstore/root-signing/main/targets/trusted_root.json" >> "$GITHUB_ENV"
+          else
+            echo "FULCIO_URL=https://fulcio.sigstage.dev"     >> "$GITHUB_ENV"
+            echo "REKOR_URL=https://rekor.sigstage.dev"       >> "$GITHUB_ENV"
+            echo "TROOT=https://raw.githubusercontent.com/sigstore/root-signing-staging/main/targets/trusted_root.json" >> "$GITHUB_ENV"
+          fi
+
+      - name: build-manifest (the blob cosign signs)
+        run: |
+          ./target/release/cairn-release build-manifest \
+            --apk "$ARTIFACT" \
+            --version "2b-$(date -u +%Y%m%dT%H%M%SZ)" \
+            --out rel-out
+
+      - name: cosign sign-blob (keyless, ambient OIDC)
+        run: |
+          # --insecure-ignore-sct skips cosign's OWN SCT check (it would need
+          # the env's CT-log key configured); the SCT is still EMBEDDED in the
+          # issued cert, and `cairn-release verify` checks it against the
+          # pinned CT key downstream.
+          cosign sign-blob --yes \
+            --fulcio-url "$FULCIO_URL" \
+            --rekor-url "$REKOR_URL" \
+            --insecure-ignore-sct=true \
+            --output-certificate rel-out/cert.pem \
+            --output-signature rel-out/sig.b64 \
+            --bundle rel-out/cosign-bundle.json \
+            rel-out/manifest.cbor
+
+      - name: Fetch the Rekor entry (with inclusion proof)
+        run: |
+          # cosign's classic bundle carries only the SignedEntryTimestamp;
+          # the full inclusion proof + checkpoint our verifier needs come
+          # from the entries API by the global logIndex cosign just got.
+          LOGINDEX=$(jq -r '.rekorBundle.Payload.logIndex' rel-out/cosign-bundle.json)
+          echo "Rekor logIndex: $LOGINDEX"
+          curl -fsS "$REKOR_URL/api/v1/log/entries?logIndex=$LOGINDEX" \
+            -o rel-out/rekor-entry.json
+
+      - name: Fetch the live trust roots (Fulcio chain + CT key + Rekor key)
+        run: |
+          # For this producer-side self-check we pin the roots that were live
+          # at sign time (a staging snapshot). Phase-3 production pins vetted
+          # roots deliberately instead of fetching (D0024 §2.2).
+          curl -fsS "$TROOT" -o troot.json
+          # Fulcio trust bundle (root + intermediate) -> PEM chain.
+          jq -r '.certificateAuthorities[].certChain.certificates[].rawBytes' troot.json \
+            | while read -r b64; do
+                echo "-----BEGIN CERTIFICATE-----"; echo "$b64" | fold -w64; echo "-----END CERTIFICATE-----";
+              done > rel-out/fulcio-root.pem
+          # The CT log that signed the leaf's embedded SCT: match by the SCT's
+          # log id. Simplest robust pick: the active CT log (no validFor.end).
+          jq -r '.ctlogs[] | select(.publicKey.validFor.end == null) | .publicKey.rawBytes' troot.json \
+            | tail -1 \
+            | (echo "-----BEGIN PUBLIC KEY-----"; fold -w64; echo "-----END PUBLIC KEY-----") \
+            > rel-out/ctlog.pem
+          # The Rekor log public key (the active log's checkpoint signer).
+          curl -fsS "$REKOR_URL/api/v1/log/publicKey" -o rel-out/rekor-key.pem
+
+      - name: ingest-cosign (real outputs -> ReleaseBundle)
+        run: |
+          ./target/release/cairn-release ingest-cosign \
+            --manifest rel-out/manifest.cbor \
+            --cert rel-out/cert.pem \
+            --signature rel-out/sig.b64 \
+            --rekor-entry rel-out/rekor-entry.json \
+            --fulcio-root rel-out/fulcio-root.pem \
+            --rekor-key rel-out/rekor-key.pem \
+            --ctlog-key rel-out/ctlog.pem \
+            --oidc-issuer "https://token.actions.githubusercontent.com" \
+            --oidc-san-uri "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-sign.yml@${GITHUB_REF}" \
+            --out rel-out
+
+      - name: verify (THE 2b proof — real keyless bundle accepted)
+        run: |
+          ./target/release/cairn-release verify \
+            --bundle rel-out/release-bundle.cbor \
+            --roots rel-out/release-roots.json
+
+      - name: Upload the release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle-${{ inputs.environment }}
+          path: |
+            rel-out/release-bundle.cbor
+            rel-out/release-roots.json
+            rel-out/manifest.cbor
+            rel-out/build-provenance.json
+            rel-out/cert.pem
