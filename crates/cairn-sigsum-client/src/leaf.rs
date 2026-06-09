@@ -227,15 +227,34 @@ impl LeafHash {
     }
 }
 
+/// Compute the leaf hash for raw signature bytes per D0023 §1:
+/// `SHA-256(signature_bytes)`.
+///
+/// This is the **single audited primitive** underlying every release
+/// and trust-graph leaf hash — the "one audited primitive, N use cases"
+/// property (D0024 §5.2):
+///
+/// - [`leaf_hash_for`] / [`leaf_hash_for_cose_sign1_bytes`] extract the
+///   64-byte Ed25519 signature out of a `COSE_Sign1` envelope, then call
+///   this (trust-graph ops, D0023 §1; the legacy COSE release manifest).
+/// - The Sigstore-native release path (`cairn-sigstore-verify`, D0042
+///   §3) passes the **detached** ECDSA P-256 signature bytes directly —
+///   the `cosign sign-blob` artifact has no envelope to unwrap.
+///
+/// Infallible: hashing raw bytes cannot fail, so no envelope-decode
+/// error surface is possible here.
+#[must_use]
+pub fn leaf_hash_for_signature_bytes(signature_bytes: &[u8]) -> LeafHash {
+    LeafHash(sha256(signature_bytes))
+}
+
 /// Compute the leaf hash for the canonical bytes of a `COSE_Sign1`
 /// envelope per D0023 §1: `SHA-256(COSE_Sign1.signature_bytes)`.
 ///
-/// This is the shared primitive underlying both [`leaf_hash_for`]
-/// (trust-graph ops, D0023 §1) and the release-manifest leaf hash
-/// (D0024 §5.1) — the "one audited primitive, two use cases" property.
-/// The trust-graph wrapper encodes the op to its envelope bytes first;
-/// the release path (`cairn-sigstore-verify`) passes the signed-
-/// manifest envelope bytes directly.
+/// Extracts the envelope's signature bytes, then delegates to the shared
+/// [`leaf_hash_for_signature_bytes`] primitive. Used by trust-graph ops
+/// (D0023 §1) and the legacy COSE release-manifest path; the Sigstore-
+/// native release path (D0042 §3) calls the shared primitive directly.
 ///
 /// # Errors
 ///
@@ -245,7 +264,7 @@ impl LeafHash {
 pub fn leaf_hash_for_cose_sign1_bytes(envelope_bytes: &[u8]) -> Result<LeafHash, SigsumError> {
     let envelope =
         CoseSign1::from_bytes(envelope_bytes).map_err(|_| SigsumError::MalformedResponse)?;
-    Ok(LeafHash(sha256(envelope.signature())))
+    Ok(leaf_hash_for_signature_bytes(envelope.signature()))
 }
 
 /// Compute the leaf hash for a signed trust-graph op per D0023 §1.

@@ -55,7 +55,7 @@
 //! - `ReleaseManifest` canonical-CBOR round-trip per D0024 §4
 //! - `canonical_self_hash` per D0024 §4.2 (rollback-resistance
 //!   input)
-//! - `release_leaf_hash_for_envelope_bytes` per D0024 §5
+//! - `release_leaf_hash_for_signature` per D0042 §3
 //! - `SigstoreVerifier` constructor + config + retry-budget
 //!   accessor
 //! - Typed `SigstoreVerifyError` surface per D0024 §7
@@ -84,8 +84,9 @@
 //! release signer transmits the tree-leaf components + raw proof bodies
 //! in the [`client::ReleaseBundle`] (a release verifier never emitted
 //! the leaf, D0023 §1.4), and the `release_leaf_hash` binding it is the
-//! shared `SHA-256(COSE_Sign1.signature_bytes)` primitive via
-//! [`compose::release_leaf_hash_for_envelope_bytes`] (D0024 §5.1).
+//! shared `SHA-256(signature_bytes)` primitive via
+//! [`compose::release_leaf_hash_for_signature`] (D0042 §3), applied to
+//! the detached ECDSA P-256 manifest signature.
 //! The `integration-tests` cargo feature flag gates the eventual
 //! real-Rekor / real-Fulcio network-exercising tests.
 
@@ -102,7 +103,7 @@ pub mod manifest;
 mod decode;
 
 pub use client::{ReleaseBundle, SigstoreVerifier, SigstoreVerifierConfig, VerifiedRelease};
-pub use compose::release_leaf_hash_for_envelope_bytes;
+pub use compose::release_leaf_hash_for_signature;
 pub use error::SigstoreVerifyError;
 pub use fulcio::validate_cert_chain;
 pub use manifest::{ArtifactHash, ReleaseManifest, SHA256_LEN};

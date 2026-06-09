@@ -188,22 +188,37 @@ runtime fetch on the verify path.
 
 The verifier is real but was built + tested against the **synthetic Ed25519
 COSE** profile; (B) + real Sigstore differ in concrete ways that are **new
-verify-side work**, not config:
+verify-side work**, not config. **Items 1–3 (the B-model verifier core)
+landed 2026-06-09** (commit pending); items 4–6 are the remaining
+follow-ons.
 
-1. **Fulcio P-256 key extraction.** Replace `extract_ed25519_key` with a
-   P-256 SPKI extractor (reusing the in-tree `p256` pin). The existing
-   `rejects_non_ed25519_leaf_key` test inverts (accept P-256, reject the
-   rest).
-2. **Detached-P-256 manifest verify.** The release manifest is no longer a
-   `COSE_Sign1`; `verify_release` verifies a **detached** P-256 signature
-   over the canonical-CBOR manifest bytes against the Fulcio-bound key
-   (not a COSE verify via `cairn-envelope`).
-3. **`ReleaseBundle` wire change.** `manifest_envelope_bytes` (COSE) →
-   `manifest_bytes` + `manifest_signature` (detached). The
-   `release_leaf_hash` primitive (today `SHA-256(COSE_Sign1.signature)`,
-   binding the Sigsum release entry to the signing event) rebinds to the
-   detached signature bytes. The canonical-CBOR decode-strictness gate
-   (D0041 §6.3) applies unchanged to the new fields.
+1. **Fulcio P-256 key extraction — ✓ LANDED.** `extract_ed25519_key` →
+   `extract_p256_key` (`VerifyingKey::from_public_key_der` over the leaf
+   SPKI, reusing the in-tree `p256` pin; validates `id-ecPublicKey` +
+   `prime256v1` + on-curve point in one call). `rejects_non_ed25519_leaf_key`
+   inverted to `rejects_non_p256_leaf_key`. **Proven against a real cert:**
+   `tests/fulcio_staging_vector.rs` extracts the P-256 key from a genuine
+   Sigstore **staging** Fulcio leaf (`tests/vectors/fulcio-staging/`) and
+   asserts it equals the leaf's own SPKI key, with negatives confirming the
+   OIDC issuer/email pins + validity-window gate reject the real cert when
+   mis-pinned. This is the real-cert Fulcio proof §7 deferred here.
+2. **Detached-P-256 manifest verify — ✓ LANDED.** The release manifest is
+   no longer a `COSE_Sign1`; `verify_release` parses the manifest from
+   `manifest_bytes` and verifies a **detached** P-256 signature
+   (`Signature::from_der` + `VerifyingKey::verify`) over those bytes against
+   the Fulcio-bound key — no `cairn-envelope` COSE verify, no external AAD
+   (cosign `sign-blob` has none).
+3. **`ReleaseBundle` wire change — ✓ LANDED.** `manifest_envelope_bytes`
+   (COSE) → `manifest_bytes` + `manifest_signature` (detached, wire key 8).
+   The `release_leaf_hash` primitive rebinds to `SHA-256(detached signature)`
+   via a shared `cairn_sigsum_client::leaf_hash_for_signature_bytes` (the
+   COSE path now also funnels through it — "one audited primitive, three use
+   cases"). The canonical-CBOR decode-strictness gate (D0041 §6.3) applies
+   unchanged to the new fields. The change is transparent to `cairn-uniffi` +
+   the fuzz harness (opaque bytes through `from_canonical_cbor`). The
+   `cairn-release` producer detached-signs with a P-256 dev key (lifted from
+   its rcgen leaf via PKCS#8), and `produced_bundle_verifies_against_its_own_roots`
+   proves the full producer→verifier round-trip end-to-end.
 4. **SAN-URI identity (CI model, §2).** Today `san_has_email` matches an
    `rfc822Name`. A CI workflow identity is a SAN **URI**
    (`https://github.com/ORG/REPO/.github/workflows/…@REF`) plus GHA Fulcio
@@ -234,8 +249,18 @@ verify-side work**, not config:
   real production-shaped Rekor wire format, not just its own synthetic
   fixtures. Independent of §3; pure-offline (no network at test time, no
   `online-rekor` feature). De-risks 2b (real key + a known-good real entry
-  to test against). The full Fulcio/CT root-pinning (§5) + the real-cert
-  Fulcio proof land with the §6 P-256 verifier adaptations.
+  to test against).
+- **2a — Fulcio half + B-model verifier core — ✓ PROVEN (2026-06-09).**
+  The §6 items 1–3 landed: the verifier now extracts a **real** Sigstore
+  staging Fulcio leaf's **P-256** key end-to-end (chain signature, validity
+  window, OIDC issuer/email pins, RFC 5280 leaf constraints) and verifies a
+  detached P-256 manifest signature against it — `tests/fulcio_staging_vector.rs`
+  (5 tests over `tests/vectors/fulcio-staging/`, the first non-synthetic
+  Fulcio extraction) plus the synthetic producer→verifier round-trip
+  (`cairn-release`) and the B-model `verify_release` harness. The remaining
+  §5 work is pinning the staging Fulcio/CT root **constants** into the
+  shipped config (the `PRODUCTION_ROOTS` slot), and the §6 follow-ons are
+  SCT verification (item 5) + SAN-URI CI identity (item 4).
 - **2b — OIDC-gated (CI milestone).** A real GitHub Actions staging
   `cosign sign-blob` run produces a real `ReleaseBundle` that
   `verify_release` accepts against the pinned staging roots —

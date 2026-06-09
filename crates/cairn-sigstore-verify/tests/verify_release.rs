@@ -4,18 +4,19 @@
 //! End-to-end `verify_release` orchestration harness per D0024 §6.
 //!
 //! Builds a fully-valid offline [`ReleaseBundle`] — a Fulcio cert chain
-//! (P-384 test root → Ed25519 leaf binding the developer key), a
-//! `COSE_Sign1` manifest signed by that same developer key, and a valid
-//! RFC 6962 + C2SP/ECDSA-P256 Rekor bundle — and drives
+//! (P-384 test root → ECDSA P-256 leaf binding the developer key), a
+//! detached P-256 signature over the canonical-CBOR manifest (the
+//! `cosign sign-blob` model; D0042 §3), and a valid RFC 6962 +
+//! C2SP/ECDSA-P256 Rekor bundle — and drives
 //! `SigstoreVerifier::verify_release` through the happy path plus
 //! per-layer failure injections.
 //!
-//! The key trick: one Ed25519 key plays both roles. It is generated as
-//! an rcgen `KeyPair` (so rcgen issues the Fulcio leaf binding it), and
-//! its seed is lifted from the rcgen PKCS#8 into a cairn-crypto
-//! `SigningKey` (so it signs the manifest). Both libraries derive the
-//! same RFC 8032 public key from the seed, so the key the cert binds is
-//! exactly the key that signs the manifest.
+//! The key trick: one P-256 key plays both roles. It is generated as an
+//! rcgen `KeyPair` (so rcgen issues the Fulcio leaf binding it), and its
+//! private key is lifted from the rcgen PKCS#8 into a
+//! `p256::ecdsa::SigningKey` (so it detached-signs the manifest). Both
+//! views are the same key, so the key the cert binds is exactly the key
+//! that signs the manifest.
 //!
 //! The §5 Sigsum-anchored-release-log step IS exercised: `valid_fixture`
 //! builds a cosigned `get-tree-head` + `get-inclusion-proof` (via a
@@ -35,8 +36,6 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use cairn_crypto::ed25519::SigningKey;
-use cairn_envelope::cose_sign1::Sign1Builder;
-use cairn_sigstore_verify::manifest::RELEASE_MANIFEST_AAD;
 use cairn_sigstore_verify::{
     ArtifactHash, RekorBundle, ReleaseBundle, ReleaseManifest, SigstoreVerifier,
     SigstoreVerifierConfig, SigstoreVerifyError,
@@ -46,19 +45,19 @@ use cairn_sigsum_client::witness::{
 };
 use cairn_sigsum_client::{
     EmittedLeaf, LeafHash, RetryBudget, SigsumClient, SigsumClientConfig, SigsumError, WitnessPool,
-    build_tree_leaf, leaf_hash_for_cose_sign1_bytes, parse_witness_pool,
+    build_tree_leaf, leaf_hash_for_signature_bytes, parse_witness_pool,
 };
 use cairn_storage::Storage;
 use cairn_storage::key_provider::testing::InMemoryKeyProvider;
 use p256::ecdsa::SigningKey as P256SigningKey;
 use p256::ecdsa::signature::Signer as _;
 use p256::ecdsa::{Signature as P256Signature, VerifyingKey as P256VerifyingKey};
-use p256::pkcs8::{EncodePublicKey as _, LineEnding};
+use p256::pkcs8::{DecodePrivateKey as _, EncodePublicKey as _, LineEnding};
 use rand_core::OsRng;
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, CustomExtension, DnType,
-    ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P384_SHA384, PKCS_ED25519,
-    SanType, date_time_ymd,
+    ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
+    PKCS_ECDSA_P384_SHA384, SanType, date_time_ymd,
 };
 use sha2::{Digest, Sha256};
 use url::Url;
@@ -176,26 +175,21 @@ fn make_root() -> (Certificate, KeyPair) {
     (cert, key)
 }
 
-/// Generate a developer Ed25519 key as both an rcgen `KeyPair` (to be
-/// bound into the Fulcio leaf cert) and the matching cairn-crypto
-/// `SigningKey` (to sign the manifest). The seed is lifted out of the
-/// rcgen PKCS#8 via the standard Ed25519 privateKey marker
-/// (`04 22 04 20 || seed[32]`); both libraries derive the same RFC 8032
-/// public key from it (the happy-path test confirms the match).
-fn make_dev_key() -> (KeyPair, SigningKey) {
-    let kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+/// Generate a developer ECDSA P-256 key as both an rcgen `KeyPair` (to be
+/// bound into the Fulcio leaf cert) and the matching
+/// `p256::ecdsa::SigningKey` (to detached-sign the manifest; D0042 §3).
+/// rcgen generates the keypair, then its private key is lifted out of the
+/// PKCS#8 DER into the `p256` signer — the same key in both views, so the
+/// cert binds exactly the key that signs the manifest (the happy-path
+/// test confirms the match end-to-end).
+fn make_dev_key() -> (KeyPair, P256SigningKey) {
+    let kp = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
     let pkcs8 = kp.serialize_der();
-    let marker = [0x04u8, 0x22, 0x04, 0x20];
-    let pos = pkcs8
-        .windows(4)
-        .position(|w| w == marker)
-        .expect("ed25519 pkcs8 privateKey marker");
-    let seed: [u8; 32] = pkcs8[pos + 4..pos + 36].try_into().unwrap();
-    let sk = SigningKey::from_seed(&Zeroizing::new(seed));
+    let sk = P256SigningKey::from_pkcs8_der(&pkcs8).expect("lift p256 dev key from pkcs8");
     (kp, sk)
 }
 
-/// A leaf cert binding `dev_kp`'s Ed25519 key, signed by `root`,
+/// A leaf cert binding `dev_kp`'s ECDSA P-256 key, signed by `root`,
 /// carrying the Fulcio OIDC issuer extension + SAN email.
 fn make_leaf(
     root: &Certificate,
@@ -226,7 +220,10 @@ fn make_leaf(
 // Manifest + verifier construction
 // ===================================================================
 
-fn signed_manifest_envelope(dev_sk: &SigningKey, prior: Vec<u8>) -> (Vec<u8>, ReleaseManifest) {
+/// Build the canonical-CBOR manifest and a detached ECDSA P-256 signature
+/// over it (the `cosign sign-blob` artifact; D0042 §3). Returns
+/// `(manifest_bytes, detached_signature_der)`.
+fn detached_signed_manifest(dev_sk: &P256SigningKey, prior: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
     let manifest = ReleaseManifest {
         version: "1.0.0-pilot".to_string(),
         artifact_sha256: vec![ArtifactHash {
@@ -237,15 +234,9 @@ fn signed_manifest_envelope(dev_sk: &SigningKey, prior: Vec<u8>) -> (Vec<u8>, Re
         release_timestamp: SIGNING_TIME,
         prior_release_hash: prior,
     };
-    let payload = manifest.to_canonical_cbor().unwrap();
-    let envelope = Sign1Builder::new()
-        .with_payload(payload)
-        .with_external_aad(RELEASE_MANIFEST_AAD.to_vec())
-        .finalize(dev_sk)
-        .unwrap()
-        .encode(false)
-        .unwrap();
-    (envelope, manifest)
+    let manifest_bytes = manifest.to_canonical_cbor().unwrap();
+    let sig: P256Signature = dev_sk.sign(&manifest_bytes);
+    (manifest_bytes, sig.to_der().as_bytes().to_vec())
 }
 
 // ===================================================================
@@ -395,18 +386,21 @@ fn valid_fixture() -> Fixture {
     let (dev_kp, dev_sk) = make_dev_key();
     let (root, root_key) = make_root();
     let leaf_der = make_leaf(&root, &root_key, &dev_kp, ISSUER, EMAIL);
-    let (envelope, _manifest) = signed_manifest_envelope(&dev_sk, PRIOR_HASH.to_vec());
+    let (manifest_bytes, manifest_signature) =
+        detached_signed_manifest(&dev_sk, PRIOR_HASH.to_vec());
     let (rekor_bundle, rekor_pem) = make_rekor_bundle();
 
-    // Sigsum proof bound to THIS manifest's release leaf hash (the shared
-    // SHA-256-of-signature-bytes primitive, D0024 §5.1).
+    // Sigsum proof bound to THIS release's leaf hash (the shared
+    // SHA-256-of-signature-bytes primitive over the detached signature,
+    // D0042 §3).
     let sigsum_log = make_sigsum_log();
-    let release_leaf_hash = leaf_hash_for_cose_sign1_bytes(&envelope).unwrap();
+    let release_leaf_hash = leaf_hash_for_signature_bytes(&manifest_signature);
     let (sigsum_emitted_leaf, sigsum_tree_head_body, sigsum_inclusion_proof_body) =
         make_sigsum_proof(&sigsum_log, &release_leaf_hash);
 
     let bundle = ReleaseBundle {
-        manifest_envelope_bytes: envelope,
+        manifest_bytes,
+        manifest_signature,
         fulcio_cert_der: leaf_der,
         rekor_bundle,
         rekor_signing_time_unix: SIGNING_TIME,
@@ -464,19 +458,21 @@ async fn rejects_prior_hash_mismatch() {
 
 #[tokio::test]
 async fn rejects_manifest_signed_by_wrong_key() {
-    // The cert binds the dev key, but the manifest is signed by a
-    // DIFFERENT key -> the COSE_Sign1 signature fails against the
+    // The cert binds the dev key, but the manifest is detached-signed by a
+    // DIFFERENT P-256 key -> the detached signature fails against the
     // Fulcio-bound key.
     let (dev_kp, _dev_sk) = make_dev_key();
     let (root, root_key) = make_root();
     let leaf_der = make_leaf(&root, &root_key, &dev_kp, ISSUER, EMAIL);
 
-    let imposter_sk = SigningKey::generate(&mut OsRng);
-    let (envelope, _m) = signed_manifest_envelope(&imposter_sk, PRIOR_HASH.to_vec());
+    let imposter_sk = P256SigningKey::random(&mut OsRng);
+    let (manifest_bytes, manifest_signature) =
+        detached_signed_manifest(&imposter_sk, PRIOR_HASH.to_vec());
     let (rekor_bundle, rekor_pem) = make_rekor_bundle();
     let sigsum_log = make_sigsum_log();
     let bundle = ReleaseBundle {
-        manifest_envelope_bytes: envelope,
+        manifest_bytes,
+        manifest_signature,
         fulcio_cert_der: leaf_der,
         rekor_bundle,
         rekor_signing_time_unix: SIGNING_TIME,

@@ -5,8 +5,8 @@
 //!
 //! [`validate_cert_chain`] validates a Fulcio-issued signing
 //! certificate against a pinned Fulcio trust bundle and returns the
-//! developer's Ed25519 public key for the manifest-signature check
-//! (D0024 §4). It performs four checks:
+//! developer's ECDSA P-256 public key for the detached manifest-
+//! signature check (D0042 §3). It performs four checks:
 //!
 //! 1. **Chain to the pinned root.** Walk leaf → issuer → … → a
 //!    self-signed root contained in the pinned bundle, verifying each
@@ -24,10 +24,12 @@
 //! 4. **OIDC email pin.** A SAN `rfc822Name` must equal the pinned
 //!    developer email.
 //!
-//! The returned key is the certificate's Ed25519 SubjectPublicKeyInfo
-//! key — the developer's Sigstore signing key, which Cairn requires to
-//! be Ed25519 so the manifest `COSE_Sign1` (Ed25519-only per
-//! `cairn_envelope`) verifies against it.
+//! The returned key is the certificate's ECDSA P-256
+//! SubjectPublicKeyInfo key — the developer's Sigstore keyless signing
+//! key. Fulcio mints P-256 ephemeral keys for the keyless flow, and
+//! Cairn verifies the detached manifest blob signature (the `cosign
+//! sign-blob` model; D0042 §3) directly against it — no `COSE_Sign1`
+//! wrapper, so the artifact is independently `cosign verify-blob`-able.
 //!
 //! ## Path-validation constraints (D0041 §6.1 hardening)
 //!
@@ -49,9 +51,9 @@
 //! Still out of scope for v1: NameConstraints and policy-constraint
 //! processing (Fulcio does not use them; tracked against D0024 §2).
 
-use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, VerifyingKey};
+use p256::ecdsa::VerifyingKey;
+use p256::pkcs8::DecodePublicKey as _;
 use x509_parser::der_parser::oid;
-use x509_parser::oid_registry::OID_SIG_ED25519;
 use x509_parser::prelude::{FromDer, GeneralName, Pem, X509Certificate};
 
 use crate::error::SigstoreVerifyError;
@@ -60,15 +62,15 @@ use crate::error::SigstoreVerifyError;
 /// the chain walk so a malformed/cyclic bundle cannot loop forever.
 const MAX_CHAIN_DEPTH: usize = 8;
 
-/// Validate a Fulcio-issued signing certificate per D0024 §2 and return
-/// the developer's Ed25519 signing key.
+/// Validate a Fulcio-issued signing certificate per D0024 §2 / D0042 §3
+/// and return the developer's ECDSA P-256 signing key.
 ///
 /// # Errors
 ///
 /// - [`SigstoreVerifyError::FulcioChainInvalid`] — the cert or pinned
 ///   bundle did not parse, the chain did not build to a self-signed
 ///   root in the bundle, a link signature failed, or the leaf key is
-///   not Ed25519.
+///   not ECDSA P-256.
 /// - [`SigstoreVerifyError::FulcioCertExpiredAtSigningTime`] — the
 ///   Rekor-attested signing time falls outside the cert validity window.
 /// - [`SigstoreVerifyError::OidcIssuerMismatch`] /
@@ -140,8 +142,9 @@ pub fn validate_cert_chain(
         return Err(SigstoreVerifyError::OidcEmailMismatch);
     }
 
-    // Extract the Ed25519 signing key from the leaf SPKI.
-    extract_ed25519_key(&leaf)
+    // Extract the ECDSA P-256 signing key from the leaf SPKI (the Fulcio
+    // ephemeral keyless key; D0042 §3 / §6).
+    extract_p256_key(&leaf)
 }
 
 /// Walk the chain from `leaf` up to a self-signed root contained in
@@ -268,19 +271,16 @@ fn san_has_email(
     Ok(false)
 }
 
-/// Extract the Ed25519 public key from the cert's SubjectPublicKeyInfo.
-fn extract_ed25519_key(cert: &X509Certificate) -> Result<VerifyingKey, SigstoreVerifyError> {
+/// Extract the ECDSA **P-256** public key from the cert's
+/// SubjectPublicKeyInfo (the Fulcio ephemeral keyless key; D0042 §3).
+///
+/// Parses the full SPKI DER via `p256`'s `DecodePublicKey`, which
+/// enforces `id-ecPublicKey` + the `prime256v1` named curve + on-curve
+/// point validity in one call — so a non-P-256 key (Ed25519, P-384, …)
+/// is rejected.
+fn extract_p256_key(cert: &X509Certificate) -> Result<VerifyingKey, SigstoreVerifyError> {
     let spki = cert.public_key();
-    if spki.algorithm.algorithm != OID_SIG_ED25519 {
-        return Err(SigstoreVerifyError::FulcioChainInvalid);
-    }
-    let key_bytes = spki.subject_public_key.data.as_ref();
-    if key_bytes.len() != PUBLIC_KEY_LEN {
-        return Err(SigstoreVerifyError::FulcioChainInvalid);
-    }
-    let mut arr = [0u8; PUBLIC_KEY_LEN];
-    arr.copy_from_slice(key_bytes);
-    VerifyingKey::from_bytes(&arr).map_err(|_| SigstoreVerifyError::FulcioChainInvalid)
+    VerifyingKey::from_public_key_der(spki.raw).map_err(|_| SigstoreVerifyError::FulcioChainInvalid)
 }
 
 #[cfg(test)]
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn accepts_valid_chain_and_pins() {
         let (root, root_key) = make_root();
-        let leaf = make_leaf(&root, &root_key, ISSUER, EMAIL, &PKCS_ED25519);
+        let leaf = make_leaf(&root, &root_key, ISSUER, EMAIL, &PKCS_ECDSA_P256_SHA256);
         let result = validate_cert_chain(&leaf, root.pem().as_bytes(), ISSUER, EMAIL, SIGNING_TIME);
         assert!(result.is_ok(), "valid chain must validate: {result:?}");
     }
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn rejects_issuer_pin_mismatch() {
         let (root, root_key) = make_root();
-        let leaf = make_leaf(&root, &root_key, ISSUER, EMAIL, &PKCS_ED25519);
+        let leaf = make_leaf(&root, &root_key, ISSUER, EMAIL, &PKCS_ECDSA_P256_SHA256);
         let result = validate_cert_chain(
             &leaf,
             root.pem().as_bytes(),
@@ -404,7 +404,7 @@ mod tests {
     #[test]
     fn rejects_email_pin_mismatch() {
         let (root, root_key) = make_root();
-        let leaf = make_leaf(&root, &root_key, ISSUER, EMAIL, &PKCS_ED25519);
+        let leaf = make_leaf(&root, &root_key, ISSUER, EMAIL, &PKCS_ECDSA_P256_SHA256);
         let result = validate_cert_chain(
             &leaf,
             root.pem().as_bytes(),
@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn rejects_signing_time_outside_validity() {
         let (root, root_key) = make_root();
-        let leaf = make_leaf(&root, &root_key, ISSUER, EMAIL, &PKCS_ED25519);
+        let leaf = make_leaf(&root, &root_key, ISSUER, EMAIL, &PKCS_ECDSA_P256_SHA256);
         // ~2035, past the 2030 not_after.
         let result =
             validate_cert_chain(&leaf, root.pem().as_bytes(), ISSUER, EMAIL, 2_051_000_000);
@@ -437,7 +437,7 @@ mod tests {
         // is not in the trust bundle.
         let (root_a, key_a) = make_root();
         let (root_b, _key_b) = make_root();
-        let leaf = make_leaf(&root_a, &key_a, ISSUER, EMAIL, &PKCS_ED25519);
+        let leaf = make_leaf(&root_a, &key_a, ISSUER, EMAIL, &PKCS_ECDSA_P256_SHA256);
         let result =
             validate_cert_chain(&leaf, root_b.pem().as_bytes(), ISSUER, EMAIL, SIGNING_TIME);
         assert!(matches!(
@@ -447,11 +447,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_ed25519_leaf_key() {
-        // The chain + pins are valid, but the leaf binds a P-256 key,
-        // which the Ed25519-only manifest path cannot use.
+    fn rejects_non_p256_leaf_key() {
+        // The chain + pins are valid, but the leaf binds an Ed25519 key,
+        // which the Sigstore-native detached-P-256 manifest path (D0042
+        // §3) cannot use — `extract_p256_key` must reject it.
         let (root, root_key) = make_root();
-        let leaf = make_leaf(&root, &root_key, ISSUER, EMAIL, &PKCS_ECDSA_P256_SHA256);
+        let leaf = make_leaf(&root, &root_key, ISSUER, EMAIL, &PKCS_ED25519);
         let result = validate_cert_chain(&leaf, root.pem().as_bytes(), ISSUER, EMAIL, SIGNING_TIME);
         assert!(matches!(
             result,
@@ -488,7 +489,7 @@ mod tests {
         p.is_ca = IsCa::ExplicitNoCa; // BasicConstraints present, cA = false
         p.distinguished_name.push(DnType::CommonName, "Not A CA");
         let pseudo_root = p.self_signed(&key).unwrap();
-        let leaf = make_leaf(&pseudo_root, &key, ISSUER, EMAIL, &PKCS_ED25519);
+        let leaf = make_leaf(&pseudo_root, &key, ISSUER, EMAIL, &PKCS_ECDSA_P256_SHA256);
         let result = validate_cert_chain(
             &leaf,
             pseudo_root.pem().as_bytes(),
@@ -507,7 +508,7 @@ mod tests {
         // A CA (cA = TRUE) whose KeyUsage omits keyCertSign must not be
         // trusted to sign certificates (RFC 5280 §4.2.1.3).
         let (root, root_key) = make_root_ku(vec![KeyUsagePurpose::CrlSign]);
-        let leaf = make_leaf(&root, &root_key, ISSUER, EMAIL, &PKCS_ED25519);
+        let leaf = make_leaf(&root, &root_key, ISSUER, EMAIL, &PKCS_ECDSA_P256_SHA256);
         let result = validate_cert_chain(&leaf, root.pem().as_bytes(), ISSUER, EMAIL, SIGNING_TIME);
         assert!(matches!(
             result,
@@ -525,7 +526,7 @@ mod tests {
             &root_key,
             ISSUER,
             EMAIL,
-            &PKCS_ED25519,
+            &PKCS_ECDSA_P256_SHA256,
             IsCa::Ca(BasicConstraints::Unconstrained),
             vec![KeyUsagePurpose::KeyCertSign],
             vec![ExtendedKeyUsagePurpose::CodeSigning],
@@ -547,7 +548,7 @@ mod tests {
             &root_key,
             ISSUER,
             EMAIL,
-            &PKCS_ED25519,
+            &PKCS_ECDSA_P256_SHA256,
             IsCa::NoCa,
             vec![KeyUsagePurpose::DigitalSignature],
             vec![],
@@ -569,7 +570,7 @@ mod tests {
             &root_key,
             ISSUER,
             EMAIL,
-            &PKCS_ED25519,
+            &PKCS_ECDSA_P256_SHA256,
             IsCa::NoCa,
             vec![KeyUsagePurpose::DigitalSignature],
             vec![ExtendedKeyUsagePurpose::ServerAuth],

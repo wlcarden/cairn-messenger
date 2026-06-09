@@ -10,13 +10,15 @@
 //!
 //! 1. build the [`ReleaseManifest`] (version, artifact digests,
 //!    build-provenance digest, timestamp, `prior_release_hash`);
-//! 2. mint a Fulcio cert chain binding the developer key + OIDC pins;
-//! 3. `COSE_Sign1` the manifest under [`RELEASE_MANIFEST_AAD`] with that
-//!    same developer key;
+//! 2. mint a Fulcio cert chain binding the developer ECDSA P-256 key +
+//!    OIDC pins;
+//! 3. detached-sign the canonical-CBOR manifest with that same P-256 key
+//!    (the `cosign sign-blob` model; D0042 §3 — no `COSE_Sign1` wrapper);
 //! 4. anchor a Rekor inclusion proof + signed C2SP checkpoint;
 //! 5. chain `prior_release_hash` to the predecessor manifest;
-//! 6. emit a Sigsum tree leaf bound to the manifest's release-leaf hash +
-//!    a witness-cosigned tree head + inclusion proof.
+//! 6. emit a Sigsum tree leaf bound to the release-leaf hash
+//!    (`SHA-256(detached_signature)`) + a witness-cosigned tree head +
+//!    inclusion proof.
 //!
 //! ## Self-minted roots (D0041 phase 1)
 //!
@@ -45,27 +47,24 @@ use std::fmt::Write as _;
 use anyhow::{Context, Result};
 use base64::Engine as _;
 use cairn_crypto::ed25519::SigningKey;
-use cairn_envelope::cose_sign1::Sign1Builder;
-use cairn_sigstore_verify::manifest::RELEASE_MANIFEST_AAD;
 use cairn_sigstore_verify::{
     ArtifactHash, RekorBundle, ReleaseBundle, ReleaseManifest, SHA256_LEN,
 };
 use cairn_sigsum_client::witness::{
     build_cosignature_signed_message, build_tree_head_note, witness_key_hash,
 };
-use cairn_sigsum_client::{EmittedLeaf, LeafHash, build_tree_leaf, leaf_hash_for_cose_sign1_bytes};
+use cairn_sigsum_client::{EmittedLeaf, LeafHash, build_tree_leaf, leaf_hash_for_signature_bytes};
 use p256::ecdsa::SigningKey as P256SigningKey;
 use p256::ecdsa::signature::Signer as _;
 use p256::ecdsa::{Signature as P256Signature, VerifyingKey as P256VerifyingKey};
-use p256::pkcs8::{EncodePublicKey as _, LineEnding};
+use p256::pkcs8::{DecodePrivateKey as _, EncodePublicKey as _, LineEnding};
 use rand_core::OsRng;
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, CustomExtension, DnType,
-    ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P384_SHA384, PKCS_ED25519,
-    SanType, date_time_ymd,
+    ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
+    PKCS_ECDSA_P384_SHA384, SanType, date_time_ymd,
 };
 use sha2::{Digest, Sha256};
-use zeroize::Zeroizing;
 
 use crate::roots::{ReleaseRoots, to_hex};
 
@@ -175,22 +174,26 @@ pub fn produce(
     let fulcio_cert_der = mint_leaf(&root_cert, &root_key, &dev_kp)?;
     let fulcio_root_pem = root_cert.pem();
 
-    // (3) COSE_Sign1 the manifest under the release AAD with the dev key.
-    let manifest_envelope_bytes = sign_manifest_envelope(&dev_sk, &manifest)?;
+    // (3) Detached-sign the canonical-CBOR manifest with the dev P-256
+    // key (the cosign sign-blob model; D0042 §3). The signed blob IS
+    // `manifest_cbor` — no COSE wrapper, so a third party can
+    // `cosign verify-blob` the same (manifest, signature) pair.
+    let manifest_signature = sign_manifest_detached(&dev_sk, &manifest_cbor);
 
-    // (4) Rekor inclusion proof + signed checkpoint.
-    let (rekor_bundle, rekor_pubkey_pem) = mint_rekor_bundle(&manifest_envelope_bytes)?;
+    // (4) Rekor inclusion proof + signed checkpoint over the signing event.
+    let (rekor_bundle, rekor_pubkey_pem) = mint_rekor_bundle(&manifest_signature)?;
 
-    // (6) Sigsum tree leaf bound to the manifest's release-leaf hash + a
-    // witness-cosigned head + inclusion proof.
-    let release_leaf_hash = leaf_hash_for_cose_sign1_bytes(&manifest_envelope_bytes)
-        .map_err(|e| anyhow::anyhow!("compute release leaf hash: {e}"))?;
+    // (6) Sigsum tree leaf bound to the release-leaf hash
+    // (`SHA-256(detached_signature)`; D0042 §3) + a witness-cosigned head
+    // + inclusion proof.
+    let release_leaf_hash = leaf_hash_for_signature_bytes(&manifest_signature);
     let log = mint_sigsum_log();
     let (sigsum_emitted_leaf, sigsum_tree_head_body, sigsum_inclusion_proof_body) =
         mint_sigsum_proof(&log, &release_leaf_hash, release_timestamp)?;
 
     let bundle = ReleaseBundle {
-        manifest_envelope_bytes,
+        manifest_bytes: manifest_cbor.clone(),
+        manifest_signature,
         fulcio_cert_der,
         rekor_bundle,
         rekor_signing_time_unix: release_timestamp,
@@ -280,25 +283,22 @@ fn build_provenance(
 // Synthetic Fulcio cert helpers (mirror tests/verify_release.rs)
 // ===================================================================
 
-/// Generate the developer Ed25519 key as both an rcgen `KeyPair` (bound
-/// into the Fulcio leaf) and the matching cairn-crypto `SigningKey` (signs
-/// the manifest). The seed is lifted from the rcgen PKCS#8 via the RFC
-/// 8410 Ed25519 privateKey marker (`04 22 04 20 || seed[32]`); both
-/// libraries derive the same RFC 8032 public key from it.
-fn mint_dev_key() -> Result<(KeyPair, SigningKey)> {
-    let kp = KeyPair::generate_for(&PKCS_ED25519).context("generate dev keypair")?;
+/// Generate the developer ECDSA **P-256** key as both an rcgen `KeyPair`
+/// (bound into the Fulcio leaf's `SubjectPublicKeyInfo`) and the matching
+/// `p256::ecdsa::SigningKey` (detached-signs the manifest; D0042 §3).
+///
+/// rcgen generates the keypair, then the private key is lifted out of its
+/// PKCS#8 DER into the `p256` signer. Both views are the SAME key, so the
+/// leaf SPKI the verifier extracts (`extract_p256_key`) is exactly the key
+/// the detached signature verifies under — the host proof
+/// `produced_bundle_verifies_against_its_own_roots` fails loudly if they
+/// ever diverge. (Replaces the Ed25519 RFC 8410 seed-marker scan with a
+/// standard PKCS#8 round-trip, which P-256's structured DER supports.)
+fn mint_dev_key() -> Result<(KeyPair, P256SigningKey)> {
+    let kp = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).context("generate dev keypair")?;
     let pkcs8 = kp.serialize_der();
-    let marker = [0x04u8, 0x22, 0x04, 0x20];
-    let pos = pkcs8
-        .windows(4)
-        .position(|w| w == marker)
-        .context("locate ed25519 pkcs8 privateKey marker")?;
-    let seed: [u8; 32] = pkcs8
-        .get(pos + 4..pos + 36)
-        .context("ed25519 seed slice out of range")?
-        .try_into()
-        .context("ed25519 seed not 32 bytes")?;
-    let sk = SigningKey::from_seed(&Zeroizing::new(seed));
+    let sk = P256SigningKey::from_pkcs8_der(&pkcs8)
+        .map_err(|e| anyhow::anyhow!("lift p256 dev signing key from pkcs8: {e}"))?;
     Ok((kp, sk))
 }
 
@@ -317,8 +317,10 @@ fn mint_root() -> Result<(Certificate, KeyPair)> {
     Ok((cert, key))
 }
 
-/// A leaf cert binding `dev_kp`'s Ed25519 key, signed by `root`, carrying
-/// the Fulcio OIDC issuer extension + SAN email (D0024 §2).
+/// A leaf cert binding `dev_kp`'s ECDSA P-256 key, signed by `root`,
+/// carrying the Fulcio OIDC issuer extension + SAN email (D0024 §2 /
+/// D0042 §3). The bound P-256 `SubjectPublicKeyInfo` is what the verifier
+/// extracts and checks the detached manifest signature against.
 fn mint_leaf(root: &Certificate, root_key: &KeyPair, dev_kp: &KeyPair) -> Result<Vec<u8>> {
     let mut params = CertificateParams::default();
     params.is_ca = IsCa::NoCa;
@@ -347,18 +349,16 @@ fn mint_leaf(root: &Certificate, root_key: &KeyPair, dev_kp: &KeyPair) -> Result
     Ok(leaf.der().as_ref().to_vec())
 }
 
-/// `COSE_Sign1` the canonical-CBOR manifest under [`RELEASE_MANIFEST_AAD`].
-fn sign_manifest_envelope(dev_sk: &SigningKey, manifest: &ReleaseManifest) -> Result<Vec<u8>> {
-    let payload = manifest
-        .to_canonical_cbor()
-        .map_err(|e| anyhow::anyhow!("encode manifest payload: {e}"))?;
-    Sign1Builder::new()
-        .with_payload(payload)
-        .with_external_aad(RELEASE_MANIFEST_AAD.to_vec())
-        .finalize(dev_sk)
-        .map_err(|e| anyhow::anyhow!("finalize COSE_Sign1: {e}"))?
-        .encode(false)
-        .map_err(|e| anyhow::anyhow!("encode COSE_Sign1: {e}"))
+/// Detached-sign the canonical-CBOR manifest bytes with the dev P-256 key
+/// (the `cosign sign-blob` model; D0042 §3). Returns the ASN.1 DER ECDSA
+/// signature — exactly what the verifier feeds `Signature::from_der` and
+/// the leaf-hash binds via `SHA-256`.
+///
+/// Infallible: ECDSA P-256 signing of a fixed message with a valid key
+/// cannot fail (the `Signer` contract).
+fn sign_manifest_detached(dev_sk: &P256SigningKey, manifest_bytes: &[u8]) -> Vec<u8> {
+    let sig: P256Signature = dev_sk.sign(manifest_bytes);
+    sig.to_der().as_bytes().to_vec()
 }
 
 // ===================================================================
@@ -435,16 +435,17 @@ fn b64(bytes: &[u8]) -> String {
 }
 
 /// A valid synthetic Rekor bundle: a 5-leaf tree with the signing-event
-/// leaf at index 2 (the RFC 6962 leaf hash of the manifest envelope), a
-/// C2SP checkpoint signed by a fresh P-256 key. Returns the bundle + the
+/// leaf at index 2 (the RFC 6962 leaf hash of the detached signature — a
+/// real `hashedrekord` commits to the signing event, D0042 §3), a C2SP
+/// checkpoint signed by a fresh P-256 key. Returns the bundle + the
 /// pinned Rekor pubkey PEM.
-fn mint_rekor_bundle(manifest_envelope: &[u8]) -> Result<(RekorBundle, String)> {
+fn mint_rekor_bundle(signing_event: &[u8]) -> Result<(RekorBundle, String)> {
     let sk = P256SigningKey::random(&mut OsRng);
     let mut leaves: Vec<[u8; 32]> = (0..5)
         .map(|i| rfc6962_leaf(format!("cairn-rekor-pad-{i}").as_bytes()))
         .collect();
     // The index-2 leaf is the real signing-event entry.
-    leaves[2] = rfc6962_leaf(manifest_envelope);
+    leaves[2] = rfc6962_leaf(signing_event);
     let root = mth(&leaves);
     let proof = audit_path(2, &leaves);
     let note = format!("rekor.cairn.invalid/self-minted\n5\n{}\n", b64(&root));
@@ -585,9 +586,10 @@ mod tests {
             .to_canonical_cbor()
             .expect("encode produced bundle");
         let recovered = ReleaseBundle::from_canonical_cbor(&bytes).expect("decode produced bundle");
+        assert_eq!(recovered.manifest_bytes, produced.bundle.manifest_bytes);
         assert_eq!(
-            recovered.manifest_envelope_bytes,
-            produced.bundle.manifest_envelope_bytes
+            recovered.manifest_signature,
+            produced.bundle.manifest_signature
         );
         assert_eq!(recovered.rekor_bundle.leaf_index, 2);
     }

@@ -8,13 +8,15 @@
 //! [`SigstoreVerifier::verify_release`] is **implemented** as the
 //! offline end-to-end orchestration (D0024 §6.4 bundle mode):
 //!
-//! 1. Decode the `ReleaseManifest` from the bundle's `COSE_Sign1`
-//!    envelope payload (D0024 §4).
+//! 1. Decode the `ReleaseManifest` from the bundle's canonical-CBOR
+//!    `manifest_bytes` — the exact blob the detached signature covers
+//!    (D0042 §3; no `COSE_Sign1` wrapper).
 //! 2. Validate the Fulcio cert chain + OIDC `iss`/`email` pins
-//!    ([`crate::fulcio::validate_cert_chain`]) → developer Ed25519 key
-//!    (D0024 §1-§2).
-//! 3. Verify the manifest `COSE_Sign1` signature against that key
-//!    (D0024 §4).
+//!    ([`crate::fulcio::validate_cert_chain`]) → developer ECDSA P-256
+//!    key (D0024 §1-§2 / D0042 §3).
+//! 3. Verify the detached ECDSA P-256 `manifest_signature` over
+//!    `manifest_bytes` against that key (the cosign sign-blob model;
+//!    D0042 §3).
 //! 4. Verify the Rekor inclusion proof + signed checkpoint
 //!    ([`crate::rekor::verify_rekor_inclusion`]) against the pinned
 //!    Rekor key (D0024 §3).
@@ -22,10 +24,10 @@
 //! 6. Verify the witness-cosigned Sigsum-anchored release-log inclusion
 //!    (D0024 §5) offline via
 //!    [`cairn_sigsum_client::SigsumClient::verify_bundled_inclusion`]:
-//!    bind the bundled proof to the manifest's `release_leaf_hash`
-//!    (`SHA-256(COSE_Sign1.signature_bytes)`, the shared D0023 §1 / §5.1
-//!    primitive), re-verify the cosigned head + 2-of-3 witness threshold,
-//!    and reconstruct the RFC 6962 root.
+//!    bind the bundled proof to this release's `release_leaf_hash`
+//!    (`SHA-256(detached_signature_bytes)`, the shared D0023 §1 / D0042
+//!    §3 primitive), re-verify the cosigned head + 2-of-3 witness
+//!    threshold, and reconstruct the RFC 6962 root.
 //!
 //! All six steps are offline; the optional `online-rekor` feature's
 //! Rekor fetch path (`fetch_rekor_bundle` / `fetch_and_verify_rekor`)
@@ -42,17 +44,18 @@
 //! exactly as the Rekor proof is carried inline.
 
 use cairn_envelope::canonical::Value;
-use cairn_envelope::cose_sign1::CoseSign1;
 use cairn_sigsum_client::{EmittedLeaf, RetryBudget, SigsumClient};
+use p256::ecdsa::Signature;
+use p256::ecdsa::signature::Verifier as _;
 // `Url` is used only by the online `fetch_*` path (gated below).
 #[cfg(feature = "online-rekor")]
 use url::Url;
 
-use crate::compose::release_leaf_hash_for_envelope_bytes;
+use crate::compose::release_leaf_hash_for_signature;
 use crate::decode::{decode_canonical_map, int_to_u64, into_bytes, into_text};
 use crate::error::SigstoreVerifyError;
 use crate::fulcio::validate_cert_chain;
-use crate::manifest::{RELEASE_MANIFEST_AAD, ReleaseManifest};
+use crate::manifest::ReleaseManifest;
 use crate::rekor::{RekorBundle, verify_rekor_inclusion};
 // `RekorCheckpoint` + `parse_rekor_log_entry` are used only by the
 // online `fetch_*` path (gated below); importing them unconditionally
@@ -98,7 +101,8 @@ pub struct SigstoreVerifierConfig {
 ///
 /// Carries:
 ///
-/// - the canonical-CBOR encoded `COSE_Sign1` of the manifest;
+/// - the canonical-CBOR `ReleaseManifest` bytes + the detached ECDSA
+///   P-256 signature over them (D0042 §3);
 /// - the Fulcio-issued signing certificate in DER bytes;
 /// - the Rekor inclusion + checkpoint bundle;
 /// - the Sigsum witness-cosigned release-log proof (D0024 §5).
@@ -112,9 +116,14 @@ pub struct SigstoreVerifierConfig {
 /// captured.
 #[derive(Debug, Clone)]
 pub struct ReleaseBundle {
-    /// `COSE_Sign1` envelope bytes over the canonical-CBOR
-    /// encoded [`ReleaseManifest`].
-    pub manifest_envelope_bytes: Vec<u8>,
+    /// The canonical-CBOR encoded [`ReleaseManifest`] bytes — the blob the
+    /// release was signed over (D0042 §3; no `COSE_Sign1` wrapper, so a
+    /// third party can `cosign verify-blob` it).
+    pub manifest_bytes: Vec<u8>,
+    /// The detached ECDSA **P-256** signature (ASN.1 DER) over
+    /// [`Self::manifest_bytes`] — `cosign sign-blob`'s output under the
+    /// Fulcio ephemeral key (D0042 §3/§4).
+    pub manifest_signature: Vec<u8>,
     /// Fulcio-issued signing certificate in DER bytes.
     pub fulcio_cert_der: Vec<u8>,
     /// Rekor inclusion + checkpoint bundle per D0024 §3.
@@ -143,13 +152,14 @@ pub struct ReleaseBundle {
 // client reads it, and `verify_release` consumes the decoded struct.
 // The nested `RekorBundle` + Sigsum `EmittedLeaf` are carried as byte
 // strings holding their own canonical-CBOR (each owns its schema).
-const KEY_BUNDLE_MANIFEST_ENVELOPE: i64 = 1;
+const KEY_BUNDLE_MANIFEST_BYTES: i64 = 1;
 const KEY_BUNDLE_FULCIO_CERT_DER: i64 = 2;
 const KEY_BUNDLE_REKOR: i64 = 3;
 const KEY_BUNDLE_REKOR_SIGNING_TIME: i64 = 4;
 const KEY_BUNDLE_SIGSUM_EMITTED_LEAF: i64 = 5;
 const KEY_BUNDLE_SIGSUM_TREE_HEAD: i64 = 6;
 const KEY_BUNDLE_SIGSUM_INCLUSION_PROOF: i64 = 7;
+const KEY_BUNDLE_MANIFEST_SIGNATURE: i64 = 8;
 
 impl ReleaseBundle {
     /// Encode as canonical-CBOR per D0018 §2.3 — the offline-install
@@ -171,8 +181,8 @@ impl ReleaseBundle {
             .map_err(|_| SigstoreVerifyError::ReleaseBundleDecodeFailed)?;
         let map = Value::Map(vec![
             (
-                Value::Int(KEY_BUNDLE_MANIFEST_ENVELOPE),
-                Value::Bytes(self.manifest_envelope_bytes.clone()),
+                Value::Int(KEY_BUNDLE_MANIFEST_BYTES),
+                Value::Bytes(self.manifest_bytes.clone()),
             ),
             (
                 Value::Int(KEY_BUNDLE_FULCIO_CERT_DER),
@@ -195,6 +205,10 @@ impl ReleaseBundle {
                 Value::Int(KEY_BUNDLE_SIGSUM_INCLUSION_PROOF),
                 Value::Text(self.sigsum_inclusion_proof_body.clone()),
             ),
+            (
+                Value::Int(KEY_BUNDLE_MANIFEST_SIGNATURE),
+                Value::Bytes(self.manifest_signature.clone()),
+            ),
         ]);
         map.encode()
             .map_err(|_| SigstoreVerifyError::ReleaseBundleDecodeFailed)
@@ -215,7 +229,8 @@ impl ReleaseBundle {
     pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, SigstoreVerifyError> {
         let entries =
             decode_canonical_map(bytes).ok_or(SigstoreVerifyError::ReleaseBundleDecodeFailed)?;
-        let mut manifest_envelope_bytes: Option<Vec<u8>> = None;
+        let mut manifest_bytes: Option<Vec<u8>> = None;
+        let mut manifest_signature: Option<Vec<u8>> = None;
         let mut fulcio_cert_der: Option<Vec<u8>> = None;
         let mut rekor_bundle: Option<RekorBundle> = None;
         let mut rekor_signing_time_unix: Option<u64> = None;
@@ -224,7 +239,8 @@ impl ReleaseBundle {
         let mut sigsum_inclusion_proof_body: Option<String> = None;
         for (key, value) in entries {
             match key {
-                KEY_BUNDLE_MANIFEST_ENVELOPE => manifest_envelope_bytes = Some(into_bytes(value)?),
+                KEY_BUNDLE_MANIFEST_BYTES => manifest_bytes = Some(into_bytes(value)?),
+                KEY_BUNDLE_MANIFEST_SIGNATURE => manifest_signature = Some(into_bytes(value)?),
                 KEY_BUNDLE_FULCIO_CERT_DER => fulcio_cert_der = Some(into_bytes(value)?),
                 KEY_BUNDLE_REKOR => {
                     rekor_bundle = Some(RekorBundle::from_canonical_cbor(&into_bytes(value)?)?);
@@ -246,7 +262,8 @@ impl ReleaseBundle {
             }
         }
         Ok(Self {
-            manifest_envelope_bytes: manifest_envelope_bytes
+            manifest_bytes: manifest_bytes.ok_or(SigstoreVerifyError::ReleaseBundleDecodeFailed)?,
+            manifest_signature: manifest_signature
                 .ok_or(SigstoreVerifyError::ReleaseBundleDecodeFailed)?,
             fulcio_cert_der: fulcio_cert_der
                 .ok_or(SigstoreVerifyError::ReleaseBundleDecodeFailed)?,
@@ -368,13 +385,15 @@ impl SigstoreVerifier {
     /// Composes the layered verification over a self-contained
     /// [`ReleaseBundle`] (offline mode, D0024 §6.4):
     ///
-    /// 1. Decode the [`ReleaseManifest`] from the bundle's `COSE_Sign1`
-    ///    envelope payload.
+    /// 1. Decode the [`ReleaseManifest`] from the bundle's canonical-CBOR
+    ///    `manifest_bytes` — the exact blob the detached signature covers
+    ///    (D0042 §3; no COSE wrapper).
     /// 2. Validate the Fulcio cert chain + OIDC pins
-    ///    ([`validate_cert_chain`]), yielding the developer's Ed25519
+    ///    ([`validate_cert_chain`]), yielding the developer's ECDSA P-256
     ///    signing key.
-    /// 3. Verify the manifest `COSE_Sign1` signature against that key
-    ///    (external AAD [`RELEASE_MANIFEST_AAD`]).
+    /// 3. Verify the detached ECDSA P-256 `manifest_signature` over
+    ///    `manifest_bytes` against that key (the cosign sign-blob model;
+    ///    D0042 §3 — third parties can `cosign verify-blob` the same pair).
     /// 4. Verify the Rekor inclusion proof + signed checkpoint
     ///    ([`verify_rekor_inclusion`]) against the pinned Rekor key.
     /// 5. Enforce rollback resistance: the manifest's
@@ -383,7 +402,8 @@ impl SigstoreVerifier {
     /// 6. Verify the witness-cosigned Sigsum-anchored release-log
     ///    inclusion (D0024 §5) **offline** via
     ///    [`SigsumClient::verify_bundled_inclusion`]: bind the bundled
-    ///    proof to this manifest's `release_leaf_hash`, re-verify the
+    ///    proof to this release's leaf hash (SHA-256 of the detached
+    ///    signature; D0042 §3), re-verify the
     ///    cosigned head + 2-of-3 threshold, and reconstruct the RFC 6962
     ///    root.
     ///
@@ -413,15 +433,12 @@ impl SigstoreVerifier {
         bundle: &ReleaseBundle,
         expected_predecessor_hash: Option<[u8; 32]>,
     ) -> Result<VerifiedRelease, SigstoreVerifyError> {
-        // (1) Decode the manifest from the COSE_Sign1 envelope payload.
-        let envelope = CoseSign1::from_bytes(&bundle.manifest_envelope_bytes)
-            .map_err(|_| SigstoreVerifyError::ManifestDecodeFailed)?;
-        let payload = envelope
-            .payload()
-            .ok_or(SigstoreVerifyError::ManifestDecodeFailed)?;
-        let manifest = ReleaseManifest::from_canonical_cbor(payload)?;
+        // (1) Decode the manifest directly from its canonical-CBOR bytes —
+        // the blob the detached signature covers (D0042 §3; no COSE wrapper,
+        // so a third party can `cosign verify-blob` the same artifact).
+        let manifest = ReleaseManifest::from_canonical_cbor(&bundle.manifest_bytes)?;
 
-        // (2) Fulcio cert chain + OIDC pins -> developer Ed25519 key.
+        // (2) Fulcio cert chain + OIDC pins -> developer ECDSA P-256 key.
         let dev_key = validate_cert_chain(
             &bundle.fulcio_cert_der,
             &self.fulcio_root_pem,
@@ -430,9 +447,14 @@ impl SigstoreVerifier {
             bundle.rekor_signing_time_unix,
         )?;
 
-        // (3) Manifest signature against the Fulcio-bound developer key.
-        envelope
-            .verify(&dev_key, RELEASE_MANIFEST_AAD)
+        // (3) Detached ECDSA P-256 signature over the manifest bytes,
+        // against the Fulcio-bound key (the cosign sign-blob model; D0042
+        // §3). No external AAD: the blob is the canonical-CBOR manifest,
+        // signed exactly as stock cosign would.
+        let signature = Signature::from_der(&bundle.manifest_signature)
+            .map_err(|_| SigstoreVerifyError::ManifestSignatureVerifyFailed)?;
+        dev_key
+            .verify(&bundle.manifest_bytes, &signature)
             .map_err(|_| SigstoreVerifyError::ManifestSignatureVerifyFailed)?;
 
         // (4) Rekor inclusion proof + signed checkpoint (offline, against
@@ -447,14 +469,13 @@ impl SigstoreVerifier {
         }
 
         // (6) Sigsum-anchored release log (D0024 §5): bind the bundled,
-        // offline inclusion proof to THIS manifest's release leaf hash and
+        // offline inclusion proof to THIS release's leaf hash and
         // re-verify it (cosigned head + 2-of-3 threshold + RFC 6962 root)
         // against the composed client's pinned log key + witness pool. The
-        // release leaf hash is recomputed from the manifest envelope, so a
-        // proof for any other leaf fails the binding check. The decode
-        // here cannot fail — step (1) already decoded the same envelope.
-        let release_leaf_hash =
-            release_leaf_hash_for_envelope_bytes(&bundle.manifest_envelope_bytes)?;
+        // release leaf hash is recomputed from the detached signature
+        // (SHA-256 of the verified `manifest_signature`; D0042 §3), so a
+        // proof for any other leaf fails the binding check.
+        let release_leaf_hash = release_leaf_hash_for_signature(&bundle.manifest_signature);
         self.sigsum_client.verify_bundled_inclusion(
             &release_leaf_hash,
             &bundle.sigsum_emitted_leaf,
@@ -627,7 +648,11 @@ mod tests {
 
     fn make_release_bundle() -> ReleaseBundle {
         ReleaseBundle {
-            manifest_envelope_bytes: vec![0xAA; 64],
+            // Not valid canonical-CBOR for a ReleaseManifest, so
+            // verify_release fails at the first (manifest-decode) gate
+            // before the detached-signature check is reached.
+            manifest_bytes: vec![0xAA; 64],
+            manifest_signature: vec![0x55; 72],
             fulcio_cert_der: vec![0xBB; 128],
             rekor_bundle: RekorBundle {
                 leaf_hash: [0xCC; 32],
@@ -681,12 +706,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn verify_release_rejects_malformed_manifest_envelope() {
-        // The placeholder bundle's manifest bytes are not a valid
-        // COSE_Sign1, so verify_release fails at the first (decode) gate.
-        // The full happy-path + per-layer failure composition is covered
-        // end-to-end in tests/verify_release.rs (it needs rcgen certs +
-        // a cairn-crypto-signed manifest + a valid Rekor bundle).
+    async fn verify_release_rejects_malformed_manifest_bytes() {
+        // The placeholder bundle's manifest bytes are not valid
+        // canonical-CBOR for a ReleaseManifest, so verify_release fails at
+        // the first (decode) gate before the detached-P-256 signature
+        // check. The full happy-path + per-layer failure composition is
+        // covered end-to-end in tests/verify_release.rs (it needs rcgen
+        // certs + a P-256-signed manifest + a valid Rekor bundle).
         let verifier = make_verifier();
         let bundle = make_release_bundle();
         let result = verifier.verify_release(&bundle, None).await;
@@ -707,10 +733,8 @@ mod tests {
         // all three nesting layers (top-level bytes, nested RekorBundle,
         // nested Sigsum EmittedLeaf).
         assert_eq!(recovered.to_canonical_cbor().unwrap(), bytes);
-        assert_eq!(
-            recovered.manifest_envelope_bytes,
-            original.manifest_envelope_bytes
-        );
+        assert_eq!(recovered.manifest_bytes, original.manifest_bytes);
+        assert_eq!(recovered.manifest_signature, original.manifest_signature);
         assert_eq!(recovered.fulcio_cert_der, original.fulcio_cert_der);
         assert_eq!(
             recovered.rekor_signing_time_unix,

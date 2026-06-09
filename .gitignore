@@ -69,3 +69,10 @@ secrets.local.*
 .env
 .env.*
 !.env.example
+# EXCEPTION: Sigstore *staging* test vectors are PUBLIC X.509 certificates +
+# log SPKI public keys — NO private-key material (the `*.pem` here are certs
+# / pubkeys only). They are intentional checked-in fixtures the offline
+# real-data tests `include_str!` (tests/{fulcio,rekor}-staging/), so the
+# `*.pem` guard above must NOT silently drop them. Scoped to this one tree;
+# the broad guard still protects every other path.
+!crates/cairn-sigstore-verify/tests/vectors/**/*.pem

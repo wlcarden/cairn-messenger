@@ -98,6 +98,7 @@ pub use error::SigsumError;
 pub use leaf::{
     LEAF_HASH_LEN, LeafHash, TREE_LEAF_NAMESPACE, TreeLeaf, TreeLeafSigner, build_tree_leaf,
     build_tree_leaf_with_signer, leaf_hash_for, leaf_hash_for_cose_sign1_bytes,
+    leaf_hash_for_signature_bytes,
 };
 pub use verify::{VerifyChainWithSigsumError, verify_chain_links_with_sigsum};
 pub use witness::{
