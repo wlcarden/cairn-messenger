@@ -52,7 +52,7 @@ use anyhow::{Context, Result};
 use cairn_sigstore_verify::{ReleaseBundle, ReleaseManifest};
 use clap::{Args, Parser, Subcommand};
 
-use crate::produce::{ArtifactInput, produce};
+use crate::produce::{ArtifactInput, CosignInputs, ingest_cosign, produce};
 use crate::roots::{ReleaseRoots, decode_hex_32, to_hex};
 
 #[derive(Parser)]
@@ -70,6 +70,14 @@ struct Cli {
 enum Command {
     /// Build + sign a self-minted release bundle over the given artifact(s).
     Build(BuildArgs),
+    /// Emit ONLY the canonical-CBOR manifest (the blob `cosign sign-blob`
+    /// signs) + the build-provenance — the first half of the real keyless
+    /// (D0042 §4) pipeline. No synthetic key/bundle is written.
+    BuildManifest(BuildArgs),
+    /// Ingest stock `cosign sign-blob` outputs (cert + detached sig + Rekor
+    /// entry) into a verifiable `release-bundle.cbor` + `release-roots.json`
+    /// (D0042 §4, the "2b" path). Sigstore proofs are real; Sigsum synthetic.
+    IngestCosign(IngestCosignArgs),
     /// Replay `verify_release` over a bundle against its roots (host oracle).
     Verify(VerifyArgs),
 }
@@ -104,10 +112,49 @@ struct VerifyArgs {
     expected_prior: Option<String>,
 }
 
+#[derive(Args)]
+struct IngestCosignArgs {
+    /// The canonical-CBOR manifest that was signed (from `build-manifest`).
+    #[arg(long, value_name = "FILE")]
+    manifest: PathBuf,
+    /// The Fulcio signing certificate, PEM (`cosign --output-certificate`).
+    #[arg(long, value_name = "FILE")]
+    cert: PathBuf,
+    /// The detached signature, base64 (`cosign --output-signature`).
+    #[arg(long, value_name = "FILE")]
+    signature: PathBuf,
+    /// The raw Rekor entry JSON (`GET /api/v1/log/entries?logIndex=N`).
+    #[arg(long = "rekor-entry", value_name = "FILE")]
+    rekor_entry: PathBuf,
+    /// Pinned Fulcio trust bundle, PEM (root [+ intermediate]).
+    #[arg(long = "fulcio-root", value_name = "FILE")]
+    fulcio_root: PathBuf,
+    /// Pinned Rekor log public key, PEM.
+    #[arg(long = "rekor-key", value_name = "FILE")]
+    rekor_key: PathBuf,
+    /// Pinned CT-log public key, PEM (optional; enables SCT enforcement).
+    #[arg(long = "ctlog-key", value_name = "FILE")]
+    ctlog_key: Option<PathBuf>,
+    /// Expected OIDC issuer (GitHub Actions OIDC by default).
+    #[arg(
+        long = "oidc-issuer",
+        default_value = "https://token.actions.githubusercontent.com"
+    )]
+    oidc_issuer: String,
+    /// Expected CI workflow SAN URI identity (the keyless signer).
+    #[arg(long = "oidc-san-uri", value_name = "URI")]
+    oidc_san_uri: String,
+    /// Output directory (created if absent).
+    #[arg(long, default_value = "release-out", value_name = "DIR")]
+    out: PathBuf,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Build(args) => run_build(&args),
+        Command::BuildManifest(args) => run_build_manifest(&args),
+        Command::IngestCosign(args) => run_ingest_cosign(&args),
         Command::Verify(args) => run_verify(&args),
     }
 }
@@ -119,25 +166,9 @@ fn run_build(args: &BuildArgs) -> Result<()> {
         .map(read_artifact)
         .collect::<Result<Vec<_>>>()?;
 
-    let prior_release_hash = match &args.prior_manifest {
-        Some(path) => {
-            let bytes = fs::read(path)
-                .with_context(|| format!("read prior manifest {}", path.display()))?;
-            let manifest = ReleaseManifest::from_canonical_cbor(&bytes)
-                .map_err(|e| anyhow::anyhow!("decode prior manifest: {e}"))?;
-            manifest
-                .canonical_self_hash()
-                .map_err(|e| anyhow::anyhow!("hash prior manifest: {e}"))?
-                .to_vec()
-        }
-        None => Vec::new(),
-    };
+    let prior_release_hash = read_prior_hash(args.prior_manifest.as_ref())?;
     let is_genesis = prior_release_hash.is_empty();
-
-    let release_timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system clock before unix epoch")?
-        .as_secs();
+    let release_timestamp = now_unix()?;
 
     let produced = produce(
         &artifacts,
@@ -243,6 +274,134 @@ fn run_verify(args: &VerifyArgs) -> Result<()> {
             Err(anyhow::anyhow!("release verification failed"))
         }
     }
+}
+
+fn run_build_manifest(args: &BuildArgs) -> Result<()> {
+    let artifacts = args
+        .apks
+        .iter()
+        .map(read_artifact)
+        .collect::<Result<Vec<_>>>()?;
+    let prior_release_hash = read_prior_hash(args.prior_manifest.as_ref())?;
+    let release_timestamp = now_unix()?;
+
+    // Reuse `produce` for the manifest assembly (identical bytes to `build`),
+    // but write ONLY the blob cosign signs + the provenance — the synthetic
+    // bundle/roots it also mints are discarded on the real keyless path.
+    let produced = produce(
+        &artifacts,
+        &args.version,
+        prior_release_hash,
+        release_timestamp,
+    )
+    .context("assemble release manifest")?;
+
+    fs::create_dir_all(&args.out)
+        .with_context(|| format!("create output dir {}", args.out.display()))?;
+    write_out(&args.out, "manifest.cbor", &produced.manifest_cbor)?;
+    write_out(
+        &args.out,
+        "build-provenance.json",
+        &produced.build_provenance_json,
+    )?;
+
+    println!(
+        "Wrote {}/manifest.cbor — the blob to sign with `cosign sign-blob`.",
+        args.out.display()
+    );
+    println!("  artifacts:");
+    for artifact in &produced.artifacts {
+        println!("    {} sha256={}", artifact.name, to_hex(&artifact.sha256));
+    }
+    println!(
+        "  this manifest hash:      {}",
+        to_hex(&produced.manifest_self_hash)
+    );
+    println!("    ^ pass this as the NEXT release's --expected-prior");
+    println!(
+        "\nNext (in CI):\n  cosign sign-blob {0}/manifest.cbor --yes \\\n    --output-certificate cert.pem --output-signature sig.b64\n  # then fetch the Rekor entry JSON and run `cairn-release ingest-cosign`",
+        args.out.display()
+    );
+    Ok(())
+}
+
+fn run_ingest_cosign(args: &IngestCosignArgs) -> Result<()> {
+    let read_text = |path: &PathBuf, what: &str| -> Result<String> {
+        let bytes = fs::read(path).with_context(|| format!("read {what} {}", path.display()))?;
+        String::from_utf8(bytes).with_context(|| format!("{what} is not valid UTF-8"))
+    };
+
+    let manifest_cbor = fs::read(&args.manifest)
+        .with_context(|| format!("read manifest {}", args.manifest.display()))?;
+    let ctlog_pubkey_pem = match &args.ctlog_key {
+        Some(path) => Some(read_text(path, "ctlog key")?),
+        None => None,
+    };
+    let input = CosignInputs {
+        manifest_cbor,
+        cert_pem: read_text(&args.cert, "certificate")?,
+        signature_b64: read_text(&args.signature, "signature")?,
+        rekor_entry_json: read_text(&args.rekor_entry, "rekor entry")?,
+        fulcio_root_pem: read_text(&args.fulcio_root, "fulcio root")?,
+        rekor_pubkey_pem: read_text(&args.rekor_key, "rekor key")?,
+        ctlog_pubkey_pem,
+        oidc_issuer: args.oidc_issuer.clone(),
+        oidc_san_uri: args.oidc_san_uri.clone(),
+    };
+
+    let ingested = ingest_cosign(&input).context("ingest cosign outputs")?;
+    let bundle_cbor = ingested
+        .bundle
+        .to_canonical_cbor()
+        .map_err(|e| anyhow::anyhow!("encode release bundle: {e}"))?;
+    let roots_json = ingested.roots.to_json_bytes()?;
+
+    fs::create_dir_all(&args.out)
+        .with_context(|| format!("create output dir {}", args.out.display()))?;
+    write_out(&args.out, "release-bundle.cbor", &bundle_cbor)?;
+    write_out(&args.out, "release-roots.json", &roots_json)?;
+
+    println!("Ingested cosign outputs into a release bundle (D0042 §4 / proof target 2b).");
+    println!(
+        "  release-leaf hash:  {}",
+        to_hex(&ingested.release_leaf_hash)
+    );
+    println!("  pinned identity:    {}", args.oidc_san_uri);
+    println!("  Sigstore proofs:    REAL (Fulcio cert + detached sig + Rekor inclusion)");
+    println!("  Sigsum proof:       synthetic (recruited log is §8 / funding-gated)");
+    println!("  output dir:         {}", args.out.display());
+    println!(
+        "\nVerify with:\n  cairn-release verify --bundle {0}/release-bundle.cbor --roots {0}/release-roots.json",
+        args.out.display()
+    );
+    Ok(())
+}
+
+/// Resolve a `--prior-manifest` path to its `canonical_self_hash` (the
+/// successor's `prior_release_hash`), or an empty vec for the genesis
+/// release. Shared by `build` + `build-manifest`.
+fn read_prior_hash(prior_manifest: Option<&PathBuf>) -> Result<Vec<u8>> {
+    match prior_manifest {
+        Some(path) => {
+            let bytes = fs::read(path)
+                .with_context(|| format!("read prior manifest {}", path.display()))?;
+            let manifest = ReleaseManifest::from_canonical_cbor(&bytes)
+                .map_err(|e| anyhow::anyhow!("decode prior manifest: {e}"))?;
+            Ok(manifest
+                .canonical_self_hash()
+                .map_err(|e| anyhow::anyhow!("hash prior manifest: {e}"))?
+                .to_vec())
+        }
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Current Unix-seconds (the manifest's `release_timestamp`).
+fn now_unix() -> Result<u64> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock before unix epoch")?
+        .as_secs())
 }
 
 /// Read an artifact file into an [`ArtifactInput`], naming it by file name.

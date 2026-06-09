@@ -153,16 +153,17 @@ releases) implies that intent, so (B) is correct.
 signer**:
 
 1. CI (GitHub Actions, `id-token: write`) builds the artifacts +
-   `cairn-release build` emits the canonical-CBOR manifest bytes.
+   `cairn-release build-manifest` emits the canonical-CBOR manifest bytes
+   (the blob to sign).
 2. `cosign sign-blob --yes manifest.cbor` runs with the staging Fulcio /
    Rekor endpoints + the ambient OIDC token → produces the **detached
    P-256 signature**, the **Fulcio cert** (leaf + chain, with embedded
    SCT), and a **Rekor entry** (`hashedrekord`) with its inclusion proof +
    signed checkpoint.
-3. `cairn-release` (a `--sigstore-bundle <cosign-output>` mode, replacing
-   the synthetic `mint_*` helpers) **ingests** those outputs into the
-   existing `ReleaseBundle` wire format (§6 wire change) + emits the staging
-   `ReleaseRoots` (§5).
+3. `cairn-release ingest-cosign` **ingests** those outputs (cert PEM,
+   base64 signature, raw Rekor entry JSON) + the pinned roots into the
+   existing `ReleaseBundle` wire format (§6) + emits a `release-roots.json`
+   pinning the CI **URI** identity (§6.4) + the real Sigstore roots.
 
 `cairn-release` stays a **packager**: it never holds a signing key, never
 talks to the OIDC provider, and never sees a long-lived secret — cosign +
@@ -170,6 +171,21 @@ the CI runner own those. `sigstore-rs` was considered as an in-process
 alternative but is unnecessary given cosign already does the flow and the
 producer is non-shipping host tooling; revisit only if shelling to cosign
 proves operationally awkward.
+
+**Landed — ✓ (2026-06-09).** The two subcommands above are implemented
+(`cairn-release build-manifest` + `cairn-release ingest-cosign`,
+`produce::ingest_cosign`): `ingest-cosign` parses the real cosign outputs
+(minimal PEM reader → cert DER; base64 → detached sig DER; the verifier's
+`parse_rekor_log_entry` → Rekor bundle + `integratedTime`) and assembles a
+`ReleaseBundle`. **The Sigstore proofs are real; the Sigsum proof is minted
+synthetically over the real `release_leaf_hash`** (the recruited log is
+funding-gated, §8) and pinned in `release-roots.json` alongside the real
+Sigstore roots — so a `verify_release` over the ingested bundle proves the
+whole **Sigstore** half end-to-end against real keyless signing, with only
+the Sigsum step on synthetic roots until §8. Unit-tested in `produce.rs`
+against the real Fulcio-GHA cert + production Rekor vectors (structural
+assembly + round-trip); the full verify-accept is what proof target 2b's
+real CI run exercises.
 
 ## 5. Trust-root provisioning: pin, don't resolve at runtime
 

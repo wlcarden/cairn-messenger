@@ -41,6 +41,12 @@ pub struct ReleaseRoots {
     pub fulcio_root_pem: String,
     /// Pinned Rekor public key, PEM/SPKI.
     pub rekor_pubkey_pem: String,
+    /// Pinned CT-log public key (PEM/SPKI). When present, `verify_release`
+    /// enforces the Fulcio leaf's embedded SCT against it (D0042 §6.5).
+    /// Defaulted absent so synthetic phase-1 roots (rcgen leaves with no
+    /// SCT) deserialize unchanged.
+    #[serde(default)]
+    pub ctlog_pubkey_pem: Option<String>,
     /// Expected OIDC issuer URL (D0024 §1.1).
     pub oidc_issuer: String,
     /// Expected developer identity email (D0024 §1.1) — used iff
@@ -122,7 +128,7 @@ impl ReleaseRoots {
             rekor_pubkey_pem: self.rekor_pubkey_pem.clone().into_bytes(),
             // Synthetic rcgen leaves carry no embedded SCT; SCT enforcement is
             // a phase-3 production concern (gated on a pinned CT-log key).
-            ctlog_pubkey_pem: None,
+            ctlog_pubkey_pem: self.ctlog_pubkey_pem.clone().map(String::into_bytes),
             expected_oidc_san_uri: self.oidc_san_uri.clone(),
             expected_oidc_issuer: self.oidc_issuer.clone(),
             expected_oidc_email: self.oidc_email.clone(),

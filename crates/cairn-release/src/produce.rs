@@ -49,6 +49,7 @@ use base64::Engine as _;
 use cairn_crypto::ed25519::SigningKey;
 use cairn_sigstore_verify::{
     ArtifactHash, RekorBundle, ReleaseBundle, ReleaseManifest, SHA256_LEN, hashedrekord_leaf_hash,
+    parse_rekor_log_entry,
 };
 use cairn_sigsum_client::witness::{
     build_cosignature_signed_message, build_tree_head_note, witness_key_hash,
@@ -214,6 +215,8 @@ pub fn produce(
     let roots = ReleaseRoots {
         fulcio_root_pem,
         rekor_pubkey_pem,
+        // Synthetic rcgen leaves carry no embedded SCT, so no CT-log key.
+        ctlog_pubkey_pem: None,
         oidc_issuer: SELF_MINTED_ISSUER.to_string(),
         oidc_email: SELF_MINTED_EMAIL.to_string(),
         // The synthetic phase-1 producer mints an email-SAN leaf; the CI
@@ -583,6 +586,142 @@ fn mint_sigsum_proof(
     Ok((emitted, head, proof))
 }
 
+// ===================================================================
+// Cosign-ingest path (D0042 §4): real keyless CI signing -> ReleaseBundle
+// ===================================================================
+
+/// The real keyless signing outputs stock `cosign sign-blob` produces in
+/// CI, plus the pinned Sigstore roots + CI identity, as ingested by
+/// [`ingest_cosign`] (D0042 §4). The producer does NOT mint these — cosign
+/// does, against real Sigstore Fulcio/Rekor; this struct is the hand-off.
+pub struct CosignInputs {
+    /// The canonical-CBOR `ReleaseManifest` bytes that were the signed blob
+    /// (emitted by the `build-manifest` subcommand, passed to cosign).
+    pub manifest_cbor: Vec<u8>,
+    /// The Fulcio signing certificate, PEM (`cosign --output-certificate`).
+    pub cert_pem: String,
+    /// The detached ECDSA-P256 signature, base64 (`cosign sign-blob`).
+    pub signature_b64: String,
+    /// The raw Rekor entry JSON (`GET /api/v1/log/entries?logIndex=N`).
+    pub rekor_entry_json: String,
+    /// Pinned Fulcio trust bundle PEM (root, optionally + intermediate).
+    pub fulcio_root_pem: String,
+    /// Pinned Rekor log public key, PEM/SPKI.
+    pub rekor_pubkey_pem: String,
+    /// Pinned CT-log public key PEM — enables embedded-SCT enforcement
+    /// (D0042 §6.5). `None` skips it.
+    pub ctlog_pubkey_pem: Option<String>,
+    /// Expected OIDC issuer (GitHub Actions:
+    /// `https://token.actions.githubusercontent.com`).
+    pub oidc_issuer: String,
+    /// Expected CI workflow SAN URI identity (D0042 §2).
+    pub oidc_san_uri: String,
+}
+
+/// What [`ingest_cosign`] yields: a verifiable bundle + the roots pinning it.
+pub struct IngestedRelease {
+    /// The assembled `release-bundle.cbor` contents.
+    pub bundle: ReleaseBundle,
+    /// The `release-roots.json` contents pinning the bundle.
+    pub roots: ReleaseRoots,
+    /// The Sigsum release-leaf hash (`SHA-256(detached signature)`).
+    pub release_leaf_hash: [u8; 32],
+}
+
+/// Ingest stock `cosign sign-blob` outputs into a verifiable
+/// [`ReleaseBundle`] (D0042 §4, the "2b" producer path).
+///
+/// The Sigstore proofs are **real** (Fulcio cert, detached signature, Rekor
+/// inclusion — all from cosign against real Sigstore). The Sigsum
+/// release-log proof is minted **synthetically** over the real
+/// `release_leaf_hash` (the recruited log + witness pool is funding-gated,
+/// §8), and `release-roots.json` pins that synthetic Sigsum key alongside
+/// the real Sigstore roots. So a `verify_release` over this bundle proves
+/// the whole Sigstore half end-to-end against real keyless signing; only
+/// the Sigsum step rides on synthetic roots until §8 lands.
+///
+/// # Errors
+///
+/// Returns an error if any cosign output fails to parse (cert PEM, base64
+/// signature, Rekor entry JSON / its `integratedTime`) or the synthetic
+/// Sigsum proof cannot be minted.
+pub fn ingest_cosign(input: &CosignInputs) -> Result<IngestedRelease> {
+    let fulcio_cert_der = pem_first_der(&input.cert_pem, "CERTIFICATE")
+        .context("decode cosign signing certificate")?;
+    let manifest_signature = base64::engine::general_purpose::STANDARD
+        .decode(input.signature_b64.trim().as_bytes())
+        .context("decode cosign detached signature (base64)")?;
+    let rekor_bundle = parse_rekor_log_entry(&input.rekor_entry_json)
+        .map_err(|e| anyhow::anyhow!("parse Rekor entry: {e}"))?;
+    let rekor_signing_time_unix = rekor_integrated_time(&input.rekor_entry_json)?;
+
+    // The Sigsum half stays synthetic for 2b: mint a fresh log + proof bound
+    // to the REAL release-leaf hash (`SHA-256(detached signature)`).
+    let release_leaf_hash = leaf_hash_for_signature_bytes(&manifest_signature);
+    let log = mint_sigsum_log();
+    let (sigsum_emitted_leaf, sigsum_tree_head_body, sigsum_inclusion_proof_body) =
+        mint_sigsum_proof(&log, &release_leaf_hash, rekor_signing_time_unix)?;
+
+    let bundle = ReleaseBundle {
+        manifest_bytes: input.manifest_cbor.clone(),
+        manifest_signature,
+        fulcio_cert_der,
+        rekor_bundle,
+        rekor_signing_time_unix,
+        sigsum_emitted_leaf,
+        sigsum_tree_head_body,
+        sigsum_inclusion_proof_body,
+    };
+    let roots = ReleaseRoots {
+        fulcio_root_pem: input.fulcio_root_pem.clone(),
+        rekor_pubkey_pem: input.rekor_pubkey_pem.clone(),
+        ctlog_pubkey_pem: input.ctlog_pubkey_pem.clone(),
+        oidc_issuer: input.oidc_issuer.clone(),
+        // The CI keyless model pins the workflow URI, not an email.
+        oidc_email: String::new(),
+        oidc_san_uri: Some(input.oidc_san_uri.clone()),
+        sigsum_log_pubkey_hex: to_hex(&log.log_sk.verifying_key().to_bytes()),
+        witnesses_toml: log.toml,
+    };
+    Ok(IngestedRelease {
+        bundle,
+        roots,
+        release_leaf_hash: *release_leaf_hash.as_bytes(),
+    })
+}
+
+/// Extract the DER bytes of the first PEM block labelled `label` (e.g.
+/// `"CERTIFICATE"`) — a minimal PEM reader for cosign's cert output (no
+/// x509-parser dep on the producer side).
+fn pem_first_der(pem: &str, label: &str) -> Result<Vec<u8>> {
+    let begin = format!("-----BEGIN {label}-----");
+    let end = format!("-----END {label}-----");
+    let after_begin = pem
+        .find(&begin)
+        .map(|i| i + begin.len())
+        .with_context(|| format!("PEM missing {begin}"))?;
+    let rest = &pem[after_begin..];
+    let stop = rest
+        .find(&end)
+        .with_context(|| format!("PEM missing {end}"))?;
+    let body: String = rest[..stop].split_whitespace().collect();
+    base64::engine::general_purpose::STANDARD
+        .decode(body.as_bytes())
+        .context("base64-decode PEM body")
+}
+
+/// The Rekor-attested `integratedTime` (Unix seconds) from a raw
+/// `GET /api/v1/log/entries` response (a one-key object: uuid -> entry).
+fn rekor_integrated_time(entry_json: &str) -> Result<u64> {
+    let v: serde_json::Value =
+        serde_json::from_str(entry_json).context("parse Rekor entry JSON")?;
+    v.as_object()
+        .and_then(|o| o.values().next())
+        .and_then(|entry| entry.get("integratedTime"))
+        .and_then(serde_json::Value::as_u64)
+        .context("Rekor entry has no integratedTime")
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -656,5 +795,77 @@ mod tests {
                 .is_err(),
             "a mismatched predecessor must be rejected"
         );
+    }
+
+    // === cosign-ingest path (D0042 §4) ===
+
+    // Real public transparency-log artifacts, reused from the verifier
+    // crate's vectors: a production Rekor entry + a real Fulcio GHA leaf.
+    // The ingest path only PARSES cosign's outputs; full verify-acceptance
+    // is proof target 2b (a real signing run) — this cert signed a
+    // different blob, so the signature here is arbitrary.
+    const REKOR_ENTRY: &str = include_str!(
+        "../../cairn-sigstore-verify/tests/vectors/rekor-production/entry-logindex1767842880.json"
+    );
+    const FULCIO_LEAF_PEM: &str =
+        include_str!("../../cairn-sigstore-verify/tests/vectors/fulcio-gha/leaf-cert.pem");
+    const CI_URI: &str =
+        "https://github.com/cairn-project/cairn/.github/workflows/release.yml@refs/tags/v1.0.0";
+
+    #[test]
+    fn pem_first_der_extracts_the_certificate_block() {
+        let der = pem_first_der(FULCIO_LEAF_PEM, "CERTIFICATE").expect("decode the GHA leaf PEM");
+        assert_eq!(der.first(), Some(&0x30)); // X.509 DER starts with SEQUENCE
+        assert!(der.len() > 100);
+        assert!(pem_first_der(FULCIO_LEAF_PEM, "PUBLIC KEY").is_err()); // missing label fails closed
+    }
+
+    #[test]
+    fn rekor_integrated_time_reads_the_attested_time() {
+        let t = rekor_integrated_time(REKOR_ENTRY).expect("extract integratedTime");
+        assert!(t > 1_600_000_000); // a plausible recent Unix time
+        assert!(rekor_integrated_time("{}").is_err());
+        assert!(rekor_integrated_time("not json").is_err());
+    }
+
+    #[test]
+    fn ingest_cosign_assembles_a_round_trippable_bundle() {
+        let sig = base64::engine::general_purpose::STANDARD.encode(b"a-detached-signature");
+        let manifest_cbor = produce(&one_apk(), "1.0.0-test", vec![], 1_717_200_000)
+            .unwrap()
+            .manifest_cbor;
+        let input = CosignInputs {
+            manifest_cbor,
+            cert_pem: FULCIO_LEAF_PEM.to_string(),
+            signature_b64: sig,
+            rekor_entry_json: REKOR_ENTRY.to_string(),
+            fulcio_root_pem: "-----BEGIN CERTIFICATE-----\nroot\n-----END CERTIFICATE-----"
+                .to_string(),
+            rekor_pubkey_pem: "-----BEGIN PUBLIC KEY-----\nkey\n-----END PUBLIC KEY-----"
+                .to_string(),
+            ctlog_pubkey_pem: Some(
+                "-----BEGIN PUBLIC KEY-----\nctlog\n-----END PUBLIC KEY-----".to_string(),
+            ),
+            oidc_issuer: "https://token.actions.githubusercontent.com".to_string(),
+            oidc_san_uri: CI_URI.to_string(),
+        };
+        let ingested = ingest_cosign(&input).expect("ingest cosign outputs");
+        // The bundle carries the real cert DER + the decoded signature.
+        assert_eq!(ingested.bundle.fulcio_cert_der.first(), Some(&0x30));
+        assert_eq!(ingested.bundle.manifest_signature, b"a-detached-signature");
+        // The roots pin the CI URI identity (not an email) + the CT-log key.
+        assert_eq!(ingested.roots.oidc_san_uri.as_deref(), Some(CI_URI));
+        assert!(ingested.roots.oidc_email.is_empty());
+        assert!(ingested.roots.ctlog_pubkey_pem.is_some());
+        // And the whole bundle round-trips through canonical CBOR.
+        let bytes = ingested
+            .bundle
+            .to_canonical_cbor()
+            .expect("encode ingested bundle");
+        let recovered = ReleaseBundle::from_canonical_cbor(&bytes).expect("decode ingested bundle");
+        assert_eq!(recovered.manifest_signature, b"a-detached-signature");
+        // The roots round-trip too (so release-roots.json is well-formed).
+        let roots_json = ingested.roots.to_json_bytes().expect("encode roots");
+        assert!(ReleaseRoots::from_json_slice(&roots_json).is_ok());
     }
 }
