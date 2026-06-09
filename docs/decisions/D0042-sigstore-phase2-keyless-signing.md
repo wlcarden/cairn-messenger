@@ -220,15 +220,22 @@ verify-side work**, not config:
 
 ## 7. Proof targets
 
-- **2a — autonomous, no OIDC, manifest-model-independent (provable now).**
-  Pin the real staging roots (§5); fetch a **real** existing Rekor staging
-  inclusion proof (`rekor.sigstage.dev`, the `online-rekor` feature path)
-  and verify it against the real pinned Rekor staging key. Milestone: the
-  verifier checks **attacker-unforgeable** Rekor data (real Merkle tree,
-  real log signature) — the first non-synthetic verification, and the half
-  that delivers consumer-side forgery-resistance. Independent of §3, so it
-  proceeds immediately. De-risks 2b (real roots + a known-good real entry
-  to test against).
+- **2a — ✓ PROVEN (2026-06-09).** A real Sigstore **staging** Rekor entry
+  (a frozen inactive-shard `hashedrekord` + its inclusion proof + signed
+  checkpoint) and the staging Rekor **P-256** public key were captured as
+  checked-in vectors (`tests/vectors/rekor-staging/`), and
+  `parse_rekor_log_entry` + `verify_rekor_inclusion` verify them **offline**
+  against the pinned real key (`tests/rekor_staging_vector.rs`): the
+  checkpoint signature validates under the real staging key AND the RFC 6962
+  audit path reconstructs to the signed root. Negatives confirm rejection
+  under a non-pinned key + a tampered audit node. **Milestone:** the first
+  attacker-**unforgeable** verification in the release stack — the
+  hand-rolled offline Rekor verifier (D0024 §3) is validated against the
+  real production-shaped Rekor wire format, not just its own synthetic
+  fixtures. Independent of §3; pure-offline (no network at test time, no
+  `online-rekor` feature). De-risks 2b (real key + a known-good real entry
+  to test against). The full Fulcio/CT root-pinning (§5) + the real-cert
+  Fulcio proof land with the §6 P-256 verifier adaptations.
 - **2b — OIDC-gated (CI milestone).** A real GitHub Actions staging
   `cosign sign-blob` run produces a real `ReleaseBundle` that
   `verify_release` accepts against the pinned staging roots —
