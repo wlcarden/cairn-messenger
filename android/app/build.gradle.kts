@@ -108,7 +108,17 @@ cargoNdk {
     librariesNames = arrayListOf("libcairn_uniffi.so")
     // arm64-v8a ONLY (D0026 §12): no x86_64 libsimplex exists to link against.
     targets = arrayListOf("arm64") // aarch64-linux-android
-    extraCargoBuildArguments = arrayListOf("-p", "cairn-uniffi", "--features", "uniffi-bindings")
+    // `synthetic-release-roots` (D0041 §6.1): the phase-1 release-verify
+    // DEBUG driver feeds caller-supplied self-minted roots to
+    // `ReleaseVerifierHandle.new`, which only functions under this feature.
+    // A production build must OMIT it (so `new` refuses caller roots and
+    // only the baked-in `new_pinned` path remains) — when a release variant
+    // is introduced, scope this to the debug variant only. Only the shipped
+    // cdylib needs it; the host binding-gen build (below) does not, because
+    // the FFI ABI is identical with or without it (a behavior-gate, not an
+    // existence-gate).
+    extraCargoBuildArguments =
+        arrayListOf("-p", "cairn-uniffi", "--features", "uniffi-bindings,synthetic-release-roots")
     apiLevel = 31
     // The cross-compile links `sxcrt-sys` → libsimplex; its build script reads
     // `SXCRT` from the environment (set it to `<cairnSimplexLibsDir>/arm64-v8a`

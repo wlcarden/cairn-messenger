@@ -31,6 +31,15 @@ default = []
 # WITHOUT the uniffi dep tree. The workspace gate runs --all-features,
 # which exercises this path.
 uniffi-bindings = ["dep:uniffi"]
+# Release-verifier trust-root posture (D0041 §6.1). OFF by default: a
+# build without this feature REFUSES caller-supplied release trust roots
+# (`ReleaseVerifierHandle::new` returns `ReleaseRootsNotProvisioned`), so
+# the only release path is the compiled-in-roots `new_pinned` — the
+# tripwire that forces phase 2 to bake real roots instead of inheriting
+# phase 1's caller-supplied shape. The phase-1 synthetic-roots proof (the
+# DEBUG driver) builds the Android cdylib WITH this feature; CI's
+# `--all-features` run exercises it too.
+synthetic-release-roots = []
 
 [dependencies]
 # === The NeverExport sealed marker (D0020 §3.7) lives in cairn-crypto ===

@@ -181,6 +181,16 @@ pub enum CairnFfiError {
     #[error("cairn: recovery reconstruction failed")]
     RecoveryFailed,
 
+    /// A release verifier was requested but its trust roots are not
+    /// available in this build: either the production `new_pinned` path
+    /// (whose compiled-in roots are unprovisioned until D0041 §6.1 phase
+    /// 2/3) or the caller-supplied `new` path in a build WITHOUT the
+    /// `synthetic-release-roots` feature. Release trust roots are NOT
+    /// accepted from the caller in a shipped build — this is the tripwire
+    /// that keeps phase 1's synthetic-roots shape out of production.
+    #[error("cairn: release trust roots not provisioned")]
+    ReleaseRootsNotProvisioned,
+
     // === Catch-all ===
     /// A source-error variant this build does not explicitly map
     /// (absorbs each source's `#[non_exhaustive]` future variants).

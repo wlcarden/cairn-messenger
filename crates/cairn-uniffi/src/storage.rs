@@ -308,6 +308,16 @@ impl StorageHandle {
 }
 
 #[cfg(test)]
+impl StorageHandle {
+    /// Test-only: wrap an existing `Arc<Storage>` as a handle so sibling
+    /// modules' FFI-layer tests (e.g. `release_verify`) can construct a
+    /// handle without re-deriving a KEK. Crate-internal.
+    pub(crate) fn from_storage_arc_for_test(storage: Arc<Storage>) -> Arc<Self> {
+        Arc::new(Self { storage })
+    }
+}
+
+#[cfg(test)]
 #[allow(
     clippy::indexing_slicing,
     clippy::panic,

@@ -20,14 +20,27 @@
 //! path does not persist, but the client constructor requires a store, so
 //! reusing the app's avoids a second connection / DEK derivation.
 //!
-//! ## Trust-root posture (D0041)
+//! ## Trust-root posture (D0041 §6.1)
 //!
 //! [`ReleaseRootsRecord`] is the typed form of `cairn-release`'s
-//! `release-roots.json`. In the v1 self-minted-roots proof these are the
-//! per-build synthetic roots; in production they are the pinned public
-//! trust roots (real Fulcio root, Rekor key, project OIDC identity, the
-//! recruited Sigsum log + witness pool) baked into the shipping client.
-//! The FFI surface is identical either way — only the bytes differ.
+//! `release-roots.json`. Two constructors enforce the phase boundary so
+//! phase 1's caller-supplied shape cannot silently reach production:
+//!
+//! - [`ReleaseVerifierHandle::new`] takes caller-supplied roots, but only
+//!   *functions* under the `synthetic-release-roots` cargo feature (the
+//!   per-build self-minted-roots proof, which the DEBUG driver builds
+//!   with). A shipped build without that feature REFUSES them
+//!   ([`CairnFfiError::ReleaseRootsNotProvisioned`]).
+//! - [`ReleaseVerifierHandle::new_pinned`] is the production path: it uses
+//!   the compiled-in [`PRODUCTION_ROOTS`] (the real Fulcio root, Rekor
+//!   key, project OIDC identity, recruited Sigsum log + witness pool) and
+//!   accepts nothing from the caller.
+//!
+//! `PRODUCTION_ROOTS` is `None` until phase 2/3 mints + bakes the real
+//! anchors, so the production path is a tripwire: a shipped build can
+//! neither accept caller roots (`new`) nor build from absent baked roots
+//! (`new_pinned`), forcing phase 2 to provision real roots rather than
+//! inherit the phase-1 shape.
 
 use std::sync::Arc;
 
@@ -42,6 +55,16 @@ use crate::storage::StorageHandle;
 
 /// Length of a release manifest's `prior_release_hash` / artifact SHA-256.
 const SHA256_LEN: usize = 32;
+
+/// Compiled-in production release trust roots (D0041 §6.1 phase 2/3).
+/// `None` until the real Fulcio root / Rekor key / project OIDC identity
+/// / recruited Sigsum log + witness pool are minted and baked into the
+/// shipping binary. While `None`, [`ReleaseVerifierHandle::new_pinned`]
+/// returns [`CairnFfiError::ReleaseRootsNotProvisioned`] — the tripwire
+/// that forces phase 2 to provision real roots rather than inherit phase
+/// 1's caller-supplied shape. (`None` of a non-`const`-constructible type
+/// is itself a valid `const`.)
+const PRODUCTION_ROOTS: Option<ReleaseRootsRecord> = None;
 
 /// The pinned release trust roots (the typed form of `cairn-release`'s
 /// `release-roots.json`). All public values. Becomes a `uniffi::Record`
@@ -115,8 +138,43 @@ impl ReleaseVerifierHandle {
         storage: Arc<StorageHandle>,
         roots: ReleaseRootsRecord,
     ) -> Result<Arc<Self>, CairnFfiError> {
+        // Tripwire (D0041 §6.1): a shipped build does NOT accept release
+        // trust roots from the caller. Only the `synthetic-release-roots`
+        // dev feature (the phase-1 proof, which the DEBUG driver builds
+        // with) admits them; without it this refuses, forcing phase 2 to
+        // provision real roots + use `new_pinned`. `cfg!` (not `#[cfg]`)
+        // keeps `build_verifier` referenced in both builds — no dead-code
+        // split, and the FFI binding surface is identical either way (the
+        // Kotlin driver's `new(...)` call compiles unchanged).
+        if cfg!(not(feature = "synthetic-release-roots")) {
+            return Err(CairnFfiError::ReleaseRootsNotProvisioned);
+        }
         let verifier = build_verifier(&roots, storage.storage_arc())?;
         Ok(Arc::new(Self { verifier }))
+    }
+
+    /// Construct a release verifier from the **compiled-in production
+    /// trust roots** (D0041 §6.1). Unlike [`Self::new`], this accepts
+    /// nothing from the caller — it is the only release path a shipped
+    /// (non-`synthetic-release-roots`) build can use.
+    ///
+    /// # Errors
+    ///
+    /// [`CairnFfiError::ReleaseRootsNotProvisioned`] while
+    /// [`PRODUCTION_ROOTS`] is `None` (phase 2/3 has not yet minted +
+    /// baked the real anchors). Once provisioned, the same errors as
+    /// [`Self::new`]'s `build_verifier` path.
+    #[cfg_attr(feature = "uniffi-bindings", uniffi::constructor)]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "UniFFI constructors take owned arguments by value; the FFI layer owns the lowered buffers"
+    )]
+    pub fn new_pinned(storage: Arc<StorageHandle>) -> Result<Arc<Self>, CairnFfiError> {
+        if let Some(roots) = PRODUCTION_ROOTS {
+            let verifier = build_verifier(&roots, storage.storage_arc())?;
+            return Ok(Arc::new(Self { verifier }));
+        }
+        Err(CairnFfiError::ReleaseRootsNotProvisioned)
     }
 }
 
@@ -318,5 +376,42 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, CairnFfiError::MalformedData);
+    }
+
+    // === D0041 §6.1 compiled-in-roots tripwire ===
+
+    fn test_handle() -> Arc<StorageHandle> {
+        StorageHandle::from_storage_arc_for_test(test_storage())
+    }
+
+    #[test]
+    fn new_pinned_errors_until_roots_provisioned() {
+        // The production path carries no compiled-in roots yet
+        // (PRODUCTION_ROOTS is None), so it refuses — the tripwire that
+        // forces phase 2 to bake real anchors. (No Debug on the handle, so
+        // match rather than unwrap_err.)
+        assert!(matches!(
+            ReleaseVerifierHandle::new_pinned(test_handle()),
+            Err(CairnFfiError::ReleaseRootsNotProvisioned)
+        ));
+    }
+
+    #[cfg(not(feature = "synthetic-release-roots"))]
+    #[test]
+    fn new_refuses_caller_roots_without_synthetic_feature() {
+        // A shipped build (no `synthetic-release-roots`) must NOT accept
+        // caller-supplied roots — even structurally valid ones (D0041 §6.1).
+        assert!(matches!(
+            ReleaseVerifierHandle::new(test_handle(), valid_roots()),
+            Err(CairnFfiError::ReleaseRootsNotProvisioned)
+        ));
+    }
+
+    #[cfg(feature = "synthetic-release-roots")]
+    #[test]
+    fn new_accepts_caller_roots_under_synthetic_feature() {
+        // The dev feature (the phase-1 self-minted-roots proof) admits
+        // caller-supplied roots.
+        assert!(ReleaseVerifierHandle::new(test_handle(), valid_roots()).is_ok());
     }
 }

@@ -207,13 +207,26 @@ flagged by the review:**
   every new check, and five negative tests cover each constraint
   (`fulcio.rs`). NameConstraints / policy processing remain out of scope
   (Fulcio uses neither).
-- **Compiled-in production roots, not caller-supplied.** The FFI
-  `ReleaseVerifierHandle::new` accepts a `ReleaseRootsRecord` from the
-  caller (correct for per-build synthetic roots; unreachable in release
-  builds today via the `BuildConfig.DEBUG` driver gate). Production roots
-  must be a baked-in constant the FFI does **not** accept from the caller
-  (or verified against a baked-in digest), so the phase-1 "roots from
-  outside" shape cannot survive into production by inertia.
+- **Compiled-in production roots, not caller-supplied — ✓ LANDED
+  (2026-06-09).** A non-default `synthetic-release-roots` cargo feature
+  gates the BEHAVIOUR (not the existence) of the caller-roots constructor:
+  `ReleaseVerifierHandle::new` returns `ReleaseRootsNotProvisioned` unless
+  the feature is set, so a shipped build refuses caller-supplied roots.
+  The production path is `new_pinned`, which uses the compiled-in
+  `PRODUCTION_ROOTS` const — `None` until phase 2/3 bakes the real
+  anchors, so it also errors today. A featureless build therefore can
+  neither accept caller roots nor build from absent baked roots: the
+  tripwire forces phase 2 to provision real roots. Behaviour-gating
+  (rather than `#[cfg]`-removing the constructor) keeps the UniFFI ABI
+  identical in both builds, so the Kotlin driver's `new(...)` call
+  compiles unchanged. The phase-1 DEBUG driver builds the Android cdylib
+  WITH the feature (`android/app/build.gradle.kts`); CI's `--all-features`
+  run exercises the synthetic path. Tests (`release_verify.rs`) prove all
+  three states: `new` refused without the feature, `new` accepted with it,
+  `new_pinned` refused until roots are provisioned. **Follow-up:** when a
+  release variant is introduced, scope the cargo feature to the debug
+  variant only (the `cargoNdk` block is currently global; only debug is
+  built today).
 - **Type-gate the unused online verify path — ✓ LANDED (2026-06-08).**
   `SigstoreVerifier`'s online `fetch_rekor_bundle` / `fetch_and_verify_rekor`
   (+ the private `http_get_text` + the `reqwest` client field) are now behind
