@@ -54,6 +54,10 @@ use p256::pkcs8::DecodePublicKey as _;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use cairn_envelope::canonical::Value;
+use ciborium::Value as CiboriumValue;
+
+use crate::decode::{array_of_array_32, bytes_to_array_32, int_to_u64, into_bytes, key_to_i64};
 use crate::error::SigstoreVerifyError;
 
 /// Bundled Rekor inclusion proof + signed checkpoint per D0024 §3.
@@ -86,6 +90,94 @@ pub struct RekorBundle {
     /// ECDSA P-256 signature (ASN.1 DER) over `checkpoint_note`, with
     /// the C2SP signed-note 4-byte key id already stripped.
     pub checkpoint_signature: Vec<u8>,
+}
+
+// === Canonical-CBOR map keys for the RekorBundle wire format ===
+// Integer-keyed map per D0018 §2.3, nested as a byte string inside the
+// `ReleaseBundle` so the offline-install bundle (D0024 §6.4) round-trips
+// through a single file without a network fetch.
+const KEY_REKOR_LEAF_HASH: i64 = 1;
+const KEY_REKOR_LEAF_INDEX: i64 = 2;
+const KEY_REKOR_PROOF_NODES: i64 = 3;
+const KEY_REKOR_CHECKPOINT_NOTE: i64 = 4;
+const KEY_REKOR_CHECKPOINT_SIGNATURE: i64 = 5;
+
+impl RekorBundle {
+    /// Encode as canonical-CBOR per D0018 §2.3 for the offline release
+    /// bundle wire format (D0024 §6.4).
+    ///
+    /// # Errors
+    ///
+    /// [`SigstoreVerifyError::ReleaseBundleDecodeFailed`] if `leaf_index`
+    /// exceeds `i64::MAX` (unreachable for real Rekor indices) or the
+    /// canonical encoder fails (unreachable for typed inputs).
+    pub fn to_canonical_cbor(&self) -> Result<Vec<u8>, SigstoreVerifyError> {
+        let leaf_index_i64 = i64::try_from(self.leaf_index)
+            .map_err(|_| SigstoreVerifyError::ReleaseBundleDecodeFailed)?;
+        let proof_array = self
+            .proof_nodes
+            .iter()
+            .map(|n| Value::Bytes(n.to_vec()))
+            .collect::<Vec<_>>();
+        let map = Value::Map(vec![
+            (
+                Value::Int(KEY_REKOR_LEAF_HASH),
+                Value::Bytes(self.leaf_hash.to_vec()),
+            ),
+            (Value::Int(KEY_REKOR_LEAF_INDEX), Value::Int(leaf_index_i64)),
+            (Value::Int(KEY_REKOR_PROOF_NODES), Value::Array(proof_array)),
+            (
+                Value::Int(KEY_REKOR_CHECKPOINT_NOTE),
+                Value::Bytes(self.checkpoint_note.clone()),
+            ),
+            (
+                Value::Int(KEY_REKOR_CHECKPOINT_SIGNATURE),
+                Value::Bytes(self.checkpoint_signature.clone()),
+            ),
+        ]);
+        map.encode()
+            .map_err(|_| SigstoreVerifyError::ReleaseBundleDecodeFailed)
+    }
+
+    /// Decode from canonical-CBOR bytes. Unknown integer keys are
+    /// tolerated per D0006 §6.4's forward-compatibility discipline.
+    ///
+    /// # Errors
+    ///
+    /// [`SigstoreVerifyError::ReleaseBundleDecodeFailed`] for any CBOR or
+    /// schema structural error (wrong top-level type, non-integer key,
+    /// wrong field type, or wrong-length fixed-width field).
+    pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, SigstoreVerifyError> {
+        let parsed: CiboriumValue = ciborium::de::from_reader(bytes)
+            .map_err(|_| SigstoreVerifyError::ReleaseBundleDecodeFailed)?;
+        let CiboriumValue::Map(entries) = parsed else {
+            return Err(SigstoreVerifyError::ReleaseBundleDecodeFailed);
+        };
+        let mut leaf_hash: Option<[u8; 32]> = None;
+        let mut leaf_index: Option<u64> = None;
+        let mut proof_nodes: Option<Vec<[u8; 32]>> = None;
+        let mut checkpoint_note: Option<Vec<u8>> = None;
+        let mut checkpoint_signature: Option<Vec<u8>> = None;
+        for (key, value) in entries {
+            match key_to_i64(&key)? {
+                KEY_REKOR_LEAF_HASH => leaf_hash = Some(bytes_to_array_32(value)?),
+                KEY_REKOR_LEAF_INDEX => leaf_index = Some(int_to_u64(&value)?),
+                KEY_REKOR_PROOF_NODES => proof_nodes = Some(array_of_array_32(value)?),
+                KEY_REKOR_CHECKPOINT_NOTE => checkpoint_note = Some(into_bytes(value)?),
+                KEY_REKOR_CHECKPOINT_SIGNATURE => checkpoint_signature = Some(into_bytes(value)?),
+                _ => {} // forward-compat per D0006 §6.4
+            }
+        }
+        Ok(Self {
+            leaf_hash: leaf_hash.ok_or(SigstoreVerifyError::ReleaseBundleDecodeFailed)?,
+            leaf_index: leaf_index.ok_or(SigstoreVerifyError::ReleaseBundleDecodeFailed)?,
+            proof_nodes: proof_nodes.ok_or(SigstoreVerifyError::ReleaseBundleDecodeFailed)?,
+            checkpoint_note: checkpoint_note
+                .ok_or(SigstoreVerifyError::ReleaseBundleDecodeFailed)?,
+            checkpoint_signature: checkpoint_signature
+                .ok_or(SigstoreVerifyError::ReleaseBundleDecodeFailed)?,
+        })
+    }
 }
 
 /// A verified Rekor checkpoint, returned by [`verify_rekor_inclusion`]

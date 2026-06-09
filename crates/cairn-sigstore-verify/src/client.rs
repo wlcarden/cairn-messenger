@@ -38,11 +38,14 @@
 //! components + raw proof bodies in the [`ReleaseBundle`] (D0023 §1.4),
 //! exactly as the Rekor proof is carried inline.
 
+use cairn_envelope::canonical::Value;
 use cairn_envelope::cose_sign1::CoseSign1;
 use cairn_sigsum_client::{EmittedLeaf, RetryBudget, SigsumClient};
+use ciborium::Value as CiboriumValue;
 use url::Url;
 
 use crate::compose::release_leaf_hash_for_envelope_bytes;
+use crate::decode::{int_to_u64, into_bytes, into_text, key_to_i64};
 use crate::error::SigstoreVerifyError;
 use crate::fulcio::validate_cert_chain;
 use crate::manifest::{RELEASE_MANIFEST_AAD, ReleaseManifest};
@@ -123,6 +126,135 @@ pub struct ReleaseBundle {
     /// Raw `get-inclusion-proof` ASCII for the release leaf (ignored for
     /// a size-1 tree, whose inclusion is checked locally).
     pub sigsum_inclusion_proof_body: String,
+}
+
+// === Canonical-CBOR map keys for the ReleaseBundle wire format ===
+// Integer-keyed map per D0018 §2.3. This is the single-file offline-
+// install artifact (D0024 §6.4): the release producer writes it, the
+// client reads it, and `verify_release` consumes the decoded struct.
+// The nested `RekorBundle` + Sigsum `EmittedLeaf` are carried as byte
+// strings holding their own canonical-CBOR (each owns its schema).
+const KEY_BUNDLE_MANIFEST_ENVELOPE: i64 = 1;
+const KEY_BUNDLE_FULCIO_CERT_DER: i64 = 2;
+const KEY_BUNDLE_REKOR: i64 = 3;
+const KEY_BUNDLE_REKOR_SIGNING_TIME: i64 = 4;
+const KEY_BUNDLE_SIGSUM_EMITTED_LEAF: i64 = 5;
+const KEY_BUNDLE_SIGSUM_TREE_HEAD: i64 = 6;
+const KEY_BUNDLE_SIGSUM_INCLUSION_PROOF: i64 = 7;
+
+impl ReleaseBundle {
+    /// Encode as canonical-CBOR per D0018 §2.3 — the offline-install
+    /// wire format (D0024 §6.4) the release producer writes alongside
+    /// the APK.
+    ///
+    /// # Errors
+    ///
+    /// [`SigstoreVerifyError::ReleaseBundleDecodeFailed`] if a nested
+    /// component fails to encode or `rekor_signing_time_unix` exceeds
+    /// `i64::MAX` (unreachable for real Unix timestamps).
+    pub fn to_canonical_cbor(&self) -> Result<Vec<u8>, SigstoreVerifyError> {
+        let rekor_cbor = self.rekor_bundle.to_canonical_cbor()?;
+        let leaf_cbor = self
+            .sigsum_emitted_leaf
+            .to_canonical_cbor()
+            .map_err(|_| SigstoreVerifyError::ReleaseBundleDecodeFailed)?;
+        let signing_time_i64 = i64::try_from(self.rekor_signing_time_unix)
+            .map_err(|_| SigstoreVerifyError::ReleaseBundleDecodeFailed)?;
+        let map = Value::Map(vec![
+            (
+                Value::Int(KEY_BUNDLE_MANIFEST_ENVELOPE),
+                Value::Bytes(self.manifest_envelope_bytes.clone()),
+            ),
+            (
+                Value::Int(KEY_BUNDLE_FULCIO_CERT_DER),
+                Value::Bytes(self.fulcio_cert_der.clone()),
+            ),
+            (Value::Int(KEY_BUNDLE_REKOR), Value::Bytes(rekor_cbor)),
+            (
+                Value::Int(KEY_BUNDLE_REKOR_SIGNING_TIME),
+                Value::Int(signing_time_i64),
+            ),
+            (
+                Value::Int(KEY_BUNDLE_SIGSUM_EMITTED_LEAF),
+                Value::Bytes(leaf_cbor),
+            ),
+            (
+                Value::Int(KEY_BUNDLE_SIGSUM_TREE_HEAD),
+                Value::Text(self.sigsum_tree_head_body.clone()),
+            ),
+            (
+                Value::Int(KEY_BUNDLE_SIGSUM_INCLUSION_PROOF),
+                Value::Text(self.sigsum_inclusion_proof_body.clone()),
+            ),
+        ]);
+        map.encode()
+            .map_err(|_| SigstoreVerifyError::ReleaseBundleDecodeFailed)
+    }
+
+    /// Decode from canonical-CBOR bytes. Unknown integer keys are
+    /// tolerated per D0006 §6.4's forward-compatibility discipline.
+    ///
+    /// This is a structural decode only — it does NOT verify any proof.
+    /// The decoded bundle MUST be passed to
+    /// [`SigstoreVerifier::verify_release`] before any field is trusted.
+    ///
+    /// # Errors
+    ///
+    /// [`SigstoreVerifyError::ReleaseBundleDecodeFailed`] for any CBOR or
+    /// schema structural error, including a malformed nested
+    /// `RekorBundle` / Sigsum `EmittedLeaf`.
+    pub fn from_canonical_cbor(bytes: &[u8]) -> Result<Self, SigstoreVerifyError> {
+        let parsed: CiboriumValue = ciborium::de::from_reader(bytes)
+            .map_err(|_| SigstoreVerifyError::ReleaseBundleDecodeFailed)?;
+        let CiboriumValue::Map(entries) = parsed else {
+            return Err(SigstoreVerifyError::ReleaseBundleDecodeFailed);
+        };
+        let mut manifest_envelope_bytes: Option<Vec<u8>> = None;
+        let mut fulcio_cert_der: Option<Vec<u8>> = None;
+        let mut rekor_bundle: Option<RekorBundle> = None;
+        let mut rekor_signing_time_unix: Option<u64> = None;
+        let mut sigsum_emitted_leaf: Option<EmittedLeaf> = None;
+        let mut sigsum_tree_head_body: Option<String> = None;
+        let mut sigsum_inclusion_proof_body: Option<String> = None;
+        for (key, value) in entries {
+            match key_to_i64(&key)? {
+                KEY_BUNDLE_MANIFEST_ENVELOPE => manifest_envelope_bytes = Some(into_bytes(value)?),
+                KEY_BUNDLE_FULCIO_CERT_DER => fulcio_cert_der = Some(into_bytes(value)?),
+                KEY_BUNDLE_REKOR => {
+                    rekor_bundle = Some(RekorBundle::from_canonical_cbor(&into_bytes(value)?)?);
+                }
+                KEY_BUNDLE_REKOR_SIGNING_TIME => {
+                    rekor_signing_time_unix = Some(int_to_u64(&value)?);
+                }
+                KEY_BUNDLE_SIGSUM_EMITTED_LEAF => {
+                    sigsum_emitted_leaf = Some(
+                        EmittedLeaf::from_canonical_cbor(&into_bytes(value)?)
+                            .map_err(|_| SigstoreVerifyError::ReleaseBundleDecodeFailed)?,
+                    );
+                }
+                KEY_BUNDLE_SIGSUM_TREE_HEAD => sigsum_tree_head_body = Some(into_text(value)?),
+                KEY_BUNDLE_SIGSUM_INCLUSION_PROOF => {
+                    sigsum_inclusion_proof_body = Some(into_text(value)?);
+                }
+                _ => {} // forward-compat per D0006 §6.4
+            }
+        }
+        Ok(Self {
+            manifest_envelope_bytes: manifest_envelope_bytes
+                .ok_or(SigstoreVerifyError::ReleaseBundleDecodeFailed)?,
+            fulcio_cert_der: fulcio_cert_der
+                .ok_or(SigstoreVerifyError::ReleaseBundleDecodeFailed)?,
+            rekor_bundle: rekor_bundle.ok_or(SigstoreVerifyError::ReleaseBundleDecodeFailed)?,
+            rekor_signing_time_unix: rekor_signing_time_unix
+                .ok_or(SigstoreVerifyError::ReleaseBundleDecodeFailed)?,
+            sigsum_emitted_leaf: sigsum_emitted_leaf
+                .ok_or(SigstoreVerifyError::ReleaseBundleDecodeFailed)?,
+            sigsum_tree_head_body: sigsum_tree_head_body
+                .ok_or(SigstoreVerifyError::ReleaseBundleDecodeFailed)?,
+            sigsum_inclusion_proof_body: sigsum_inclusion_proof_body
+                .ok_or(SigstoreVerifyError::ReleaseBundleDecodeFailed)?,
+        })
+    }
 }
 
 /// Outcome of a successful [`SigstoreVerifier::verify_release`]
@@ -541,5 +673,72 @@ mod tests {
             result,
             Err(SigstoreVerifyError::ManifestDecodeFailed)
         ));
+    }
+
+    #[test]
+    fn release_bundle_round_trips_through_canonical_cbor() {
+        let original = make_release_bundle();
+        let bytes = original.to_canonical_cbor().unwrap();
+        let recovered = ReleaseBundle::from_canonical_cbor(&bytes).unwrap();
+        // ReleaseBundle / RekorBundle don't derive PartialEq (the verifier
+        // path owns a non-Eq SigsumClient), so assert canonical-byte
+        // identity on re-encode + spot-check representative fields across
+        // all three nesting layers (top-level bytes, nested RekorBundle,
+        // nested Sigsum EmittedLeaf).
+        assert_eq!(recovered.to_canonical_cbor().unwrap(), bytes);
+        assert_eq!(
+            recovered.manifest_envelope_bytes,
+            original.manifest_envelope_bytes
+        );
+        assert_eq!(recovered.fulcio_cert_der, original.fulcio_cert_der);
+        assert_eq!(
+            recovered.rekor_signing_time_unix,
+            original.rekor_signing_time_unix
+        );
+        assert_eq!(
+            recovered.rekor_bundle.leaf_index,
+            original.rekor_bundle.leaf_index
+        );
+        assert_eq!(
+            recovered.rekor_bundle.leaf_hash,
+            original.rekor_bundle.leaf_hash
+        );
+        assert_eq!(recovered.sigsum_emitted_leaf, original.sigsum_emitted_leaf);
+        assert_eq!(
+            recovered.sigsum_tree_head_body,
+            original.sigsum_tree_head_body
+        );
+    }
+
+    #[test]
+    fn release_bundle_decode_rejects_malformed_cbor() {
+        let result = ReleaseBundle::from_canonical_cbor(b"\xFF\x00\x01");
+        assert!(matches!(
+            result,
+            Err(SigstoreVerifyError::ReleaseBundleDecodeFailed)
+        ));
+    }
+
+    #[test]
+    fn rekor_bundle_round_trips_with_multiple_proof_nodes() {
+        // Exercises the array_of_array_32 audit-path decode with a
+        // realistic multi-node proof + a DER-length checkpoint signature.
+        let original = RekorBundle {
+            leaf_hash: [0x42; 32],
+            leaf_index: 7,
+            proof_nodes: vec![[0x11; 32], [0x22; 32], [0x33; 32]],
+            checkpoint_note: b"rekor.example/test\n8\nAAAA\n".to_vec(),
+            checkpoint_signature: vec![0xAB; 70],
+        };
+        let bytes = original.to_canonical_cbor().unwrap();
+        let recovered = RekorBundle::from_canonical_cbor(&bytes).unwrap();
+        assert_eq!(recovered.leaf_hash, original.leaf_hash);
+        assert_eq!(recovered.leaf_index, original.leaf_index);
+        assert_eq!(recovered.proof_nodes, original.proof_nodes);
+        assert_eq!(recovered.checkpoint_note, original.checkpoint_note);
+        assert_eq!(
+            recovered.checkpoint_signature,
+            original.checkpoint_signature
+        );
     }
 }

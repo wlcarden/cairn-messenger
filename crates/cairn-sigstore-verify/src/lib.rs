@@ -97,6 +97,10 @@ pub mod rekor;
 
 pub mod manifest;
 
+// Crate-private shared canonical-CBOR decode helpers for the offline
+// release-bundle wire format (D0024 §6.4), used by `rekor` + `client`.
+mod decode;
+
 pub use client::{ReleaseBundle, SigstoreVerifier, SigstoreVerifierConfig, VerifiedRelease};
 pub use compose::release_leaf_hash_for_envelope_bytes;
 pub use error::SigstoreVerifyError;

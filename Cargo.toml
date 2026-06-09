@@ -46,6 +46,9 @@ members = [
     # FFI boundary crate: the curated Kotlin-facing surface per D0027
     # (downstream of D0020 §3)
     "crates/cairn-uniffi",
+    # Release-producer: builds + signs a verifiable ReleaseBundle (the
+    # D0024 §6 / D0015 producer side; self-minted roots per D0041 phase 1)
+    "crates/cairn-release",
 ]
 # Future members per D0018 §8.6 (added incrementally as Tier 1/2/3 lands):
 #   "crates/cairn-identity",

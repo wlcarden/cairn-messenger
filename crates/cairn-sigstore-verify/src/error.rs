@@ -98,6 +98,17 @@ pub enum SigstoreVerifyError {
     #[error("sigstore-verify: release manifest canonical-CBOR decode failed")]
     ManifestDecodeFailed,
 
+    /// A serialized [`crate::ReleaseBundle`] (or its nested
+    /// [`crate::RekorBundle`] / Sigsum emitted-leaf) failed canonical-CBOR
+    /// decode: malformed CBOR, wrong type tags, or a wrong-length
+    /// fixed-width field. This is the offline-install wire format
+    /// (D0024 §6.4) the release producer writes and the client reads
+    /// before `verify_release`. Distinct from
+    /// [`Self::ManifestDecodeFailed`] (the inner manifest payload) and
+    /// [`Self::RekorResponseMalformed`] (the online Rekor HTTP shape).
+    #[error("sigstore-verify: release bundle canonical-CBOR decode failed")]
+    ReleaseBundleDecodeFailed,
+
     /// Underlying Sigsum-anchored release-log verification failed;
     /// the wrapped Sigsum error pinpoints the specific cause.
     #[error("sigstore-verify: sigsum release-log failure: {0}")]

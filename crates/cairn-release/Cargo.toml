@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 Cairn maintainers and contributors
+
+[package]
+name = "cairn-release"
+version = "0.1.0-dev"
+description = "Cairn release-producer: builds + signs a verifiable ReleaseBundle (the D0024 §6 / D0015 producer side)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "cairn-release"
+path = "src/main.rs"
+
+[dependencies]
+# === The release-security stack this tool produces FOR (D0024 verifier
+# input contract: ReleaseBundle / ReleaseManifest / RekorBundle) ===
+cairn-sigstore-verify = { path = "../cairn-sigstore-verify" }
+cairn-sigsum-client = { path = "../cairn-sigsum-client" }
+cairn-envelope = { path = "../cairn-envelope" }
+cairn-crypto = { path = "../cairn-crypto" }
+# Storage backs the SigsumClient the `verify` subcommand constructs to
+# replay verify_release on the host (in-memory; never persisted).
+cairn-storage = { path = "../cairn-storage" }
+
+# === Self-minted trust-root producer (D0041 phase 1) ===
+# rcgen mints the synthetic Fulcio cert chain; p256 signs the synthetic
+# Rekor C2SP checkpoint. These are the SELF-MINTED roots: the on-device
+# verifier is configured to pin them, proving the pipeline MECHANICS
+# end-to-end with no external services. The real-Sigstore-staging path
+# (D0041 phase 2) replaces this minting with the keyless OIDC + Fulcio +
+# Rekor network flow; rcgen/p256-signing then drop out of the producer.
+rcgen = { workspace = true }
+p256 = { workspace = true }
+
+# === Hashing + encoding ===
+sha2 = { workspace = true }
+base64 = { workspace = true }
+
+# === Roots config (JSON sidecar shipped next to the bundle) ===
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# === App-layer utilities (binary, not a library — see main.rs allow) ===
+anyhow = { workspace = true }
+clap = { workspace = true }
+url = { workspace = true }
+# Drives the async verify_release from the sync CLI (one-shot runtime),
+# same pattern as cairn-cli; inherits the workspace =1.40.0 pin.
+tokio = { workspace = true }
+
+# === Memory hygiene + CSPRNG ===
+zeroize = { workspace = true }
+rand_core = { workspace = true }
