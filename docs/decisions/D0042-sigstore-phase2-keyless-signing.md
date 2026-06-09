@@ -46,17 +46,17 @@ and a sign-side slice gated on a CI identity (§7).
 
 ## Decision summary
 
-| Question                     | Resolution                                                                                                                                                                                                                                                                                                                                           | §      |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| **Phasing**                  | Phase 2 = Sigstore **staging** (real keyless, real staging roots). Phase 3 = production (config + ceremony).                                                                                                                                                                                                                                         | §1     |
-| **Where signing runs**       | **CI (GitHub Actions) ambient OIDC `id-token`** — no human OAuth, no long-lived secret. Developer-interactive (device-code) is the manual fallback.                                                                                                                                                                                                  | §2     |
-| **Manifest signature model** | **(B) Sigstore-native: a detached ECDSA-P256 signature over the canonical-CBOR manifest** (cosign `sign-blob` model). The release manifest **leaves** the `COSE_Sign1` envelope; messaging/trust-graph keep COSE. Chosen for **independent verifiability** (§3).                                                                                     | §3     |
-| **Signing client**           | **Stock `cosign sign-blob`** in CI; `cairn-release` **ingests** cosign's outputs (cert + detached sig + Rekor bundle) into the `ReleaseBundle`. No bespoke keyless signer.                                                                                                                                                                           | §4     |
-| **Trust-root provisioning**  | **Pin** real Fulcio/Rekor/CT-log anchors as baked-in constants, no runtime TUF (D0024 §2.2). **Partial as of 2026-06-09:** captured anchors are pinned (`anchors`, feature-gated) but cross-environment; `PRODUCTION_ROOTS` stays `None` pending a coherent same-environment set (no staging CT key / production Rekor key yet — see §5 status, 2b). | §5     |
-| **Identity model**           | **CI workflow identity** (issuer = GHA OIDC, SAN = workflow URI) as the v1 release signer; developer-email identity is the manual alternative.                                                                                                                                                                                                       | §2, §6 |
-| **Verifier adaptations**     | Fulcio **P-256** key extraction; **detached-P-256** manifest verify (manifest leaves COSE); `ReleaseBundle` wire change; SAN-**URI** identity; **SCT** verification; Rekor entry-type binding.                                                                                                                                                       | §6     |
-| **v1 proof targets**         | **2a** (autonomous, no OIDC, manifest-model-independent): verify a **real** Rekor staging proof against pinned staging roots. **2b** (OIDC-gated): a real CI cosign signing run that `verify_release` accepts.                                                                                                                                       | §7     |
-| **Sigsum side**              | Real recruited log + witness pool is funding/people-gated (D0015 Q5); phase 2 keeps Sigsum synthetic or single-test-log, full recruitment deferred.                                                                                                                                                                                                  | §8     |
+| Question                     | Resolution                                                                                                                                                                                                                                                                                                                                                  | §      |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| **Phasing**                  | Phase 2 = Sigstore **staging** (real keyless, real staging roots). Phase 3 = production (config + ceremony).                                                                                                                                                                                                                                                | §1     |
+| **Where signing runs**       | **CI (GitHub Actions) ambient OIDC `id-token`** — no human OAuth, no long-lived secret. Developer-interactive (device-code) is the manual fallback.                                                                                                                                                                                                         | §2     |
+| **Manifest signature model** | **(B) Sigstore-native: a detached ECDSA-P256 signature over the canonical-CBOR manifest** (cosign `sign-blob` model). The release manifest **leaves** the `COSE_Sign1` envelope; messaging/trust-graph keep COSE. Chosen for **independent verifiability** (§3).                                                                                            | §3     |
+| **Signing client**           | **Stock `cosign sign-blob`** in CI; `cairn-release` **ingests** cosign's outputs (cert + detached sig + Rekor bundle) into the `ReleaseBundle`. No bespoke keyless signer.                                                                                                                                                                                  | §4     |
+| **Trust-root provisioning**  | **Pin** real Fulcio/Rekor/CT-log anchors as baked-in constants, no runtime TUF (D0024 §2.2). **As of 2026-06-09:** **staging is a coherent Fulcio + CT + Rekor triple** (all pinned + proven); production is a Fulcio + CT pair. `PRODUCTION_ROOTS` stays `None` pending production-only pieces (production Rekor key + OIDC identity — see §5 status, 2b). | §5     |
+| **Identity model**           | **CI workflow identity** (issuer = GHA OIDC, SAN = workflow URI) as the v1 release signer; developer-email identity is the manual alternative.                                                                                                                                                                                                              | §2, §6 |
+| **Verifier adaptations**     | Fulcio **P-256** key extraction; **detached-P-256** manifest verify (manifest leaves COSE); `ReleaseBundle` wire change; SAN-**URI** identity; **SCT** verification; Rekor entry-type binding.                                                                                                                                                              | §6     |
+| **v1 proof targets**         | **2a** (autonomous, no OIDC, manifest-model-independent): verify a **real** Rekor staging proof against pinned staging roots. **2b** (OIDC-gated): a real CI cosign signing run that `verify_release` accepts.                                                                                                                                              | §7     |
+| **Sigsum side**              | Real recruited log + witness pool is funding/people-gated (D0015 Q5); phase 2 keeps Sigsum synthetic or single-test-log, full recruitment deferred.                                                                                                                                                                                                         | §8     |
 
 ## 1. Phasing: staging first
 
@@ -184,29 +184,40 @@ them in** as the staging `ReleaseRoots` (producer side) and the verifier's
 is a coordinated release event (re-pin + ship), per D0024 §2.2 — never a
 runtime fetch on the verify path.
 
-**Status (2026-06-09) — partial, with an honest gap; `PRODUCTION_ROOTS`
-stays `None`.** The real anchors captured so far are **individually**
-attacker-unforgeable but **not yet a coherent single-environment trust-root
-set**, so they are pinned as feature-gated `&str` constants in
+**Status (2026-06-09) — the staging trust set is now coherent;
+`PRODUCTION_ROOTS` stays `None` pending production-only pieces.** The real
+anchors are pinned as feature-gated `&str` constants in
 `cairn_sigstore_verify::anchors` (the `pinned-anchors` cargo feature),
 **separate** from `cairn-uniffi`'s `PRODUCTION_ROOTS` (which stays `None` —
-the tripwire is unfilled). What is real: a **production** pair (Fulcio chain
+the tripwire is unfilled). Each constant `include_str!`s an already-proven
+`tests/vectors/` file and is re-bound by a self-validating anchors test (the
+CT-key constants re-verify a real embedded SCT; the wrong key fails closed).
 
-- CT-log key, from the GHA capture `tests/vectors/fulcio-gha/`, the only
-  embedded-SCT-bearing cert we have) and a **staging** pair (Fulcio chain +
-  Rekor key, from sigstage). What is **missing**, and why a coherent set
-  cannot yet be assembled from constants alone: (a) **no staging CT-log key**
-  — the only SCT we captured is on a production GHA leaf, so SCT enforcement
-  against a _staging_ leaf has no matching pinned CT key; (b) **no production
-  Rekor key** in-tree (only staging); (c) no production OIDC identity (phase-3
-  governance); (d) no Sigsum log key / witness pool (§8, funding-gated).
-  Closing (a)+(b) needs a real staging `cosign sign-blob` run (proof target
-  2b). The SCT-enforcement **wiring** is nonetheless complete and reachable
-  (see §6 item 5): a pinned CT-log key is a config input
-  (`SigstoreVerifierConfig.ctlog_pubkey_pem`) threaded from the FFI
-  (`ReleaseRootsRecord.ctlog_pubkey_pem`, defaulted `None`), so the moment a
-  matching CT key is provisioned, SCT verification is mandatory by
-  construction — no code change.
+What is real and **coherent within an environment**:
+
+- **Staging — a full Fulcio + CT-log + Rekor triple**, all from sigstage,
+  each proven against real log signatures: the chain validates a real
+  staging leaf (`fulcio_staging_vector.rs`); the CT key verifies a real
+  staging leaf's embedded SCT (`staging_sct_vector.rs`, the same-environment
+  proof that **closed the former staging-CT-key gap** — a fresh 2026 staging
+  leaf, since the 2022 one predates SCT embedding); the Rekor key verifies a
+  real staging inclusion proof (`rekor_staging_vector.rs`).
+- **Production — a Fulcio + CT-log pair** (from the GHA capture
+  `tests/vectors/fulcio-gha/`); together they verify the real GHA leaf's SCT.
+
+What is still **missing** for a shippable _production_ root set — why
+`PRODUCTION_ROOTS` stays `None`: (a) **no production Rekor key** in-tree
+(only staging); (b) **no production OIDC identity** (the project's real
+CI/maintainer `iss`+SAN, a phase-3 governance decision); (c) **no Sigsum
+log key / witness pool** (§8, funding-gated). (a) closes with a real
+production signing run; the staging triple is otherwise complete enough that
+a staging-targeted verifier needs only its OIDC-identity config + the Sigsum
+anchor. The SCT-enforcement **wiring** is complete and reachable (see §6
+item 5): a pinned CT-log key is a config input
+(`SigstoreVerifierConfig.ctlog_pubkey_pem`) threaded from the FFI
+(`ReleaseRootsRecord.ctlog_pubkey_pem`, defaulted `None`), so the moment a
+matching CT key reaches the config, SCT verification is mandatory by
+construction — no code change.
 
 ## 6. Verifier adaptations phase 2 forces
 
@@ -278,9 +289,12 @@ verification + its mandatory-path wiring (5), and Rekor entry-type binding
    FFI (`ReleaseRootsRecord.ctlog_pubkey_pem`, defaulted `None`); `None`
    skips SCT (synthetic rcgen leaves carry none — D0041 §6.1 dev path).
    `tests/verify_release.rs::enforces_sct_when_a_ctlog_key_is_pinned` proves
-   a pinned key forces SCT and rejects the no-SCT synthetic leaf. Enforcement
-   becomes active in a shipped build the moment §5 provisions a matching
-   pinned CT key (a coherent same-environment one — see §5 status gap).
+   a pinned key forces SCT and rejects the no-SCT synthetic leaf. The
+   primitive is now proven in **both** environments: production
+   (`tests/sct_vector.rs`) and **staging** (`tests/staging_sct_vector.rs`, a
+   real 2026 staging leaf + the staging CT-log key — see §5 status).
+   Enforcement becomes active in a shipped build the moment §5 provisions a
+   matching pinned CT key into the verifier config.
 6. **Rekor entry-type binding — ✓ LANDED (2026-06-09).** Confirmed the
    gap: the verifier proved Rekor _inclusion_ of a producer-supplied leaf
    hash but never bound it to the signing event, so a valid inclusion proof
@@ -334,15 +348,18 @@ verification + its mandatory-path wiring (5), and Rekor entry-type binding
   CT-inclusion transparency check. **Anchors pinned + SCT wired — ✓
   (2026-06-09).** The real anchors are baked as feature-gated constants
   (`cairn_sigstore_verify::anchors`, `pinned-anchors`), each `include_str!`
-  of the proven vector and bound by `anchors::tests` (the production CT-key
-  constant re-verifies the real GHA SCT); SCT verification is now wired into
-  the mandatory `verify_release` path (§6 item 5), enforced whenever a CT-log
-  key is pinned. **Remaining (deferred to 2b):** these constants are not yet
-  a coherent single-environment set — there is **no staging CT-log key** and
-  **no production Rekor key** captured (see §5 status) — so `PRODUCTION_ROOTS`
-  stays `None` until a real staging signing run supplies the same-environment
-  pieces. SCT enforcement is dark in a shipped build only for lack of a
-  matching pinned key, not for lack of wiring.
+  of the proven vector and bound by `anchors::tests` (each CT-key constant
+  re-verifies a real embedded SCT); SCT verification is now wired into the
+  mandatory `verify_release` path (§6 item 5), enforced whenever a CT-log key
+  is pinned. **Staging-CT gap closed — ✓ (2026-06-09):** a fresh real staging
+  Fulcio leaf with an embedded SCT + the matching staging CT-log key were
+  captured (`tests/staging_sct_vector.rs`), so **staging is now a coherent
+  Fulcio + CT + Rekor triple**. **Remaining (deferred to 2b):** the
+  _production_ set still lacks a **production Rekor key** (only staging is
+  captured) and a production OIDC identity, so `PRODUCTION_ROOTS` stays
+  `None` until a real production signing run supplies them. SCT enforcement is
+  dark in a shipped build only for lack of a matching pinned key, not for lack
+  of wiring.
 - **2b — OIDC-gated (CI milestone).** A real GitHub Actions staging
   `cosign sign-blob` run produces a real `ReleaseBundle` that
   `verify_release` accepts against the pinned staging roots —

@@ -17,40 +17,38 @@
 //!
 //! ## What is real here — and what is NOT (the honest gaps)
 //!
-//! These anchors are **individually** real and verified, but they are
-//! **not yet a coherent single-environment trust-root set**. They are the
-//! building blocks captured so far, drawn from two environments:
+//! These anchors are **individually** real and verified. The **staging**
+//! environment is now a coherent trust triple (Fulcio + CT + Rekor, all
+//! from sigstage); production is a Fulcio + CT pair. None of this silently
+//! becomes the shipped production root — see the tripwire note below.
 //!
 //! | Anchor                          | Environment | Status |
 //! |---------------------------------|-------------|--------|
 //! | [`PROD_FULCIO_CHAIN_PEM`]       | production  | real   |
 //! | [`PROD_CTLOG_PUBKEY_PEM`]       | production  | real   |
 //! | [`STAGING_FULCIO_CHAIN_PEM`]    | staging     | real   |
+//! | [`STAGING_CTLOG_PUBKEY_PEM`]    | staging     | real   |
 //! | [`STAGING_REKOR_PUBKEY_PEM`]    | staging     | real   |
 //!
-//! Two **same-environment pairs** are coherent and exercised today:
+//! Coherent same-environment sets exercised today:
 //!
-//! - **Production Fulcio chain + production CT-log key** — both from the
-//!   production `trusted_root.json`; together they verify the real GHA
-//!   leaf's embedded SCT (re-proven against the baked constants by this
-//!   module's own `prod_ctlog_anchor_verifies_real_gha_sct` test, and
+//! - **Staging Fulcio chain + CT-log key + Rekor key** — all from sigstage.
+//!   The Fulcio chain validates a real staging leaf
+//!   (`tests/fulcio_staging_vector.rs`); the CT key verifies a real staging
+//!   leaf's embedded SCT (`tests/staging_sct_vector.rs`, re-bound here by
+//!   `staging_ctlog_anchor_verifies_real_staging_sct`); the Rekor key
+//!   verifies a staging inclusion proof (`tests/rekor_staging_vector.rs`).
+//! - **Production Fulcio chain + CT-log key** — both from the production
+//!   `trusted_root.json`; together they verify the real GHA leaf's embedded
+//!   SCT (re-bound by `prod_ctlog_anchor_verifies_real_gha_sct`, and
 //!   end-to-end by `tests/sct_vector.rs`).
-//! - **Staging Fulcio chain + staging Rekor key** — both from sigstage;
-//!   together they validate the staging leaf's chain
-//!   (`tests/fulcio_staging_vector.rs`) and a staging Rekor inclusion
-//!   proof (`tests/rekor_staging_vector.rs`).
 //!
-//! What is **deliberately absent**, and why a usable end-to-end verifier
-//! cannot yet be assembled purely from these constants:
+//! What is still **absent**, and why a shipped production verifier cannot
+//! yet be assembled purely from these constants:
 //!
-//! - **No staging CT-log key.** The only embedded SCT we have captured is
-//!   on a *production* GHA leaf, so SCT enforcement against a *staging*
-//!   Fulcio leaf has no pinned CT key to check against. Mixing the
-//!   production CT key with a staging leaf would not verify (different log,
-//!   different `log_id`). Capturing a staging SCT requires a real staging
-//!   `cosign sign-blob` run (D0042 phase-3, deferred "2b").
 //! - **No production Rekor key.** Only the *staging* Rekor key is pinned;
-//!   the production Rekor inclusion path awaits the same real signing run.
+//!   the production Rekor inclusion path awaits a real production signing
+//!   run (the staging triple is, however, complete).
 //! - **No production OIDC identity.** The project's real maintainer/CI
 //!   signing identity (`iss` + SAN) is a phase-3 governance decision
 //!   (D0024 §1.1), not captured here.
@@ -103,6 +101,16 @@ pub const STAGING_FULCIO_CHAIN_PEM: &str =
 pub const STAGING_REKOR_PUBKEY_PEM: &str =
     include_str!("../tests/vectors/rekor-staging/log-publickey.pem");
 
+/// Staging CT-log public key (ECDSA P-256 SPKI, PEM).
+///
+/// The staging CT log active from 2026-01-14 (`log_id` `3e607153…a6b6`),
+/// extracted from the staging `trusted_root.json`. Its `SHA-256(SPKI)`
+/// equals the embedded SCT's `log_id` on a real staging Fulcio leaf, so it
+/// verifies that leaf's SCT (RFC 6962 §3.2 / D0042 §6.5) — the staging
+/// counterpart to [`PROD_CTLOG_PUBKEY_PEM`].
+pub const STAGING_CTLOG_PUBKEY_PEM: &str =
+    include_str!("../tests/vectors/fulcio-staging-sct/ctlog-pubkey.pem");
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -118,6 +126,10 @@ mod tests {
     /// The real production GHA leaf whose embedded SCT the production CT
     /// key must verify (the same fixture `sct_vector.rs` uses).
     const GHA_LEAF_PEM: &str = include_str!("../tests/vectors/fulcio-gha/leaf-cert.pem");
+    /// The real staging Fulcio leaf whose embedded SCT the staging CT key
+    /// must verify (the same fixture `staging_sct_vector.rs` uses).
+    const STAGING_LEAF_PEM: &str =
+        include_str!("../tests/vectors/fulcio-staging-sct/leaf-cert.pem");
 
     /// Decode the `n`-th PEM block of `pem` to DER, or panic.
     fn nth_der(pem: &str, n: usize) -> Vec<u8> {
@@ -138,6 +150,7 @@ mod tests {
         assert!(!nth_der(STAGING_FULCIO_CHAIN_PEM, 0).is_empty());
         assert!(!nth_der(STAGING_FULCIO_CHAIN_PEM, 1).is_empty()); // intermediate + root
         assert!(!nth_der(STAGING_REKOR_PUBKEY_PEM, 0).is_empty());
+        assert!(!nth_der(STAGING_CTLOG_PUBKEY_PEM, 0).is_empty());
     }
 
     #[test]
@@ -168,5 +181,19 @@ mod tests {
         let ctlog = nth_der(PROD_CTLOG_PUBKEY_PEM, 0);
         verify_embedded_sct(&leaf, &intermediate, &ctlog)
             .expect("pinned production CT anchor must verify the real GHA leaf SCT");
+    }
+
+    #[test]
+    fn staging_ctlog_anchor_verifies_real_staging_sct() {
+        // The staging counterpart bind: the BAKED staging CT-key constant,
+        // with the BAKED staging Fulcio intermediate (chain block 0), must
+        // verify the real staging leaf's embedded SCT — the same
+        // fail-closed self-validation as the production case, proving the
+        // staging anchor triple is internally consistent.
+        let leaf = nth_der(STAGING_LEAF_PEM, 0);
+        let intermediate = nth_der(STAGING_FULCIO_CHAIN_PEM, 0);
+        let ctlog = nth_der(STAGING_CTLOG_PUBKEY_PEM, 0);
+        verify_embedded_sct(&leaf, &intermediate, &ctlog)
+            .expect("pinned staging CT anchor must verify the real staging leaf SCT");
     }
 }
