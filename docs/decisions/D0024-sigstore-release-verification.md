@@ -406,7 +406,7 @@ All variants carry indices, type tags, or bounded scalars — no `Vec<u8>` cert 
 
 This decision does NOT address:
 
-1. **Release signing flow.** The CI-side OIDC token request, Sigstore signing event production, and Rekor entry posting are release-pipeline concerns, owned by the build infrastructure. v1 expects to use `cosign sign-blob` via the project's GitHub Actions / equivalent pipeline.
+1. **Release signing flow.** The CI-side OIDC token request, Sigstore signing event production, and Rekor entry posting are release-pipeline concerns, owned by the build infrastructure. v1 expects to use `cosign sign-blob` via the project's GitHub Actions / equivalent pipeline. _[Revised 2026-06-09 — D0042.]_ The `cosign sign-blob` expectation predates the landed Ed25519 `COSE_Sign1` manifest envelope; stock cosign is ECDSA-P256 + blob-format and cannot produce it. D0042 §3 resolves the resulting fork (recommend preserving Ed25519 `COSE_Sign1` with a hand-rolled keyless signer, Fulcio issuing an Ed25519 ephemeral cert) and designs the phase-2 signing flow (CI ambient OIDC, pinned staging roots).
 2. **OIDC issuance log audit.** The out-of-band log of when the developer actually signed (compared against Rekor entries to detect coerced provider tokens) is operational per D0015 + design brief §5.5. It is not a Rust-core defense.
 3. **APK signing key custody and rotation.** The long-lived APK signing key is an Android-shell concern; rotation via APK Signature Scheme v3 happens outside the Rust core.
 4. **Bring-Your-Own-OIDC-provider.** v1 pins the project's chosen OIDC provider per release. Users cannot configure their own verifier-side OIDC trust at runtime.
