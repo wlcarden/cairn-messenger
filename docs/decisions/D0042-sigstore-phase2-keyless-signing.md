@@ -1,6 +1,6 @@
 # D0042 — Sigstore phase 2: real keyless signing + pinned staging trust roots (the D0041 §6.1 hard blocker)
 
-**Status:** Proposed (design; resolves the phase-2 forks — one pivotal call flagged for confirmation in §3)
+**Status:** Accepted (design; phase-2 staging). The pivotal manifest-signature fork (§3) was resolved to **(B) Sigstore-native ECDSA-P256** on 2026-06-09.
 **Date:** 2026-06-09
 
 > **Why this exists.** D0041 phase 1 proved the release pipeline's
@@ -29,33 +29,34 @@ Three constraints from prior decisions bound the design:
 - **D0024 §2.2 / §3.2** pin the Fulcio root + Rekor key as **release
   config**, explicitly excluding runtime trust-root resolution ("a
   coordinated release picks up rotation explicitly").
-- **D0024 §8** scoped the signing flow as build-infrastructure and
-  assumed `cosign sign-blob` in CI. That assumption predates the landed
-  manifest envelope (see §3) and is **revised** here.
-- **D0041 §6.1** added the `PRODUCTION_ROOTS` tripwire: a shipped FFI
-  build refuses caller-supplied roots and uses compiled-in roots that are
-  `None` until provisioned. This decision provisions them (staging).
+- **D0024 §8** scoped the signing flow as build-infrastructure and assumed
+  `cosign sign-blob` in CI. §3 below **confirms** that, and revises the
+  manifest representation to match (the manifest stops being a
+  `COSE_Sign1`).
+- **D0041 §6.1** added the `PRODUCTION_ROOTS` tripwire: a shipped FFI build
+  refuses caller-supplied roots and uses compiled-in roots that are `None`
+  until provisioned. This decision provisions them (staging).
 
 Two environmental facts (probed 2026-06-09): Sigstore staging is
 network-reachable from the build host (`rekor.sigstage.dev` → 200), and
 keyless signing **requires an OIDC identity** that cannot be driven
 autonomously (interactive OAuth needs a human; ambient OIDC needs a CI
-runner). This splits phase 2 into a verify-side slice that is provable
-now and a sign-side slice gated on a CI identity (§7).
+runner). This splits phase 2 into a verify-side slice that is provable now
+and a sign-side slice gated on a CI identity (§7).
 
 ## Decision summary
 
-| Question                     | Resolution                                                                                                                                                                                                             | §      |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| **Phasing**                  | Phase 2 = Sigstore **staging** (real keyless, real staging roots). Phase 3 = production (config + ceremony).                                                                                                           | §1     |
-| **Where signing runs**       | **CI (GitHub Actions) ambient OIDC `id-token`** — no human OAuth, no long-lived secret. Developer-interactive (device-code) is the manual fallback.                                                                    | §2     |
-| **Manifest signature model** | **PIVOTAL — recommend (A) preserve Ed25519 `COSE_Sign1`**, with Fulcio issuing an Ed25519 ephemeral cert; alternative (B) adopt Sigstore-native ECDSA-P256. Flagged for confirmation.                                  | §3     |
-| **Signing client**           | Thin hand-rolled Fulcio + Rekor HTTP client in a **non-shipping** producer/CI tool (exact control over the Ed25519 `COSE_Sign1` + the Rekor entry; off the verify trust boundary). `sigstore-rs` considered, deferred. | §4     |
-| **Trust-root provisioning**  | **Pin** the staging Fulcio root + Rekor key + CT-log key as baked-in constants (obtained once via the staging TUF repo). No runtime TUF (D0024 §2.2). Fills the `PRODUCTION_ROOTS` tripwire.                           | §5     |
-| **Identity model**           | **CI workflow identity** (issuer = GHA OIDC, SAN = workflow URI) as the v1 release signer; developer-email identity is the manual alternative. Implies a verifier adaptation (§6).                                     | §2, §6 |
-| **Verifier adaptations**     | SAN-**URI** identity (CI), **SCT** verification against the pinned CT-log key, and confirming the **Rekor entry-type binding** to the manifest.                                                                        | §6     |
-| **v1 proof targets**         | **2a** (autonomous, no OIDC): verify a **real** Rekor staging proof against pinned staging roots. **2b** (OIDC-gated): a real CI keyless signing run that `verify_release` accepts.                                    | §7     |
-| **Sigsum side**              | Real recruited log + witness pool is funding/people-gated (D0015 Q5); phase 2 keeps Sigsum synthetic or single-test-log, full recruitment deferred.                                                                    | §8     |
+| Question                     | Resolution                                                                                                                                                                                                                                                       | §      |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| **Phasing**                  | Phase 2 = Sigstore **staging** (real keyless, real staging roots). Phase 3 = production (config + ceremony).                                                                                                                                                     | §1     |
+| **Where signing runs**       | **CI (GitHub Actions) ambient OIDC `id-token`** — no human OAuth, no long-lived secret. Developer-interactive (device-code) is the manual fallback.                                                                                                              | §2     |
+| **Manifest signature model** | **(B) Sigstore-native: a detached ECDSA-P256 signature over the canonical-CBOR manifest** (cosign `sign-blob` model). The release manifest **leaves** the `COSE_Sign1` envelope; messaging/trust-graph keep COSE. Chosen for **independent verifiability** (§3). | §3     |
+| **Signing client**           | **Stock `cosign sign-blob`** in CI; `cairn-release` **ingests** cosign's outputs (cert + detached sig + Rekor bundle) into the `ReleaseBundle`. No bespoke keyless signer.                                                                                       | §4     |
+| **Trust-root provisioning**  | **Pin** the staging Fulcio root + Rekor key + CT-log key as baked-in constants (obtained once via the staging TUF repo). No runtime TUF (D0024 §2.2). Fills the `PRODUCTION_ROOTS` tripwire.                                                                     | §5     |
+| **Identity model**           | **CI workflow identity** (issuer = GHA OIDC, SAN = workflow URI) as the v1 release signer; developer-email identity is the manual alternative.                                                                                                                   | §2, §6 |
+| **Verifier adaptations**     | Fulcio **P-256** key extraction; **detached-P-256** manifest verify (manifest leaves COSE); `ReleaseBundle` wire change; SAN-**URI** identity; **SCT** verification; Rekor entry-type binding.                                                                   | §6     |
+| **v1 proof targets**         | **2a** (autonomous, no OIDC, manifest-model-independent): verify a **real** Rekor staging proof against pinned staging roots. **2b** (OIDC-gated): a real CI cosign signing run that `verify_release` accepts.                                                   | §7     |
+| **Sigsum side**              | Real recruited log + witness pool is funding/people-gated (D0015 Q5); phase 2 keeps Sigsum synthetic or single-test-log, full recruitment deferred.                                                                                                              | §8     |
 
 ## 1. Phasing: staging first
 
@@ -80,84 +81,95 @@ loop, no long-lived signing key exists, and the identity is reproducible
 and auditable (it _is_ the workflow path). This is the standard "keyless
 CI" model and is what D0024 §8 meant by "build-infrastructure owned."
 
-A **developer-interactive** flow (Sigstore device-code against
+A **developer-interactive** flow (cosign device-code against
 `oauth2.sigstage.dev`, identity = a developer email) is the manual
 fallback for local/emergency signing and for the very first staging
 bring-up before the CI workflow exists. The verifier must accept whichever
 identity model a given release pins (§6).
 
-## 3. PIVOTAL — the manifest signature model
+## 3. Manifest signature model — (B) Sigstore-native ECDSA-P256
 
-The landed producer signs the manifest as an **Ed25519 `COSE_Sign1`**
-(`sign_manifest_envelope`, `produce.rs`), and the verifier extracts an
-**Ed25519** key from the Fulcio leaf SPKI (`extract_ed25519_key`,
-`fulcio.rs`) and verifies that COSE signature. Stock Sigstore (cosign) is
-**ECDSA-P256** and signs **blobs** (not `COSE_Sign1`). So "use cosign"
-(D0024 §8) and "the manifest is an Ed25519 COSE envelope" (what we built)
-are in direct tension. Two coherent end-states:
+**Decision: the release manifest signature is a detached ECDSA-P256
+signature over the canonical-CBOR `ReleaseManifest` bytes (cosign
+`sign-blob` model).** The Fulcio leaf carries the P-256 ephemeral key; the
+verifier extracts P-256 and verifies the detached signature. The
+`COSE_Sign1` wrapper is dropped **for the release manifest only** (D0006
+messaging + trust-graph artifacts keep COSE).
 
-**(A) Preserve Ed25519 `COSE_Sign1` — RECOMMENDED.** Fulcio issues a cert
-for an **Ed25519** ephemeral key (Fulcio accepts Ed25519 CSRs). The
-manifest stays a `COSE_Sign1`; the verifier's manifest-verify +
-key-extract path is **unchanged** (the audited, tested security boundary).
-The Rekor entry commits to the COSE bytes + the cert.
+**The fork.** The landed producer signed the manifest as an Ed25519
+`COSE_Sign1` (`sign_manifest_envelope`), and the verifier extracted Ed25519
+(`extract_ed25519_key`). Stock Sigstore (cosign) is ECDSA-P256 + blob
+format. So "use cosign" (D0024 §8) and "the manifest is an Ed25519 COSE
+envelope" cannot both hold. The alternative considered:
 
-- _Pro:_ zero churn on the security-critical verify path; Cairn's uniform
-  envelope (D0006/D0018) holds for the manifest like every other signed
-  artifact; the change is confined to the producer/CI signer.
-- _Con:_ stock `cosign` cannot produce it (Ed25519 + COSE), so the signer
-  is hand-rolled (§4); the Rekor payload is non-standard (Cairn's verifier
-  understands it, but `cosign verify` would not).
+> **(A) Preserve Ed25519 `COSE_Sign1`** — Fulcio issues an Ed25519
+> ephemeral cert (it supports Ed25519 CSRs); the manifest stays COSE; the
+> verify path is unchanged; the keyless signer is hand-rolled (cosign
+> cannot produce Ed25519 + COSE). _Rejected_ — see below.
 
-**(B) Adopt Sigstore-native ECDSA-P256.** The release manifest signature
-becomes a detached P-256 signature over the canonical-CBOR manifest bytes
-(cosign's `sign-blob` model); the Fulcio leaf carries a P-256 key; the
-verifier extracts P-256 + verifies a detached sig (the `COSE_Sign1`
-wrapper is dropped **for the release manifest only**; messaging /
-trust-graph keep COSE).
+**Why (B), on the security merits.** The deciding axis is **independent
+verifiability**, and it is close to this project's thesis:
 
-- _Pro:_ the CI job is literally `cosign sign-blob`; standard Rekor
-  `hashedrekord`; third parties can independently verify with stock
-  Sigstore tooling.
-- _Con:_ churn on the **security-critical** verify path — re-do Fulcio key
-  extraction (P-256 SPKI) + manifest verification (detached P-256) + their
-  tests; the release manifest diverges from Cairn's COSE envelope.
+- **Transparency is only as strong as the set of independent watchers.** A
+  transparency log detects a compromised or coerced maintainer's rogue
+  signing _because other parties watch it_. Under (A) the Rekor entry is
+  Cairn-specific — only Cairn's own verifier can interpret it, so no third
+  party, `cosign verify-blob`, or automated `rekor-monitor` can audit it.
+  That collapses detection to "trust Cairn to police itself," exactly the
+  trust the log exists to remove. Under (B), anyone can run
+  `cosign verify-blob --certificate-identity … --certificate-oidc-issuer …`
+  and standard Rekor monitors can watch the release identity. Cairn's
+  threat model (at-risk users, plausible maintainer coercion) is the one
+  where this matters **most**.
+- **Less bespoke code in the release path.** (B) leans on cosign — widely
+  audited, Sigstore-maintained — instead of a hand-rolled Fulcio/Rekor
+  keyless signer.
+- **The crypto-primitive edge for (A) is minor and neutralized here.**
+  Ed25519 is the more misuse-resistant primitive in general, but ECDSA's
+  catastrophic failure mode (nonce reuse) **cannot occur** with a
+  single-use ephemeral key, and ECDSA malleability is neutralized by the
+  Rekor hash pin + the verifier's exact-bytes check. Near-zero
+  differentiator in the keyless context.
+- **The cost of (B) is work, not steady-state security — and the work is
+  reduced.** (B) changes the security-critical verify path (Fulcio P-256
+  extraction + detached-sig verify), which is real churn + transient
+  bug-risk. But `cairn-sigstore-verify` **already** verifies ECDSA-P256 (the
+  Rekor checkpoint is a C2SP signed note verified with P-256; `p256` is
+  already a workspace pin, D0024 §3.2) — so (B) **reuses** an audited
+  in-tree primitive rather than introducing one. A well-tested P-256 verify
+  path is not less secure than an Ed25519 one.
 
-**Recommendation: (A).** Cairn's own logic (D0024 §3.1) keeps the
-security-critical verifier project-owned + minimal and accepts hand-rolled
-tooling **off** the trust boundary (SOCKS5, SMP, the Rekor _verifier_
-itself). The signer is off that boundary; the verifier is on it. (A) keeps
-churn off the boundary and preserves the uniform envelope. **This is the
-one call worth confirming before code** — (B)'s ecosystem-interop +
-cosign-simplicity is a legitimate counter-weight, and it is materially
-cheaper to choose now than to migrate later.
+**The one caveat (the condition under which (A) would have won):** (B)'s
+transparency advantage is _latent_ until independent verification is
+actually cultivated — publish the `cosign verify-blob` recipe, register the
+release identity with a Rekor monitor. If releases were only ever to be
+checked by Cairn's own on-device verifier, (B) would pay churn for an
+unused property. The pipeline's whole purpose (trust-minimized, auditable
+releases) implies that intent, so (B) is correct.
 
-## 4. Signing client: thin hand-rolled Fulcio + Rekor HTTP
+## 4. Signing client: stock cosign in CI; `cairn-release` ingests
 
-Under (A), the signer (a host/CI tool — `cairn-release` real mode or a
-sibling `cairn-sign` bin, **never shipped in the APK**) does, per release:
+(B) makes the CI signing step the standard keyless flow, with **no bespoke
+signer**:
 
-1. Read the CI ambient OIDC token (an env-provided JWT — no OAuth library).
-2. Generate an **ephemeral Ed25519** keypair.
-3. POST a Fulcio signing request (the Ed25519 public key + an
-   OIDC-token-bound proof of possession) → receive the short-lived cert
-   chain (leaf + intermediate) **with an embedded SCT**.
-4. `COSE_Sign1`-sign the canonical-CBOR manifest with the ephemeral key
-   (the existing `Sign1Builder` external-signer path), zeroize the key.
-5. POST a Rekor entry committing to the COSE bytes + the cert → receive
-   the inclusion proof + signed checkpoint.
-6. Assemble the `ReleaseBundle` (the existing wire format) from the real
-   cert DER + COSE bytes + Rekor proof; emit the staging `ReleaseRoots`
-   (§5) — replacing the synthetic `mint_*` helpers.
+1. CI (GitHub Actions, `id-token: write`) builds the artifacts +
+   `cairn-release build` emits the canonical-CBOR manifest bytes.
+2. `cosign sign-blob --yes manifest.cbor` runs with the staging Fulcio /
+   Rekor endpoints + the ambient OIDC token → produces the **detached
+   P-256 signature**, the **Fulcio cert** (leaf + chain, with embedded
+   SCT), and a **Rekor entry** (`hashedrekord`) with its inclusion proof +
+   signed checkpoint.
+3. `cairn-release` (a `--sigstore-bundle <cosign-output>` mode, replacing
+   the synthetic `mint_*` helpers) **ingests** those outputs into the
+   existing `ReleaseBundle` wire format (§6 wire change) + emits the staging
+   `ReleaseRoots` (§5).
 
-`sigstore-rs` was considered: it provides Fulcio/Rekor/OAuth/TUF clients,
-but its Ed25519 + custom-COSE-payload path is awkward (it is oriented to
-its own bundle/blob format + ECDSA), and it is a heavy transitive tree
-(D0021 pin-audit concern). Since the signer is non-shipping host tooling,
-the hand-rolled HTTP (a handful of POSTs, mirroring the existing
-hand-rolled Rekor _verifier_ + `cairn-sigsum-client` HTTP) gives exact
-control over the COSE + Rekor entry shapes the verifier already expects.
-Revisit if the hand-rolled Fulcio/Rekor surface grows.
+`cairn-release` stays a **packager**: it never holds a signing key, never
+talks to the OIDC provider, and never sees a long-lived secret — cosign +
+the CI runner own those. `sigstore-rs` was considered as an in-process
+alternative but is unnecessary given cosign already does the flow and the
+producer is non-shipping host tooling; revisit only if shelling to cosign
+proves operationally awkward.
 
 ## 5. Trust-root provisioning: pin, don't resolve at runtime
 
@@ -165,53 +177,63 @@ D0024 §2.2 excludes runtime trust-root resolution. Sigstore distributes
 its trust roots as a TUF-signed `trusted_root.json` (Fulcio chains, Rekor
 keys, CT-log keys, each with validity windows). Phase 2 uses TUF **once,
 at provisioning time** (a host step, fetching the staging
-`trusted_root.json` from `tuf-repo-cdn.sigstage.dev`), extracts the
-current staging Fulcio root + Rekor public key + CT-log public key, and
-**bakes them in** as the staging `ReleaseRoots` (the producer side) and
-the verifier's `PRODUCTION_ROOTS` constant (the D0041 §6.1 tripwire
-fill-point). Rotation is a coordinated release event (re-pin + ship), per
-D0024 §2.2 — never a runtime fetch on the verify path.
+`trusted_root.json` from `tuf-repo-cdn.sigstage.dev`), extracts the current
+staging Fulcio root + Rekor public key + CT-log public key, and **bakes
+them in** as the staging `ReleaseRoots` (producer side) and the verifier's
+`PRODUCTION_ROOTS` constant (the D0041 §6.1 tripwire fill-point). Rotation
+is a coordinated release event (re-pin + ship), per D0024 §2.2 — never a
+runtime fetch on the verify path.
 
 ## 6. Verifier adaptations phase 2 forces
 
-The verifier is real but was built + tested against the **synthetic**
-profile; real Sigstore differs in three concrete ways that are **new
-verifier work**, not config:
+The verifier is real but was built + tested against the **synthetic Ed25519
+COSE** profile; (B) + real Sigstore differ in concrete ways that are **new
+verify-side work**, not config:
 
-1. **SAN-URI identity (if the CI-identity model, §2).** Today
-   `san_has_email` matches an `rfc822Name`. A CI workflow identity is a
-   SAN **URI** (`https://github.com/ORG/REPO/.github/workflows/...@REF`)
-   plus GHA-specific Fulcio extension claims. The verifier must pin + match
-   the URI identity. (A developer-email release needs no change.)
-2. **SCT verification.** Real Fulcio certs embed a **Signed Certificate
-   Timestamp** proving CT-log inclusion. The synthetic path has none, so
-   the verifier does not check it. Full Sigstore verification verifies the
-   SCT against the pinned CT-log key — this should be **added** (or its
-   omission explicitly accepted as a documented residual).
-3. **Rekor entry-type binding.** Confirm the exact Rekor entry shape the
-   producer uploads (a `hashedrekord` / DSSE committing to the COSE bytes +
-   cert) and that the verifier's inclusion check binds that entry to the
-   manifest — not merely "an entry is included," but "the entry for **this**
-   manifest is included."
-
-These are tracked as the verify-side work items of phase 2, alongside the
-producer signer (§4).
+1. **Fulcio P-256 key extraction.** Replace `extract_ed25519_key` with a
+   P-256 SPKI extractor (reusing the in-tree `p256` pin). The existing
+   `rejects_non_ed25519_leaf_key` test inverts (accept P-256, reject the
+   rest).
+2. **Detached-P-256 manifest verify.** The release manifest is no longer a
+   `COSE_Sign1`; `verify_release` verifies a **detached** P-256 signature
+   over the canonical-CBOR manifest bytes against the Fulcio-bound key
+   (not a COSE verify via `cairn-envelope`).
+3. **`ReleaseBundle` wire change.** `manifest_envelope_bytes` (COSE) →
+   `manifest_bytes` + `manifest_signature` (detached). The
+   `release_leaf_hash` primitive (today `SHA-256(COSE_Sign1.signature)`,
+   binding the Sigsum release entry to the signing event) rebinds to the
+   detached signature bytes. The canonical-CBOR decode-strictness gate
+   (D0041 §6.3) applies unchanged to the new fields.
+4. **SAN-URI identity (CI model, §2).** Today `san_has_email` matches an
+   `rfc822Name`. A CI workflow identity is a SAN **URI**
+   (`https://github.com/ORG/REPO/.github/workflows/…@REF`) plus GHA Fulcio
+   extension claims. The verifier must pin + match the URI identity. (A
+   developer-email release needs no change.)
+5. **SCT verification.** Real Fulcio certs embed a **Signed Certificate
+   Timestamp** proving CT-log inclusion. The synthetic path has none. Full
+   Sigstore verification verifies the SCT against the pinned CT-log key —
+   **add** it (or explicitly accept its omission as a documented residual).
+6. **Rekor entry-type binding.** Confirm the verifier binds the Rekor
+   `hashedrekord` entry to **this** manifest + cert (not merely "an entry
+   is included") — the cosign `sign-blob` entry commits to the artifact
+   hash + the signature + the cert.
 
 ## 7. Proof targets
 
-- **2a — autonomous, no OIDC (provable now).** Pin the real staging roots
-  (§5); fetch a **real** existing Rekor staging inclusion proof
-  (`rekor.sigstage.dev`, the `online-rekor` feature path) and verify it
-  against the real pinned Rekor staging key. Milestone: the verifier
-  checks **attacker-unforgeable** Rekor data (real Merkle tree, real log
-  signature) — the first non-synthetic verification, and the half that
-  delivers consumer-side forgery-resistance. De-risks 2b (real roots + a
-  known-good real entry to test against).
-- **2b — OIDC-gated (CI milestone).** A real GitHub Actions staging keyless
-  signing run produces a real `ReleaseBundle` that `verify_release` accepts
-  against the pinned staging roots — end-to-end real-Sigstore. Gated on the
-  GHA workflow + the staging OIDC identity setup (the user's call on
-  identity, §2). This is the `auditable-release` CI job D0041 §6.2 names.
+- **2a — autonomous, no OIDC, manifest-model-independent (provable now).**
+  Pin the real staging roots (§5); fetch a **real** existing Rekor staging
+  inclusion proof (`rekor.sigstage.dev`, the `online-rekor` feature path)
+  and verify it against the real pinned Rekor staging key. Milestone: the
+  verifier checks **attacker-unforgeable** Rekor data (real Merkle tree,
+  real log signature) — the first non-synthetic verification, and the half
+  that delivers consumer-side forgery-resistance. Independent of §3, so it
+  proceeds immediately. De-risks 2b (real roots + a known-good real entry
+  to test against).
+- **2b — OIDC-gated (CI milestone).** A real GitHub Actions staging
+  `cosign sign-blob` run produces a real `ReleaseBundle` that
+  `verify_release` accepts against the pinned staging roots —
+  end-to-end real-Sigstore. Gated on the GHA workflow + the staging OIDC
+  identity setup. This is the `auditable-release` CI job D0041 §6.2 names.
 
 ## 8. The other §6.1 hard blocker: Sigsum recruitment
 
@@ -227,21 +249,22 @@ activates only when both are real. Tracked separately.
 
 The pinned roots (§5) and the producer real-mode are additive + per-release
 config — re-pinnable, and the synthetic mode stays for tests + offline
-development. The **§3 manifest-signature-model** call is the one
-hard-to-reverse commitment: choosing (A) vs (B) sets the Fulcio key
-algorithm, the Rekor entry type, and whether the verify path changes.
-Migrating A→B (or back) after a real release is a coordinated
-schema-and-verifier change. Hence the explicit confirmation request.
+development. The §3 manifest-signature-model decision (B) is the one
+hard-to-reverse commitment — it sets the Fulcio key algorithm, the Rekor
+entry type, the `ReleaseBundle` wire shape, and the verify path. Migrating
+B→A after a real release is a coordinated schema-and-verifier change. (A)
+was considered and rejected (§3); the choice is recorded so a future
+revisit starts from the reasoning, not a blank slate.
 
 ## 10. Cross-references
 
 - `docs/decisions/D0024-sigstore-release-verification.md` — the verifier
-  contract; §8 (signing flow, **revised** here) + §2.2 (root pinning).
+  contract; §8 (signing flow, **revised** here) + §2.2 (root pinning) +
+  §3.2 (the in-tree P-256 the §3 decision reuses).
 - `docs/decisions/D0041-release-producer-pipeline.md` — phase 1 + §6.1
   (this decision is the named phase-2 hard blocker) + the `PRODUCTION_ROOTS`
-  tripwire this fills.
-- `docs/decisions/D0023-sigsum-integration.md` — the Sigsum half (§8) +
-  the hand-rolled HTTP-client pattern §4 mirrors.
+  tripwire this fills + §6.3 (decode strictness, applies to the new fields).
+- `docs/decisions/D0023-sigsum-integration.md` — the Sigsum half (§8).
 - `docs/decisions/D0015-v1-release-security-posture.md` — the posture +
   the Q5 witness-recruitment funding gate (§8).
 - `docs/decisions/D0021-library-pin-audit.md` — the dep-weight discipline
