@@ -219,15 +219,33 @@ follow-ons.
    `cairn-release` producer detached-signs with a P-256 dev key (lifted from
    its rcgen leaf via PKCS#8), and `produced_bundle_verifies_against_its_own_roots`
    proves the full producer→verifier round-trip end-to-end.
-4. **SAN-URI identity (CI model, §2).** Today `san_has_email` matches an
-   `rfc822Name`. A CI workflow identity is a SAN **URI**
-   (`https://github.com/ORG/REPO/.github/workflows/…@REF`) plus GHA Fulcio
-   extension claims. The verifier must pin + match the URI identity. (A
-   developer-email release needs no change.)
-5. **SCT verification.** Real Fulcio certs embed a **Signed Certificate
-   Timestamp** proving CT-log inclusion. The synthetic path has none. Full
-   Sigstore verification verifies the SCT against the pinned CT-log key —
-   **add** it (or explicitly accept its omission as a documented residual).
+4. **SAN-URI identity (CI model, §2) — ✓ LANDED (2026-06-09).** Added
+   `ExpectedIdentity{Email,Uri}` + `validate_cert_chain_with_identity`, so
+   the verifier pins + matches a SAN **URI** CI workflow identity
+   (`https://github.com/ORG/REPO/.github/workflows/…@REF`) alongside the
+   existing `rfc822Name` email path (`san_has_uri`; new error
+   `OidcIdentityMismatch`). `validate_cert_chain` stays a thin `Email`
+   wrapper — zero churn to the developer-email path. **Proven against a
+   real production GitHub Actions keyless cert** (`tests/fulcio_gha_vector.rs`,
+   `tests/vectors/fulcio-gha/`, captured from production Rekor logIndex
+   1767842880): accepts the pinned URI identity over the real 3-level
+   chain, rejects a wrong URI / the email matcher / a wrong issuer / a
+   post-expiry signing time.
+5. **SCT verification — ✓ LANDED (2026-06-09).** Embedded-SCT verification
+   per RFC 6962 §3.2 (`sct::verify_embedded_sct`): parse the SCT from the
+   `1.3.6.1.4.1.11129.2.4.2` extension, reconstruct the **precert** TBS
+   (the leaf TBS with the SCT extension excised + DER re-encoded), build the
+   `digitally-signed` precert blob (issuer-key-hash + 24-bit-length TBS),
+   and ECDSA-P256-verify it against the **pinned** CT-log key (matched by
+   log ID = `SHA-256(SPKI)`). **No new dependency** — pure byte-work on the
+   in-tree `p256` + `sha2`; the precert rebuild is validated **byte-exact**
+   by the real CT-log signature itself (a wrong-by-one-byte splice fails
+   the ECDSA check). **Proven against the real GHA cert's SCT + the real
+   pinned CT-log key** (`tests/sct_vector.rs`): the production SCT verifies;
+   wrong CT key, wrong issuer (issuer is bound into the signed blob), and an
+   SCT-less cert all reject. **Wiring into the mandatory verify path** (so
+   every Fulcio validation checks the SCT) lands with §5 — the CT-log key
+   becomes a pinned config input then; today it is a standalone capability.
 6. **Rekor entry-type binding.** Confirm the verifier binds the Rekor
    `hashedrekord` entry to **this** manifest + cert (not merely "an entry
    is included") — the cosign `sign-blob` entry commits to the artifact
@@ -257,10 +275,21 @@ follow-ons.
   detached P-256 manifest signature against it — `tests/fulcio_staging_vector.rs`
   (5 tests over `tests/vectors/fulcio-staging/`, the first non-synthetic
   Fulcio extraction) plus the synthetic producer→verifier round-trip
-  (`cairn-release`) and the B-model `verify_release` harness. The remaining
-  §5 work is pinning the staging Fulcio/CT root **constants** into the
-  shipped config (the `PRODUCTION_ROOTS` slot), and the §6 follow-ons are
-  SCT verification (item 5) + SAN-URI CI identity (item 4).
+  (`cairn-release`) and the B-model `verify_release` harness.
+- **2a — CI identity + CT transparency (§6 items 4–5) — ✓ PROVEN
+  (2026-06-09).** Against a **real production GitHub Actions keyless
+  certificate** (captured from production Rekor logIndex 1767842880,
+  `tests/vectors/fulcio-gha/`): the verifier matches the SAN **URI**
+  workflow identity over the real 3-level Fulcio chain
+  (`tests/fulcio_gha_vector.rs`), and verifies the cert's **embedded SCT**
+  against the real **pinned CT-log key** via a hand-rolled RFC 6962 §3.2
+  precert reconstruction — validated byte-exact by the real CT-log
+  signature, with no new dependency (`tests/sct_vector.rs`). This is the
+  identity model Cairn's own CI releases will use (§2) plus the
+  CT-inclusion transparency check. Remaining: pin the staging Fulcio/CT
+  root **constants** into the shipped config (§5, the `PRODUCTION_ROOTS`
+  slot), which also promotes SCT verification to a mandatory step (it needs
+  the pinned CT-log key) rather than a standalone capability.
 - **2b — OIDC-gated (CI milestone).** A real GitHub Actions staging
   `cosign sign-blob` run produces a real `ReleaseBundle` that
   `verify_release` accepts against the pinned staging roots —

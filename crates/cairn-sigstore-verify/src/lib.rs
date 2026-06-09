@@ -95,6 +95,7 @@ pub mod compose;
 pub mod error;
 pub mod fulcio;
 pub mod rekor;
+pub mod sct;
 
 pub mod manifest;
 
@@ -108,3 +109,4 @@ pub use error::SigstoreVerifyError;
 pub use fulcio::{ExpectedIdentity, validate_cert_chain, validate_cert_chain_with_identity};
 pub use manifest::{ArtifactHash, ReleaseManifest, SHA256_LEN};
 pub use rekor::{RekorBundle, RekorCheckpoint, parse_rekor_log_entry, verify_rekor_inclusion};
+pub use sct::verify_embedded_sct;

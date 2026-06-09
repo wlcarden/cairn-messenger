@@ -68,6 +68,18 @@ pub enum SigstoreVerifyError {
     #[error("sigstore-verify: oidc SAN identity did not match the pinned CI workflow identity")]
     OidcIdentityMismatch,
 
+    /// The Fulcio cert carried no embedded Signed Certificate Timestamp
+    /// (`1.3.6.1.4.1.11129.2.4.2`) — CT-log inclusion is unproven
+    /// (D0042 §6.5).
+    #[error("sigstore-verify: fulcio cert has no embedded SCT")]
+    SctMissing,
+
+    /// No embedded SCT verified against the pinned CT-log key — a
+    /// malformed SCT, an unpinned CT log, or a bad SCT signature over the
+    /// reconstructed precert (RFC 6962 §3.2; D0042 §6.5).
+    #[error("sigstore-verify: embedded SCT did not verify against the pinned CT-log key")]
+    SctVerifyFailed,
+
     /// The Rekor inclusion proof's Merkle path did not verify per
     /// D0024 §3.
     #[error("sigstore-verify: rekor inclusion proof Merkle path did not verify")]
