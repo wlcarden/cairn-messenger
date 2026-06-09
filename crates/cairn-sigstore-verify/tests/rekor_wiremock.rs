@@ -25,6 +25,10 @@
 //! - Malformed response: non-JSON body → parse failure.
 //! - Transport: repeated 5xx exhausts the retry budget → network error.
 
+// This harness exercises the online `fetch_*` path, which only exists
+// under the `online-rekor` feature (D0041 §6.1). Compiled out otherwise,
+// so the default `cargo test` sees no online surface to test.
+#![cfg(feature = "online-rekor")]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

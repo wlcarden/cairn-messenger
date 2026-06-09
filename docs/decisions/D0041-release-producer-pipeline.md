@@ -214,10 +214,15 @@ flagged by the review:**
   must be a baked-in constant the FFI does **not** accept from the caller
   (or verified against a baked-in digest), so the phase-1 "roots from
   outside" shape cannot survive into production by inertia.
-- **Type-gate the unused online verify path.** `SigstoreVerifier` exposes
-  `fetch_*` online methods on the same type as the "offline" `verify_release`;
-  the air-gap (D0024 §6.4) is preserved only by calling convention. Gate
-  the online path behind a feature or document it as out-of-scope for v1.
+- **Type-gate the unused online verify path — ✓ LANDED (2026-06-08).**
+  `SigstoreVerifier`'s online `fetch_rekor_bundle` / `fetch_and_verify_rekor`
+  (+ the private `http_get_text` + the `reqwest` client field) are now behind
+  a non-default `online-rekor` cargo feature; `reqwest` is an optional dep
+  pulled only by that feature. The default offline verifier — which is what
+  `cairn-uniffi` / `cairn-release` depend on — compiles **no** network
+  surface, so the §6.4 air-gap holds by construction, not by calling
+  convention. The `rekor_wiremock` harness is gated to the feature; CI's
+  `--all-features` run still exercises it.
 
 ### 6.2 Additive (the pipeline is meaningful without these; they widen/operationalize it)
 

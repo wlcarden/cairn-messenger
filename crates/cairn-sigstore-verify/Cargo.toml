@@ -16,6 +16,13 @@ workspace = true
 
 [features]
 default = []
+# Online Rekor fetch path (D0024 §6 / D0041 §6.1). OFF by default so the
+# shipped offline verifier preserves the §6.4 air-gap by CONSTRUCTION, not
+# by calling convention: the `fetch_*` network methods + the `reqwest`
+# client field simply do not exist unless this is enabled. cairn-uniffi /
+# cairn-release depend with default features, so the shipped APK never
+# compiles the online path. CI exercises it via `--all-features`.
+online-rekor = ["dep:reqwest"]
 # Gated network integration tests against real Rekor + Fulcio
 # endpoints. Disabled by default so CI doesn't depend on external
 # network availability per D0024 §10.
@@ -63,7 +70,9 @@ x509-parser = { workspace = true }
 base64 = { workspace = true }
 
 # === Async runtime + HTTPS (D0024 §6) ===
-reqwest = { workspace = true }
+# reqwest is optional: only the `online-rekor` feature's `fetch_*` path
+# uses it. The default offline verifier does not compile it.
+reqwest = { workspace = true, optional = true }
 tokio = { workspace = true }
 url = { workspace = true }
 

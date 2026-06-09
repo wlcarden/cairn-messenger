@@ -27,10 +27,13 @@
 //!    primitive), re-verify the cosigned head + 2-of-3 witness threshold,
 //!    and reconstruct the RFC 6962 root.
 //!
-//! All six steps are offline; the online Rekor fetch
-//! ([`SigstoreVerifier::fetch_rekor_bundle`] /
-//! [`SigstoreVerifier::fetch_and_verify_rekor`]) merely pre-populates the
-//! bundle, after which the identical offline verify runs.
+//! All six steps are offline; the optional `online-rekor` feature's
+//! Rekor fetch path (`fetch_rekor_bundle` / `fetch_and_verify_rekor`)
+//! merely pre-populates the bundle, after which the identical offline
+//! verify runs. That path is feature-gated OFF by default (D0024 §6.4 /
+//! D0041 §6.1) so the shipped verifier is offline **by construction** —
+//! the network methods do not exist in the default build, not merely "by
+//! calling convention."
 //!
 //! The Sigsum step uses the offline `verify_bundled_inclusion`, NOT the
 //! self-emit `verify_inclusion`: a release verifier never emitted the
@@ -41,6 +44,8 @@
 use cairn_envelope::canonical::Value;
 use cairn_envelope::cose_sign1::CoseSign1;
 use cairn_sigsum_client::{EmittedLeaf, RetryBudget, SigsumClient};
+// `Url` is used only by the online `fetch_*` path (gated below).
+#[cfg(feature = "online-rekor")]
 use url::Url;
 
 use crate::compose::release_leaf_hash_for_envelope_bytes;
@@ -48,7 +53,12 @@ use crate::decode::{decode_canonical_map, int_to_u64, into_bytes, into_text};
 use crate::error::SigstoreVerifyError;
 use crate::fulcio::validate_cert_chain;
 use crate::manifest::{RELEASE_MANIFEST_AAD, ReleaseManifest};
-use crate::rekor::{RekorBundle, RekorCheckpoint, parse_rekor_log_entry, verify_rekor_inclusion};
+use crate::rekor::{RekorBundle, verify_rekor_inclusion};
+// `RekorCheckpoint` + `parse_rekor_log_entry` are used only by the
+// online `fetch_*` path (gated below); importing them unconditionally
+// would be an unused import in the default offline build.
+#[cfg(feature = "online-rekor")]
+use crate::rekor::{RekorCheckpoint, parse_rekor_log_entry};
 
 /// Configuration bundle for constructing a [`SigstoreVerifier`].
 ///
@@ -272,13 +282,16 @@ pub struct VerifiedRelease {
 /// retry logic per D0024 §6.3.
 pub struct SigstoreVerifier {
     /// HTTPS client per D0024 §6 (same workspace pin as D0023). Used by
-    /// the online Rekor fetch path.
+    /// the online Rekor fetch path only — gated off by default so the
+    /// offline verifier compiles no network surface (D0041 §6.1).
+    #[cfg(feature = "online-rekor")]
     http: reqwest::Client,
     /// Pinned Fulcio root in PEM bytes per D0024 §2.
     #[allow(dead_code, reason = "v1 skeleton; populated for the Fulcio body")]
     fulcio_root_pem: Vec<u8>,
-    /// Pinned Rekor public key (PEM/SPKI, ECDSA P-256) per D0024 §3.
-    /// Consumed by [`SigstoreVerifier::fetch_and_verify_rekor`].
+    /// Pinned Rekor public key (PEM/SPKI, ECDSA P-256) per D0024 §3. Used
+    /// by the offline `verify_release` Rekor check (and, under the
+    /// `online-rekor` feature, by `fetch_and_verify_rekor`).
     rekor_pubkey_pem: Vec<u8>,
     /// Expected OIDC issuer URL per D0024 §1.1.
     expected_oidc_issuer: String,
@@ -305,7 +318,15 @@ impl SigstoreVerifier {
     /// Returns [`SigstoreVerifyError::Network`] if the reqwest
     /// client construction fails (extremely unusual; typically only
     /// on platform-specific TLS configuration issues).
+    #[cfg_attr(
+        not(feature = "online-rekor"),
+        allow(
+            clippy::unnecessary_wraps,
+            reason = "Result kept for API stability + the online-rekor variant, which is fallible"
+        )
+    )]
     pub fn new(config: SigstoreVerifierConfig) -> Result<Self, SigstoreVerifyError> {
+        #[cfg(feature = "online-rekor")]
         let http =
             reqwest::Client::builder()
                 .build()
@@ -313,6 +334,7 @@ impl SigstoreVerifier {
                     retry_budget_used: 0,
                 })?;
         Ok(Self {
+            #[cfg(feature = "online-rekor")]
             http,
             fulcio_root_pem: config.fulcio_root_pem,
             rekor_pubkey_pem: config.rekor_pubkey_pem,
@@ -465,6 +487,7 @@ impl SigstoreVerifier {
     ///   the retry budget is exhausted.
     /// - [`SigstoreVerifyError::RekorResponseMalformed`] if the URL join
     ///   fails or the response body does not parse.
+    #[cfg(feature = "online-rekor")]
     pub async fn fetch_rekor_bundle(
         &self,
         rekor_base_url: &Url,
@@ -489,6 +512,7 @@ impl SigstoreVerifier {
     /// [`SigstoreVerifyError::RekorResponseMalformed`]) or the verify
     /// ([`SigstoreVerifyError::RekorInclusionProofVerifyFailed`] /
     /// [`SigstoreVerifyError::RekorCheckpointVerifyFailed`]).
+    #[cfg(feature = "online-rekor")]
     pub async fn fetch_and_verify_rekor(
         &self,
         rekor_base_url: &Url,
@@ -502,6 +526,7 @@ impl SigstoreVerifier {
     /// retry budget. Returns the response body text. Mirrors
     /// `cairn_sigsum_client`'s `http_get_tree_head` retry shape per
     /// D0024 §6.3 (shared `RetryBudget`).
+    #[cfg(feature = "online-rekor")]
     async fn http_get_text(&self, url: Url) -> Result<String, SigstoreVerifyError> {
         let budget = self.default_retry_budget;
         let mut delay = budget.initial_delay;
