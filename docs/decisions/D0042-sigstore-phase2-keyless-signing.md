@@ -284,7 +284,14 @@ verification + its mandatory-path wiring (5), and Rekor entry-type binding
    `tests/vectors/fulcio-gha/`, captured from production Rekor logIndex
    1767842880): accepts the pinned URI identity over the real 3-level
    chain, rejects a wrong URI / the email matcher / a wrong issuer / a
-   post-expiry signing time.
+   post-expiry signing time. **Wired into `verify_release` — ✓ (2026-06-09):**
+   the config gained `expected_oidc_san_uri: Option<String>` (threaded from
+   the FFI `ReleaseRootsRecord` + `cairn-release` `oidc_san_uri`); `Some`
+   pins the CI URI, `None` keeps the email path. Without this the keyless CI
+   model could not actually drive an end-to-end release verify — the URI
+   matcher was a standalone primitive. `tests/verify_release.rs` proves a
+   URI-identity release verifies, a wrong URI rejects (`OidcIdentityMismatch`),
+   and an email-pinning verifier rejects a URI-only cert.
 5. **SCT verification — ✓ LANDED (2026-06-09).** Embedded-SCT verification
    per RFC 6962 §3.2 (`sct::verify_embedded_sct`): parse the SCT from the
    `1.3.6.1.4.1.11129.2.4.2` extension, reconstruct the **precert** TBS

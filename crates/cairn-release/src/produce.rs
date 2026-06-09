@@ -216,6 +216,9 @@ pub fn produce(
         rekor_pubkey_pem,
         oidc_issuer: SELF_MINTED_ISSUER.to_string(),
         oidc_email: SELF_MINTED_EMAIL.to_string(),
+        // The synthetic phase-1 producer mints an email-SAN leaf; the CI
+        // URI identity is exercised by the cosign-ingest path (D0042 §4).
+        oidc_san_uri: None,
         sigsum_log_pubkey_hex: to_hex(&log.log_sk.verifying_key().to_bytes()),
         witnesses_toml: log.toml,
     };

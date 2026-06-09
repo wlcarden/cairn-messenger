@@ -60,7 +60,7 @@ use url::Url;
 use crate::compose::release_leaf_hash_for_signature;
 use crate::decode::{decode_canonical_map, int_to_u64, into_bytes, into_text};
 use crate::error::SigstoreVerifyError;
-use crate::fulcio::validate_cert_chain;
+use crate::fulcio::{ExpectedIdentity, validate_cert_chain_with_identity};
 use crate::manifest::ReleaseManifest;
 use crate::rekor::{RekorBundle, hashedrekord_leaf_hash, verify_rekor_inclusion};
 // `RekorCheckpoint` + `parse_rekor_log_entry` are used only by the
@@ -108,8 +108,18 @@ pub struct SigstoreVerifierConfig {
     pub ctlog_pubkey_pem: Option<Vec<u8>>,
     /// Expected OIDC issuer URL per D0024 §1.1.
     pub expected_oidc_issuer: String,
-    /// Expected developer identity email per D0024 §1.1.
+    /// Expected developer identity email per D0024 §1.1 — the
+    /// developer-interactive (`ExpectedIdentity::Email`) release path. Used
+    /// iff [`Self::expected_oidc_san_uri`] is `None`.
     pub expected_oidc_email: String,
+    /// Expected CI workflow SAN **URI** (the keyless `cosign` model,
+    /// D0042 §2), e.g.
+    /// `https://github.com/ORG/REPO/.github/workflows/FILE@refs/tags/vX`.
+    /// `Some` makes `verify_release` pin + match this URI identity
+    /// ([`crate::fulcio::ExpectedIdentity::Uri`]) instead of the email; `None`
+    /// keeps the developer-email path. The two are mutually exclusive — a
+    /// real release pins exactly one identity.
+    pub expected_oidc_san_uri: Option<String>,
     /// Sigsum client for the witness-cosigned release log per
     /// D0024 §5.
     pub sigsum_client: SigsumClient,
@@ -341,8 +351,12 @@ pub struct SigstoreVerifier {
     ctlog_pubkey_pem: Option<Vec<u8>>,
     /// Expected OIDC issuer URL per D0024 §1.1.
     expected_oidc_issuer: String,
-    /// Expected developer identity email per D0024 §1.1.
+    /// Expected developer identity email per D0024 §1.1 (used iff
+    /// `expected_oidc_san_uri` is `None`).
     expected_oidc_email: String,
+    /// Expected CI workflow SAN URI (keyless `cosign`, D0042 §2); `Some`
+    /// pins the URI identity instead of the email.
+    expected_oidc_san_uri: Option<String>,
     /// Composed Sigsum client for the witness-cosigned release log
     /// per D0024 §5.
     #[allow(dead_code, reason = "v1 skeleton; populated for the compose body")]
@@ -387,6 +401,7 @@ impl SigstoreVerifier {
             ctlog_pubkey_pem: config.ctlog_pubkey_pem,
             expected_oidc_issuer: config.expected_oidc_issuer,
             expected_oidc_email: config.expected_oidc_email,
+            expected_oidc_san_uri: config.expected_oidc_san_uri,
             sigsum_client: config.sigsum_client,
             default_retry_budget: config.default_retry_budget,
         })
@@ -472,11 +487,17 @@ impl SigstoreVerifier {
         let manifest = ReleaseManifest::from_canonical_cbor(&bundle.manifest_bytes)?;
 
         // (2) Fulcio cert chain + OIDC pins -> developer ECDSA P-256 key.
-        let dev_key = validate_cert_chain(
+        // The pinned identity is the CI workflow SAN URI (keyless cosign,
+        // D0042 §2) when configured, else the developer-email SAN.
+        let identity = self.expected_oidc_san_uri.as_deref().map_or_else(
+            || ExpectedIdentity::Email(&self.expected_oidc_email),
+            ExpectedIdentity::Uri,
+        );
+        let dev_key = validate_cert_chain_with_identity(
             &bundle.fulcio_cert_der,
             &self.fulcio_root_pem,
             &self.expected_oidc_issuer,
-            &self.expected_oidc_email,
+            identity,
             bundle.rekor_signing_time_unix,
         )?;
 
@@ -710,6 +731,7 @@ mod tests {
             ctlog_pubkey_pem: None,
             expected_oidc_issuer: "https://accounts.example.org".to_string(),
             expected_oidc_email: "maintainer@cairn-project.org".to_string(),
+            expected_oidc_san_uri: None,
             sigsum_client: make_sigsum_client(),
             default_retry_budget: RetryBudget::default(),
         };

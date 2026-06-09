@@ -197,13 +197,15 @@ fn make_dev_key() -> (KeyPair, P256SigningKey) {
 }
 
 /// A leaf cert binding `dev_kp`'s ECDSA P-256 key, signed by `root`,
-/// carrying the Fulcio OIDC issuer extension + SAN email.
+/// carrying the Fulcio OIDC issuer extension + the given SAN (an email for
+/// the developer-interactive path, or a `URI` for the CI keyless identity,
+/// D0042 §2).
 fn make_leaf(
     root: &Certificate,
     root_key: &KeyPair,
     dev_kp: &KeyPair,
     issuer: &str,
-    email: &str,
+    san: SanType,
 ) -> Vec<u8> {
     let mut params = CertificateParams::default();
     params.is_ca = IsCa::NoCa;
@@ -214,7 +216,7 @@ fn make_leaf(
     params
         .distinguished_name
         .push(DnType::CommonName, "sigstore");
-    params.subject_alt_names = vec![SanType::Rfc822Name(email.try_into().unwrap())];
+    params.subject_alt_names = vec![san];
     params.custom_extensions = vec![CustomExtension::from_oid_content(
         &[1, 3, 6, 1, 4, 1, 57264, 1, 1],
         issuer.as_bytes().to_vec(),
@@ -222,6 +224,15 @@ fn make_leaf(
     let leaf = params.signed_by(dev_kp, root, root_key).unwrap();
     leaf.der().as_ref().to_vec()
 }
+
+/// The email SAN of the developer-interactive fixture.
+fn email_san() -> SanType {
+    SanType::Rfc822Name(EMAIL.try_into().unwrap())
+}
+
+/// A CI workflow SAN URI (the keyless `cosign` identity, D0042 §2).
+const CI_URI: &str =
+    "https://github.com/cairn-project/cairn/.github/workflows/release.yml@refs/tags/v1.0.0";
 
 // ===================================================================
 // Manifest + verifier construction
@@ -387,6 +398,29 @@ fn make_verifier_with_ctlog(
         ctlog_pubkey_pem,
         expected_oidc_issuer: issuer.to_string(),
         expected_oidc_email: EMAIL.to_string(),
+        expected_oidc_san_uri: None,
+        sigsum_client: make_sigsum_client(sigsum_log),
+        default_retry_budget: RetryBudget::default(),
+    };
+    SigstoreVerifier::new(config).unwrap()
+}
+
+/// A verifier that pins a CI workflow SAN **URI** identity instead of the
+/// developer email (D0042 §2/§6.4): `expected_oidc_san_uri = Some(uri)`.
+fn make_verifier_uri(
+    fulcio_root_pem: Vec<u8>,
+    rekor_pubkey_pem: Vec<u8>,
+    issuer: &str,
+    sigsum_log: &SigsumLog,
+    san_uri: &str,
+) -> SigstoreVerifier {
+    let config = SigstoreVerifierConfig {
+        fulcio_root_pem,
+        rekor_pubkey_pem,
+        ctlog_pubkey_pem: None,
+        expected_oidc_issuer: issuer.to_string(),
+        expected_oidc_email: EMAIL.to_string(),
+        expected_oidc_san_uri: Some(san_uri.to_string()),
         sigsum_client: make_sigsum_client(sigsum_log),
         default_retry_budget: RetryBudget::default(),
     };
@@ -401,12 +435,24 @@ struct Fixture {
     sigsum_log: SigsumLog,
 }
 
-/// Build a fully-valid release bundle: dev key → cert → manifest →
-/// Rekor bundle → Sigsum-anchored release-log proof, all consistent.
+/// Build a fully-valid release bundle with the developer-email identity:
+/// dev key → cert → manifest → Rekor bundle → Sigsum-anchored release-log
+/// proof, all consistent.
 fn valid_fixture() -> Fixture {
+    build_fixture(email_san())
+}
+
+/// The CI keyless variant of [`valid_fixture`]: the Fulcio leaf carries a
+/// SAN **URI** ([`CI_URI`]) instead of an email (D0042 §2).
+fn valid_uri_fixture() -> Fixture {
+    build_fixture(SanType::URI(CI_URI.try_into().unwrap()))
+}
+
+/// Build a fully-valid release bundle whose Fulcio leaf carries `san`.
+fn build_fixture(san: SanType) -> Fixture {
     let (dev_kp, dev_sk) = make_dev_key();
     let (root, root_key) = make_root();
-    let leaf_der = make_leaf(&root, &root_key, &dev_kp, ISSUER, EMAIL);
+    let leaf_der = make_leaf(&root, &root_key, &dev_kp, ISSUER, san);
     let (manifest_bytes, manifest_signature) =
         detached_signed_manifest(&dev_sk, PRIOR_HASH.to_vec());
     let artifact_sha256: [u8; 32] = Sha256::digest(&manifest_bytes).into();
@@ -490,6 +536,69 @@ async fn enforces_sct_when_a_ctlog_key_is_pinned() {
 }
 
 #[tokio::test]
+async fn accepts_a_ci_uri_identity_release() {
+    // D0042 §2/§6.4: a release signed under a CI workflow SAN URI (the
+    // keyless cosign model — the v1 release signer) verifies end-to-end when
+    // the verifier pins that URI via `expected_oidc_san_uri`. This is the
+    // identity path a real GitHub Actions `cosign sign-blob` run produces.
+    let fx = valid_uri_fixture();
+    let verifier = make_verifier_uri(
+        fx.fulcio_root_pem,
+        fx.rekor_pem,
+        ISSUER,
+        &fx.sigsum_log,
+        CI_URI,
+    );
+    let outcome = verifier
+        .verify_release(&fx.bundle, Some(PRIOR_HASH))
+        .await
+        .expect("a CI-URI-identity release must verify when the URI is pinned");
+    assert_eq!(outcome.manifest.version, "1.0.0-pilot");
+}
+
+#[tokio::test]
+async fn rejects_a_release_under_a_wrong_ci_uri() {
+    // Pinning a DIFFERENT workflow URI must reject — the identity gate binds
+    // the exact CI workflow allowed to sign releases (a foreign repo's
+    // keyless cert, otherwise chain-valid, is refused).
+    let fx = valid_uri_fixture();
+    let wrong = "https://github.com/attacker/evil/.github/workflows/release.yml@refs/tags/v1.0.0";
+    let verifier = make_verifier_uri(
+        fx.fulcio_root_pem,
+        fx.rekor_pem,
+        ISSUER,
+        &fx.sigsum_log,
+        wrong,
+    );
+    let err = verifier
+        .verify_release(&fx.bundle, Some(PRIOR_HASH))
+        .await
+        .expect_err("a wrong pinned CI URI must reject the release");
+    assert!(
+        matches!(err, SigstoreVerifyError::OidcIdentityMismatch),
+        "got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn email_pinned_verifier_rejects_a_ci_uri_cert() {
+    // The two identity modes are exclusive: an email-pinning verifier
+    // (`expected_oidc_san_uri = None`) must reject a cert that carries only a
+    // SAN URI (no email SAN) — proving the default email path does not
+    // silently accept a CI cert.
+    let fx = valid_uri_fixture();
+    let verifier = make_verifier(fx.fulcio_root_pem, fx.rekor_pem, ISSUER, &fx.sigsum_log);
+    let err = verifier
+        .verify_release(&fx.bundle, Some(PRIOR_HASH))
+        .await
+        .expect_err("an email-pinning verifier must reject a URI-only cert");
+    assert!(
+        matches!(err, SigstoreVerifyError::OidcEmailMismatch),
+        "got {err:?}"
+    );
+}
+
+#[tokio::test]
 async fn accepts_with_no_expected_predecessor() {
     let fx = valid_fixture();
     let verifier = make_verifier(fx.fulcio_root_pem, fx.rekor_pem, ISSUER, &fx.sigsum_log);
@@ -520,7 +629,7 @@ async fn rejects_manifest_signed_by_wrong_key() {
     // Fulcio-bound key.
     let (dev_kp, _dev_sk) = make_dev_key();
     let (root, root_key) = make_root();
-    let leaf_der = make_leaf(&root, &root_key, &dev_kp, ISSUER, EMAIL);
+    let leaf_der = make_leaf(&root, &root_key, &dev_kp, ISSUER, email_san());
 
     let imposter_sk = P256SigningKey::random(&mut OsRng);
     let (manifest_bytes, manifest_signature) =

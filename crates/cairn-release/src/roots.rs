@@ -43,8 +43,16 @@ pub struct ReleaseRoots {
     pub rekor_pubkey_pem: String,
     /// Expected OIDC issuer URL (D0024 §1.1).
     pub oidc_issuer: String,
-    /// Expected developer identity email (D0024 §1.1).
+    /// Expected developer identity email (D0024 §1.1) — used iff
+    /// `oidc_san_uri` is absent.
     pub oidc_email: String,
+    /// Expected CI workflow SAN **URI** (keyless cosign, D0042 §2), e.g.
+    /// `https://github.com/ORG/REPO/.github/workflows/FILE@refs/tags/vX`.
+    /// When present, the verifier pins this URI identity instead of the
+    /// email. Defaulted absent so existing `release-roots.json` files (the
+    /// synthetic-email phase-1 producer) deserialize unchanged.
+    #[serde(default)]
+    pub oidc_san_uri: Option<String>,
     /// Sigsum log public key, lower-hex of the 32-byte Ed25519 key.
     pub sigsum_log_pubkey_hex: String,
     /// Witness pool TOML (D0023 §3.3), consumed by `parse_witness_pool`.
@@ -115,6 +123,7 @@ impl ReleaseRoots {
             // Synthetic rcgen leaves carry no embedded SCT; SCT enforcement is
             // a phase-3 production concern (gated on a pinned CT-log key).
             ctlog_pubkey_pem: None,
+            expected_oidc_san_uri: self.oidc_san_uri.clone(),
             expected_oidc_issuer: self.oidc_issuer.clone(),
             expected_oidc_email: self.oidc_email.clone(),
             sigsum_client,

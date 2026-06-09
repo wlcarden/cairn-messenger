@@ -237,6 +237,7 @@ fn make_verifier(rekor_pubkey_pem: Vec<u8>, budget: RetryBudget) -> SigstoreVeri
         ctlog_pubkey_pem: None,
         expected_oidc_issuer: "https://accounts.example.org".to_string(),
         expected_oidc_email: "maintainer@cairn-project.org".to_string(),
+        expected_oidc_san_uri: None,
         sigsum_client: make_sigsum_client(),
         default_retry_budget: budget,
     };

@@ -93,8 +93,14 @@ pub struct ReleaseRootsRecord {
     pub ctlog_pubkey_pem: Option<String>,
     /// Expected OIDC issuer URL (D0024 §1.1).
     pub oidc_issuer: String,
-    /// Expected developer identity email (D0024 §1.1).
+    /// Expected developer identity email (D0024 §1.1) — used iff
+    /// `oidc_san_uri` is `None`.
     pub oidc_email: String,
+    /// Expected CI workflow SAN URI (keyless cosign, D0042 §2). `Some`
+    /// pins this URI identity instead of the email; defaulted `None` so
+    /// existing Kotlin callers (which omit it) compile unchanged.
+    #[cfg_attr(feature = "uniffi-bindings", uniffi(default = None))]
+    pub oidc_san_uri: Option<String>,
     /// The Sigsum log's pinned Ed25519 public key (32 bytes).
     pub sigsum_log_pubkey: Vec<u8>,
     /// The release's `witnesses.toml` text (2-of-3 cosignature threshold
@@ -291,6 +297,7 @@ fn build_verifier(
         ctlog_pubkey_pem: roots.ctlog_pubkey_pem.clone().map(String::into_bytes),
         expected_oidc_issuer: roots.oidc_issuer.clone(),
         expected_oidc_email: roots.oidc_email.clone(),
+        expected_oidc_san_uri: roots.oidc_san_uri.clone(),
         sigsum_client,
         default_retry_budget: RetryBudget::default(),
     })
@@ -349,6 +356,7 @@ mod tests {
             ctlog_pubkey_pem: None,
             oidc_issuer: "https://accounts.example.org".to_string(),
             oidc_email: "maintainer@cairn-project.org".to_string(),
+            oidc_san_uri: None,
             sigsum_log_pubkey: log_pubkey.to_vec(),
             witnesses_toml: witnesses_toml(),
         }
