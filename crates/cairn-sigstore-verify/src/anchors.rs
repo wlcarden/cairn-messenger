@@ -17,15 +17,17 @@
 //!
 //! ## What is real here — and what is NOT (the honest gaps)
 //!
-//! These anchors are **individually** real and verified. The **staging**
-//! environment is now a coherent trust triple (Fulcio + CT + Rekor, all
-//! from sigstage); production is a Fulcio + CT pair. None of this silently
-//! becomes the shipped production root — see the tripwire note below.
+//! These anchors are **individually** real and verified. **Both**
+//! environments now have a coherent transparency triple (Fulcio + CT +
+//! Rekor) — staging from sigstage, production from the public production
+//! logs. None of this silently becomes the shipped production root — see the
+//! tripwire note below.
 //!
 //! | Anchor                          | Environment | Status |
 //! |---------------------------------|-------------|--------|
 //! | [`PROD_FULCIO_CHAIN_PEM`]       | production  | real   |
 //! | [`PROD_CTLOG_PUBKEY_PEM`]       | production  | real   |
+//! | [`PROD_REKOR_PUBKEY_PEM`]       | production  | real   |
 //! | [`STAGING_FULCIO_CHAIN_PEM`]    | staging     | real   |
 //! | [`STAGING_CTLOG_PUBKEY_PEM`]    | staging     | real   |
 //! | [`STAGING_REKOR_PUBKEY_PEM`]    | staging     | real   |
@@ -38,20 +40,21 @@
 //!   leaf's embedded SCT (`tests/staging_sct_vector.rs`, re-bound here by
 //!   `staging_ctlog_anchor_verifies_real_staging_sct`); the Rekor key
 //!   verifies a staging inclusion proof (`tests/rekor_staging_vector.rs`).
-//! - **Production Fulcio chain + CT-log key** — both from the production
-//!   `trusted_root.json`; together they verify the real GHA leaf's embedded
-//!   SCT (re-bound by `prod_ctlog_anchor_verifies_real_gha_sct`, and
-//!   end-to-end by `tests/sct_vector.rs`).
+//! - **Production Fulcio chain + CT-log key + Rekor key** — from the public
+//!   production logs (the same GHA signing event). The CT key verifies the
+//!   GHA leaf's embedded SCT (re-bound by
+//!   `prod_ctlog_anchor_verifies_real_gha_sct`, and end-to-end by
+//!   `tests/sct_vector.rs`); the Rekor key verifies that event's real
+//!   inclusion proof (`tests/rekor_production_vector.rs`).
 //!
-//! What is still **absent**, and why a shipped production verifier cannot
-//! yet be assembled purely from these constants:
+//! What is still **absent**, and why a shipped *production* verifier cannot
+//! yet be assembled purely from these constants — every transparency anchor
+//! capturable from public logs is now pinned, so what remains is
+//! signing-run / governance / funding work, not log captures:
 //!
-//! - **No production Rekor key.** Only the *staging* Rekor key is pinned;
-//!   the production Rekor inclusion path awaits a real production signing
-//!   run (the staging triple is, however, complete).
 //! - **No production OIDC identity.** The project's real maintainer/CI
 //!   signing identity (`iss` + SAN) is a phase-3 governance decision
-//!   (D0024 §1.1), not captured here.
+//!   (D0024 §1.1); it is also a per-release config value, not a pinned root.
 //! - **No Sigsum release-log key or witness pool.** Those stay synthetic
 //!   placeholders until the log + witnesses are recruited (D0042 §8,
 //!   funding-gated).
@@ -84,6 +87,15 @@ pub const PROD_FULCIO_CHAIN_PEM: &str =
 /// D0042 §6.5).
 pub const PROD_CTLOG_PUBKEY_PEM: &str =
     include_str!("../tests/vectors/fulcio-gha/ctlog-pubkey.pem");
+
+/// Production Rekor log public key (ECDSA P-256 SPKI, PEM).
+///
+/// From `GET https://rekor.sigstore.dev/api/v1/log/publicKey` — the key
+/// that signs each production shard's C2SP checkpoint (D0024 §3). Verifies a
+/// real production Rekor inclusion proof's signed tree head
+/// (`tests/rekor_production_vector.rs`, a 25-node audit path).
+pub const PROD_REKOR_PUBKEY_PEM: &str =
+    include_str!("../tests/vectors/rekor-production/log-publickey.pem");
 
 /// Staging Sigstore Fulcio trust bundle (PEM).
 ///
@@ -147,6 +159,7 @@ mod tests {
         assert!(!nth_der(PROD_FULCIO_CHAIN_PEM, 0).is_empty());
         assert!(!nth_der(PROD_FULCIO_CHAIN_PEM, 1).is_empty()); // intermediate + root
         assert!(!nth_der(PROD_CTLOG_PUBKEY_PEM, 0).is_empty());
+        assert!(!nth_der(PROD_REKOR_PUBKEY_PEM, 0).is_empty());
         assert!(!nth_der(STAGING_FULCIO_CHAIN_PEM, 0).is_empty());
         assert!(!nth_der(STAGING_FULCIO_CHAIN_PEM, 1).is_empty()); // intermediate + root
         assert!(!nth_der(STAGING_REKOR_PUBKEY_PEM, 0).is_empty());
