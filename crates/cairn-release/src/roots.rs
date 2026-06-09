@@ -112,6 +112,9 @@ impl ReleaseRoots {
         SigstoreVerifier::new(SigstoreVerifierConfig {
             fulcio_root_pem: self.fulcio_root_pem.clone().into_bytes(),
             rekor_pubkey_pem: self.rekor_pubkey_pem.clone().into_bytes(),
+            // Synthetic rcgen leaves carry no embedded SCT; SCT enforcement is
+            // a phase-3 production concern (gated on a pinned CT-log key).
+            ctlog_pubkey_pem: None,
             expected_oidc_issuer: self.oidc_issuer.clone(),
             expected_oidc_email: self.oidc_email.clone(),
             sigsum_client,

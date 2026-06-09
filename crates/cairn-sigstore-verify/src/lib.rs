@@ -90,6 +90,8 @@
 //! The `integration-tests` cargo feature flag gates the eventual
 //! real-Rekor / real-Fulcio network-exercising tests.
 
+#[cfg(feature = "pinned-anchors")]
+pub mod anchors;
 pub mod client;
 pub mod compose;
 pub mod error;

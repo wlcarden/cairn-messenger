@@ -234,6 +234,7 @@ fn make_verifier(rekor_pubkey_pem: Vec<u8>, budget: RetryBudget) -> SigstoreVeri
         fulcio_root_pem: b"-----BEGIN CERTIFICATE-----\nplaceholder\n-----END CERTIFICATE-----"
             .to_vec(),
         rekor_pubkey_pem,
+        ctlog_pubkey_pem: None,
         expected_oidc_issuer: "https://accounts.example.org".to_string(),
         expected_oidc_email: "maintainer@cairn-project.org".to_string(),
         sigsum_client: make_sigsum_client(),

@@ -1,0 +1,172 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Cairn maintainers and contributors
+
+//! Pinned Sigstore trust anchors (D0042 §5) — feature-gated behind
+//! `pinned-anchors`.
+//!
+//! The real, individually attacker-unforgeable Sigstore trust material
+//! captured for Cairn's release-verification path, exposed as named PEM
+//! `&str` constants so a future production/staging verifier can be built
+//! from compiled-in values rather than caller-supplied roots. Each
+//! constant is the *same byte stream* as the corresponding `tests/vectors/`
+//! file (via [`include_str!`]), so there is one canonical copy: the
+//! committed vector and the pinned anchor cannot drift, and the existing
+//! real-vector tests (`sct_vector.rs`, `fulcio_staging_vector.rs`,
+//! `rekor_staging_vector.rs`) already prove these exact bytes verify
+//! against genuine log signatures.
+//!
+//! ## What is real here — and what is NOT (the honest gaps)
+//!
+//! These anchors are **individually** real and verified, but they are
+//! **not yet a coherent single-environment trust-root set**. They are the
+//! building blocks captured so far, drawn from two environments:
+//!
+//! | Anchor                          | Environment | Status |
+//! |---------------------------------|-------------|--------|
+//! | [`PROD_FULCIO_CHAIN_PEM`]       | production  | real   |
+//! | [`PROD_CTLOG_PUBKEY_PEM`]       | production  | real   |
+//! | [`STAGING_FULCIO_CHAIN_PEM`]    | staging     | real   |
+//! | [`STAGING_REKOR_PUBKEY_PEM`]    | staging     | real   |
+//!
+//! Two **same-environment pairs** are coherent and exercised today:
+//!
+//! - **Production Fulcio chain + production CT-log key** — both from the
+//!   production `trusted_root.json`; together they verify the real GHA
+//!   leaf's embedded SCT (re-proven against the baked constants by this
+//!   module's own `prod_ctlog_anchor_verifies_real_gha_sct` test, and
+//!   end-to-end by `tests/sct_vector.rs`).
+//! - **Staging Fulcio chain + staging Rekor key** — both from sigstage;
+//!   together they validate the staging leaf's chain
+//!   (`tests/fulcio_staging_vector.rs`) and a staging Rekor inclusion
+//!   proof (`tests/rekor_staging_vector.rs`).
+//!
+//! What is **deliberately absent**, and why a usable end-to-end verifier
+//! cannot yet be assembled purely from these constants:
+//!
+//! - **No staging CT-log key.** The only embedded SCT we have captured is
+//!   on a *production* GHA leaf, so SCT enforcement against a *staging*
+//!   Fulcio leaf has no pinned CT key to check against. Mixing the
+//!   production CT key with a staging leaf would not verify (different log,
+//!   different `log_id`). Capturing a staging SCT requires a real staging
+//!   `cosign sign-blob` run (D0042 phase-3, deferred "2b").
+//! - **No production Rekor key.** Only the *staging* Rekor key is pinned;
+//!   the production Rekor inclusion path awaits the same real signing run.
+//! - **No production OIDC identity.** The project's real maintainer/CI
+//!   signing identity (`iss` + SAN) is a phase-3 governance decision
+//!   (D0024 §1.1), not captured here.
+//! - **No Sigsum release-log key or witness pool.** Those stay synthetic
+//!   placeholders until the log + witnesses are recruited (D0042 §8,
+//!   funding-gated).
+//!
+//! ## Relationship to the production tripwire
+//!
+//! This module is intentionally **separate** from cairn-uniffi's
+//! `PRODUCTION_ROOTS` (D0041 §6.1), which stays `None`. These constants do
+//! **not** silently become the shipped trust root: assembling a coherent
+//! root set (one environment, with its matching CT key, Rekor key, OIDC
+//! identity, and Sigsum anchors) remains phase-3 work. They are pinned now
+//! so the real values are version-controlled under a stable API with their
+//! provenance and gaps documented in one place.
+
+/// Production Sigstore Fulcio CA chain (PEM).
+///
+/// The `sigstore-intermediate` intermediate followed by the self-signed
+/// `sigstore` root, from the production `trusted_root.json` (the
+/// sigstore/root-signing TUF target). The intermediate is the issuer of
+/// GitHub Actions keyless precerts, so this is the chain the embedded-SCT
+/// path (D0042 §6.5) walks to find the precert issuer whose SPKI hash binds
+/// the SCT's `issuer_key_hash`.
+pub const PROD_FULCIO_CHAIN_PEM: &str =
+    include_str!("../tests/vectors/fulcio-gha/fulcio-chain.pem");
+
+/// Production CT-log public key (ECDSA P-256 SPKI, PEM).
+///
+/// Its `SHA-256(SPKI)` equals the SCT's CT-log id `dd3d306a…`. Verifies the
+/// embedded SCT on a production GitHub Actions Fulcio leaf (RFC 6962 §3.2 /
+/// D0042 §6.5).
+pub const PROD_CTLOG_PUBKEY_PEM: &str =
+    include_str!("../tests/vectors/fulcio-gha/ctlog-pubkey.pem");
+
+/// Staging Sigstore Fulcio trust bundle (PEM).
+///
+/// The self-signed `O=sigstore.dev, CN=sigstore` staging root plus the
+/// staging `sigstore-intermediate`, from `fulcio.sigstage.dev`. Passed as
+/// the pinned root PEM to [`crate::validate_cert_chain`] for a staging leaf.
+pub const STAGING_FULCIO_CHAIN_PEM: &str =
+    include_str!("../tests/vectors/fulcio-staging/root-chain.pem");
+
+/// Staging Rekor log public key (ECDSA P-256 SPKI, PEM).
+///
+/// From `GET https://rekor.sigstage.dev/api/v1/log/publicKey` — the key
+/// that signs each staging shard's C2SP checkpoint (D0024 §3). Verifies a
+/// staging Rekor inclusion proof's signed tree head.
+pub const STAGING_REKOR_PUBKEY_PEM: &str =
+    include_str!("../tests/vectors/rekor-staging/log-publickey.pem");
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests assert on known-good pinned anchors; a parse/verify panic IS the failure signal that an anchor was corrupted"
+)]
+mod tests {
+    use super::*;
+    use crate::verify_embedded_sct;
+    use x509_parser::pem::Pem;
+
+    /// The real production GHA leaf whose embedded SCT the production CT
+    /// key must verify (the same fixture `sct_vector.rs` uses).
+    const GHA_LEAF_PEM: &str = include_str!("../tests/vectors/fulcio-gha/leaf-cert.pem");
+
+    /// Decode the `n`-th PEM block of `pem` to DER, or panic.
+    fn nth_der(pem: &str, n: usize) -> Vec<u8> {
+        Pem::iter_from_buffer(pem.as_bytes())
+            .nth(n)
+            .expect("pem block present")
+            .expect("pem block parses")
+            .contents
+    }
+
+    #[test]
+    fn every_anchor_pem_decodes() {
+        // Each constant must be a well-formed PEM whose first block parses
+        // — a corrupted include path or truncated capture fails here.
+        assert!(!nth_der(PROD_FULCIO_CHAIN_PEM, 0).is_empty());
+        assert!(!nth_der(PROD_FULCIO_CHAIN_PEM, 1).is_empty()); // intermediate + root
+        assert!(!nth_der(PROD_CTLOG_PUBKEY_PEM, 0).is_empty());
+        assert!(!nth_der(STAGING_FULCIO_CHAIN_PEM, 0).is_empty());
+        assert!(!nth_der(STAGING_FULCIO_CHAIN_PEM, 1).is_empty()); // intermediate + root
+        assert!(!nth_der(STAGING_REKOR_PUBKEY_PEM, 0).is_empty());
+    }
+
+    #[test]
+    fn prod_fulcio_and_staging_fulcio_certs_parse_as_x509() {
+        use x509_parser::prelude::{FromDer as _, X509Certificate};
+        for (pem, label) in [
+            (PROD_FULCIO_CHAIN_PEM, "prod"),
+            (STAGING_FULCIO_CHAIN_PEM, "staging"),
+        ] {
+            for (i, block) in Pem::iter_from_buffer(pem.as_bytes()).enumerate() {
+                let der = block.expect("pem parses").contents;
+                X509Certificate::from_der(&der)
+                    .unwrap_or_else(|e| panic!("{label} fulcio cert {i} parses as X.509: {e:?}"));
+            }
+        }
+    }
+
+    #[test]
+    fn prod_ctlog_anchor_verifies_real_gha_sct() {
+        // The self-validating bind: the BAKED production CT-key constant,
+        // with the BAKED production Fulcio intermediate (chain block 0),
+        // must verify the real GHA leaf's embedded SCT. If either constant
+        // were swapped or corrupted, the real CT-log signature would not
+        // verify and this fails closed — proving the pinned anchors ARE the
+        // material that verifies, not a look-alike.
+        let leaf = nth_der(GHA_LEAF_PEM, 0);
+        let intermediate = nth_der(PROD_FULCIO_CHAIN_PEM, 0);
+        let ctlog = nth_der(PROD_CTLOG_PUBKEY_PEM, 0);
+        verify_embedded_sct(&leaf, &intermediate, &ctlog)
+            .expect("pinned production CT anchor must verify the real GHA leaf SCT");
+    }
+}

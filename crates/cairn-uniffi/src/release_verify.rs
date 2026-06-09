@@ -76,6 +76,15 @@ pub struct ReleaseRootsRecord {
     pub fulcio_root_pem: String,
     /// Pinned Rekor public key, PEM/SPKI (D0024 §3).
     pub rekor_pubkey_pem: String,
+    /// Pinned CT-log public key, PEM/SPKI (RFC 6962), or `None` to skip
+    /// embedded-SCT enforcement (D0042 §6.5). Synthetic rcgen leaves carry
+    /// no SCT extension, so the `synthetic-release-roots` path leaves this
+    /// `None`; real keyless roots set it to the CT log that countersigns
+    /// Fulcio precertificates, making `verify_release` reject any leaf whose
+    /// embedded SCT does not verify under this key. Defaulted to `None` so
+    /// existing Kotlin callers (which omit it) compile unchanged.
+    #[cfg_attr(feature = "uniffi-bindings", uniffi(default = None))]
+    pub ctlog_pubkey_pem: Option<String>,
     /// Expected OIDC issuer URL (D0024 §1.1).
     pub oidc_issuer: String,
     /// Expected developer identity email (D0024 §1.1).
@@ -271,6 +280,9 @@ fn build_verifier(
     SigstoreVerifier::new(SigstoreVerifierConfig {
         fulcio_root_pem: roots.fulcio_root_pem.clone().into_bytes(),
         rekor_pubkey_pem: roots.rekor_pubkey_pem.clone().into_bytes(),
+        // `None` skips embedded-SCT enforcement (synthetic leaves carry no
+        // SCT); a pinned CT-log key makes it mandatory (D0042 §6.5).
+        ctlog_pubkey_pem: roots.ctlog_pubkey_pem.clone().map(String::into_bytes),
         expected_oidc_issuer: roots.oidc_issuer.clone(),
         expected_oidc_email: roots.oidc_email.clone(),
         sigsum_client,
@@ -328,6 +340,7 @@ mod tests {
                 .to_string(),
             rekor_pubkey_pem: "-----BEGIN PUBLIC KEY-----\nplaceholder\n-----END PUBLIC KEY-----"
                 .to_string(),
+            ctlog_pubkey_pem: None,
             oidc_issuer: "https://accounts.example.org".to_string(),
             oidc_email: "maintainer@cairn-project.org".to_string(),
             sigsum_log_pubkey: log_pubkey.to_vec(),

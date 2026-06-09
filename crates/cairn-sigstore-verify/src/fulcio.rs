@@ -333,6 +333,29 @@ fn san_has_email(
     Ok(false)
 }
 
+/// Find the DER of the certificate in `pinned_chain_pem` that **issued**
+/// `leaf_der`.
+///
+/// The match is the cert whose subject DN equals the leaf's issuer DN (the
+/// Fulcio intermediate). Needed as the SCT precert issuer: the embedded
+/// SCT's `issuer_key_hash` is `SHA-256` of this cert's SPKI (D0042 §6.5).
+///
+/// Returns `None` if the leaf or bundle does not parse, or no matching
+/// issuer is present in the pinned chain.
+#[must_use]
+pub fn issuer_cert_der_for(leaf_der: &[u8], pinned_chain_pem: &[u8]) -> Option<Vec<u8>> {
+    let (_, leaf) = X509Certificate::from_der(leaf_der).ok()?;
+    for pem in Pem::iter_from_buffer(pinned_chain_pem).flatten() {
+        let Ok(cert) = pem.parse_x509() else {
+            continue;
+        };
+        if cert.subject() == leaf.issuer() {
+            return Some(pem.contents.clone());
+        }
+    }
+    None
+}
+
 /// Return `true` if the cert's SAN contains a
 /// `uniformResourceIdentifier` equal to `expected_uri` — the CI workflow
 /// identity (D0042 §6.4). Matched as an exact string (the Fulcio GitHub

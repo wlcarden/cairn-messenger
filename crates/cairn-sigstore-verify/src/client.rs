@@ -52,6 +52,7 @@ use cairn_sigsum_client::{EmittedLeaf, RetryBudget, SigsumClient};
 use p256::ecdsa::Signature;
 use p256::ecdsa::signature::Verifier as _;
 use sha2::{Digest, Sha256};
+use x509_parser::pem::Pem;
 // `Url` is used only by the online `fetch_*` path (gated below).
 #[cfg(feature = "online-rekor")]
 use url::Url;
@@ -86,6 +87,13 @@ pub struct SigstoreVerifierConfig {
     pub fulcio_root_pem: Vec<u8>,
     /// Pinned Rekor public key in PEM bytes per D0024 §3.
     pub rekor_pubkey_pem: Vec<u8>,
+    /// Optional pinned CT-log public key (PEM/SPKI) for embedded-SCT
+    /// verification (D0042 §6.5/§6.6). `Some` makes `verify_release`
+    /// **enforce** the Fulcio leaf's embedded SCT against this key (real
+    /// Sigstore roots, where every leaf is CT-logged); `None` skips SCT
+    /// verification (synthetic roots / the phase-1 producer, whose rcgen
+    /// leaves carry no SCT).
+    pub ctlog_pubkey_pem: Option<Vec<u8>>,
     /// Expected OIDC issuer URL per D0024 §1.1.
     pub expected_oidc_issuer: String,
     /// Expected developer identity email per D0024 §1.1.
@@ -315,6 +323,10 @@ pub struct SigstoreVerifier {
     /// by the offline `verify_release` Rekor check (and, under the
     /// `online-rekor` feature, by `fetch_and_verify_rekor`).
     rekor_pubkey_pem: Vec<u8>,
+    /// Optional pinned CT-log public key (PEM/SPKI) — `Some` enforces the
+    /// embedded SCT in `verify_release` (D0042 §6.5); `None` skips it
+    /// (synthetic roots, no CT transparency).
+    ctlog_pubkey_pem: Option<Vec<u8>>,
     /// Expected OIDC issuer URL per D0024 §1.1.
     expected_oidc_issuer: String,
     /// Expected developer identity email per D0024 §1.1.
@@ -360,6 +372,7 @@ impl SigstoreVerifier {
             http,
             fulcio_root_pem: config.fulcio_root_pem,
             rekor_pubkey_pem: config.rekor_pubkey_pem,
+            ctlog_pubkey_pem: config.ctlog_pubkey_pem,
             expected_oidc_issuer: config.expected_oidc_issuer,
             expected_oidc_email: config.expected_oidc_email,
             sigsum_client: config.sigsum_client,
@@ -464,6 +477,25 @@ impl SigstoreVerifier {
         dev_key
             .verify(&bundle.manifest_bytes, &signature)
             .map_err(|_| SigstoreVerifyError::ManifestSignatureVerifyFailed)?;
+
+        // (3b) Embedded SCT (D0042 §6.5): when a CT-log key is pinned (real
+        // Sigstore roots, where every Fulcio leaf is CT-logged), enforce
+        // that the leaf carries a valid Signed Certificate Timestamp from
+        // that log — proving the cert is publicly transparency-logged. The
+        // precert issuer is the Fulcio intermediate from the pinned chain.
+        // Skipped entirely when no CT-log key is configured (synthetic
+        // roots / the phase-1 producer, whose rcgen leaves carry no SCT).
+        if let Some(ctlog_pubkey_pem) = self.ctlog_pubkey_pem.as_deref() {
+            let ctlog_der = Pem::iter_from_buffer(ctlog_pubkey_pem)
+                .next()
+                .and_then(Result::ok)
+                .map(|p| p.contents)
+                .ok_or(SigstoreVerifyError::SctVerifyFailed)?;
+            let issuer_der =
+                crate::fulcio::issuer_cert_der_for(&bundle.fulcio_cert_der, &self.fulcio_root_pem)
+                    .ok_or(SigstoreVerifyError::SctVerifyFailed)?;
+            crate::sct::verify_embedded_sct(&bundle.fulcio_cert_der, &issuer_der, &ctlog_der)?;
+        }
 
         // (4) Rekor inclusion proof + signed checkpoint (offline, against
         // the pinned Rekor key).
@@ -663,6 +695,7 @@ mod tests {
                 .to_vec(),
             rekor_pubkey_pem: b"-----BEGIN PUBLIC KEY-----\nplaceholder\n-----END PUBLIC KEY-----"
                 .to_vec(),
+            ctlog_pubkey_pem: None,
             expected_oidc_issuer: "https://accounts.example.org".to_string(),
             expected_oidc_email: "maintainer@cairn-project.org".to_string(),
             sigsum_client: make_sigsum_client(),

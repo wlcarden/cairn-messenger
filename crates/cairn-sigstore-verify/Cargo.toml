@@ -27,6 +27,15 @@ online-rekor = ["dep:reqwest"]
 # endpoints. Disabled by default so CI doesn't depend on external
 # network availability per D0024 §10.
 integration-tests = []
+# Compiles the `anchors` module: the real, individually-verified Sigstore
+# trust anchors (production Fulcio chain + CT-log key from the GHA capture;
+# staging Fulcio chain + Rekor key from sigstage) as pinned `&str` PEM
+# constants (D0042 §5). OFF by default so the shipped messaging build does
+# not bake release-verification anchors it never uses; CI exercises it via
+# `--all-features`. Separate from cairn-uniffi's `PRODUCTION_ROOTS`
+# tripwire, which stays `None` until phase 3 assembles a coherent
+# single-environment root set from a real signing run.
+pinned-anchors = []
 
 [dev-dependencies]
 rand_core = { workspace = true }

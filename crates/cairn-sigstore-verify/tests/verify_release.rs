@@ -368,9 +368,23 @@ fn make_verifier(
     issuer: &str,
     sigsum_log: &SigsumLog,
 ) -> SigstoreVerifier {
+    // The default path pins no CT-log key, so embedded-SCT verification is
+    // skipped (synthetic rcgen leaves carry no SCT). The pinned-key path is
+    // exercised by `make_verifier_with_ctlog`.
+    make_verifier_with_ctlog(fulcio_root_pem, rekor_pubkey_pem, issuer, sigsum_log, None)
+}
+
+fn make_verifier_with_ctlog(
+    fulcio_root_pem: Vec<u8>,
+    rekor_pubkey_pem: Vec<u8>,
+    issuer: &str,
+    sigsum_log: &SigsumLog,
+    ctlog_pubkey_pem: Option<Vec<u8>>,
+) -> SigstoreVerifier {
     let config = SigstoreVerifierConfig {
         fulcio_root_pem,
         rekor_pubkey_pem,
+        ctlog_pubkey_pem,
         expected_oidc_issuer: issuer.to_string(),
         expected_oidc_email: EMAIL.to_string(),
         sigsum_client: make_sigsum_client(sigsum_log),
@@ -439,6 +453,40 @@ async fn accepts_a_fully_valid_release() {
         .expect("a fully valid release must verify");
     assert_eq!(outcome.manifest.version, "1.0.0-pilot");
     assert_eq!(outcome.manifest.artifact_sha256.len(), 1);
+}
+
+#[tokio::test]
+async fn enforces_sct_when_a_ctlog_key_is_pinned() {
+    // D0042 §6.5: pinning a CT-log key makes embedded-SCT verification
+    // MANDATORY in `verify_release` (step 3b). The synthetic rcgen leaf
+    // carries no SCT extension, so a verifier that pins ANY valid CT key
+    // must reject it at the SCT gate — proving the wiring enforces, not
+    // merely parses, when a key is configured. The signing chain + manifest
+    // signature still pass first (the SCT step runs after them), so a
+    // non-SCT failure here would mean the gate was skipped. The default
+    // `ctlog_pubkey_pem: None` path stays accepted by
+    // `accepts_a_fully_valid_release`.
+    let fx = valid_fixture();
+    let ctlog_pem = P256SigningKey::random(&mut OsRng)
+        .verifying_key()
+        .to_public_key_pem(LineEnding::LF)
+        .unwrap()
+        .into_bytes();
+    let verifier = make_verifier_with_ctlog(
+        fx.fulcio_root_pem,
+        fx.rekor_pem,
+        ISSUER,
+        &fx.sigsum_log,
+        Some(ctlog_pem),
+    );
+    let err = verifier
+        .verify_release(&fx.bundle, Some(PRIOR_HASH))
+        .await
+        .expect_err("a pinned CT-log key must force embedded-SCT verification");
+    assert!(
+        matches!(err, SigstoreVerifyError::SctMissing),
+        "got {err:?}"
+    );
 }
 
 #[tokio::test]
