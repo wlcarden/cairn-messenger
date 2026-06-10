@@ -5,7 +5,8 @@
 Cairn is an end-to-end encrypted messenger built against the threat tier
 targeted by mercenary spyware (Pegasus, Predator), forensic-extraction
 tooling (Cellebrite, MSAB, GrayKey), and state intelligence services with
-authority over telecom and platform operators. It runs on GrapheneOS-on-Pixel
+authority over telecom and platform operators — the threat tier documented by
+research labs such as Citizen Lab and Amnesty International Security Lab. It runs on GrapheneOS-on-Pixel
 and integrates existing cryptographic substrates — SimpleX's identifier-less
 queue protocol, Tor, Sigstore/Sigsum transparency logs, Shamir Secret Sharing,
 COSE — with original engineering at the integration boundary: a three-tier
@@ -16,10 +17,13 @@ release-security stack.
 > [!WARNING]
 > **Status: alpha, active development, not released.** Cairn is built **for** a closed pilot (a planned
 > 10–15 user cohort), pre-audit, and not yet distributed through
-> any channel. The cryptographic core and the Android app work — messaging
-> is validated end-to-end on two physical GrapheneOS Pixels over bundled Tor
-> — but the pre-pilot audit (D0011) has not happened and there are no
-> releases. **Do not rely on it for safety yet.**
+> any channel. The cryptographic core and the Android app run, and an
+> end-to-end message round-trip has been demonstrated on two physical
+> GrapheneOS Pixels over bundled Tor — but individual defenses are at varying
+> maturity (several are PARTIAL; see
+> [`docs/implementation-status.md`](docs/implementation-status.md)), the
+> pre-pilot audit (D0011) has not happened, and there are no releases.
+> **Do not rely on it for safety yet.**
 
 ## Who it's for (stated honestly)
 
@@ -142,26 +146,34 @@ fuzz/       cargo-fuzz harnesses (libFuzzer)
   release-signing, CVE response, multi-party APK-key custody).
 - **[`docs/open-questions.md`](docs/open-questions.md)** — the open-questions
   register (Q1–Q27).
+- **[`metrics.md`](metrics.md)** — the empirical engineering-cadence tracker
+  (the project's evidence base in place of calendar projections, per D0018).
 
 ## Releases & verification
 
-Release artifacts are verified on-device against the full Sigstore-native
-stack (Fulcio identity + Rekor inclusion + embedded SCT + a Sigsum-anchored
-release log) before install — no blind trust in a download. The verifier is
-proven against real public-transparency-log data; the keyless CI signing
-workflow lives at
-[`.github/workflows/release-sign.yml`](.github/workflows/release-sign.yml)
-with an operator guide at
-[`docs/runbooks/2b-keyless-release-sign.md`](docs/runbooks/2b-keyless-release-sign.md).
-The recruited Sigsum log + witness pool is funding-gated; until it lands, the
-Sigsum half of release verification runs on synthetic roots.
+Cairn ships an on-device release **verifier** (`cairn-sigstore-verify`) that
+implements the full Sigstore-native stack — Fulcio identity + Rekor inclusion
+
+- embedded SCT + a Sigsum-anchored release log — so that, once releases exist,
+  an installed artifact can be checked against transparency-log evidence rather
+  than trusted blindly. Its components (Rekor inclusion, Fulcio chain
+  validation, embedded-SCT) are tested against **real** Sigstore
+  production/staging data; the end-to-end `verify_release` orchestration and the
+  Sigsum half currently run against **synthetic** roots, and the verifier is not
+  yet wired into an APK install/update flow (there are no releases yet). The
+  keyless CI signing workflow lives at
+  [`.github/workflows/release-sign.yml`](.github/workflows/release-sign.yml),
+  with an operator guide at
+  [`docs/runbooks/2b-keyless-release-sign.md`](docs/runbooks/2b-keyless-release-sign.md).
+  The recruited Sigsum log + witness pool is funding-gated.
 
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md). The project specifically welcomes
 contributions to documentation, test infrastructure, and the reviewer
-toolkit; cryptographic-engineering changes require maintainer review and must
-pass the constant-time CI gate. By participating you agree to the
+toolkit; cryptographic-engineering changes require maintainer review and
+follow the project's constant-time discipline (a `dudect` smoke test runs in
+CI; threshold gating runs out-of-band on dedicated hardware, per D0018). By participating you agree to the
 [Contributor Covenant](https://www.contributor-covenant.org/version/2/1/code_of_conduct/)
 ([`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)).
 
