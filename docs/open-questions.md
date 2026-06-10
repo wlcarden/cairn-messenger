@@ -315,7 +315,7 @@ The choice between (a) and (b) is itself the open question. The project's workin
 
 ## Q20. Self-funding runway disclosure (resolution of §9.1's commitment)
 
-**Status:** Open. §9.1 explicitly commits §10 to deliver a runway figure; §10 currently does not. Surfaced by the §10 review (F4) as breach of an in-document commitment.
+**Status:** Resolved (recorded in design-brief §10.8 as of v0.9; register updated 2026-06-10). The runway figure is **confidential-to-funder**: disclosed in calendar months to Phase B funders under grant-agreement confidentiality rather than published, closing the §9.1-to-§10 commitment without converting the runway into public personal-finance disclosure (which the §3 threat model otherwise refuses). §1.6 and §9.1 were reconciled to point to this resolution 2026-06-10.
 
 **Context.** Section 9.1 states "Section 10 (when drafted) will state the developer's effective self-funding runway in calendar terms — the number of months the developer can sustain v1 development plus pilot operations under self-funded posture with no audit, no honoraria, and no team scaling." The current §10 draft does not deliver the figure; §10.8 acknowledges the gap honestly rather than letting it remain silent.
 
