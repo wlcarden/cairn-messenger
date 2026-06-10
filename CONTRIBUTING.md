@@ -29,11 +29,16 @@ project's discipline framework.
    committed to. Adding test coverage for these properties using `proptest`
    is high-value work and a good way to get familiar with the codebase.
 
-2. **Fuzz harness expansion.** D0018 §5.2 names six fuzz targets the
-   project commits to (`fuzz_envelope_parse`, `fuzz_envelope_decrypt`,
-   `fuzz_shamir_reconstruct`, `fuzz_cose_header`, `fuzz_canonical_cbor`,
-   `fuzz_uniffi_boundary`). Corpus expansion and edge-case generation are
-   well-scoped first-PR work.
+2. **Fuzz harness expansion.** Seven `cargo-fuzz` targets are built and run in
+   CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml) is the source of
+   truth): `fuzz_envelope_parse`, `fuzz_shamir_reconstruct`,
+   `fuzz_canonical_cbor`, `fuzz_capability_token`, `fuzz_trust_graph_op`,
+   `fuzz_master_attestation`, and `fuzz_release_bundle`. Corpus expansion and
+   edge-case generation for these are well-scoped first-PR work. Three targets
+   from the original D0018 §5.2 set are still unwritten and are open
+   contribution opportunities: `fuzz_envelope_decrypt`, `fuzz_cose_header`, and
+   `fuzz_uniffi_boundary` (the FFI-boundary memory-safety harness, the last
+   open UniFFI-surface gate).
 
 3. **Documentation improvements.** The user-facing onboarding documentation
    (the facilitator handbook; the peer-recovery handbook for share holders;
