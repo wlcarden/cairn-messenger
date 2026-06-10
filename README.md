@@ -1,6 +1,18 @@
+<div align="center">
+
+<img src="cairn-icon.png" alt="Cairn logo" width="140" />
+
 # Cairn
 
 **Secure messaging for people whose adversaries will spend serious money to read their messages.**
+
+[![CI](https://github.com/wlcarden/cairn-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/wlcarden/cairn-messenger/actions/workflows/ci.yml)
+[![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
+[![Rust 1.91](https://img.shields.io/badge/rust-1.91-orange.svg)](rust-toolchain.toml)
+![Platform: GrapheneOS / Pixel](https://img.shields.io/badge/platform-GrapheneOS%20%2F%20Pixel-555.svg)
+[![Status: alpha · pre-audit](https://img.shields.io/badge/status-alpha%20%C2%B7%20pre--audit-crimson.svg)](docs/implementation-status.md)
+
+</div>
 
 Cairn is an end-to-end encrypted messenger built against the threat tier
 targeted by mercenary spyware (Pegasus, Predator), forensic-extraction
