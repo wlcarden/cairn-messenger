@@ -27,8 +27,9 @@ release-security stack.
 
 ## Who it's for (stated honestly)
 
-The design brief deliberately separates three audience questions ([design
-brief §1.2](docs/design-brief.md)); the project leads with the narrowest:
+The design brief deliberately separates three audience layers ([design
+brief §1.2](docs/design-brief.md)); this README summarizes the two that bound
+what v1 delivers:
 
 - **v1 deployable population** — who v1 _actually serves_: a working estimate
   of low hundreds globally, the intersection of users meeting all four v1
@@ -61,8 +62,9 @@ in v1.5) — with four commitments above the protocol layer:
 3. **Social recovery without trustees** — Shamir-among-peers (3-of-5 default)
    _and_ paper shares, gated by pre-shared challenge phrases and a 48-hour
    delay-and-confirm window.
-4. **Transparency-anchored releases** — Sigstore keyless signing + Rekor + a
-   Sigsum-anchored release log, verified on-device before install.
+4. **Transparency-anchored releases** — Sigstore keyless signing, Rekor, and a
+   Sigsum-anchored release log, checked by an on-device verifier (not yet wired
+   into an install path — see Releases & verification below).
 
 See [`docs/architecture-diagrams.md`](docs/architecture-diagrams.md) for the
 layered, component, identity, trust-graph, recovery, and release-pipeline
@@ -152,20 +154,19 @@ fuzz/       cargo-fuzz harnesses (libFuzzer)
 ## Releases & verification
 
 Cairn ships an on-device release **verifier** (`cairn-sigstore-verify`) that
-implements the full Sigstore-native stack — Fulcio identity + Rekor inclusion
-
-- embedded SCT + a Sigsum-anchored release log — so that, once releases exist,
-  an installed artifact can be checked against transparency-log evidence rather
-  than trusted blindly. Its components (Rekor inclusion, Fulcio chain
-  validation, embedded-SCT) are tested against **real** Sigstore
-  production/staging data; the end-to-end `verify_release` orchestration and the
-  Sigsum half currently run against **synthetic** roots, and the verifier is not
-  yet wired into an APK install/update flow (there are no releases yet). The
-  keyless CI signing workflow lives at
-  [`.github/workflows/release-sign.yml`](.github/workflows/release-sign.yml),
-  with an operator guide at
-  [`docs/runbooks/2b-keyless-release-sign.md`](docs/runbooks/2b-keyless-release-sign.md).
-  The recruited Sigsum log + witness pool is funding-gated.
+implements the full Sigstore-native stack — Fulcio identity, Rekor inclusion,
+embedded SCT, and a Sigsum-anchored release log — so that, once releases exist,
+an installed artifact can be checked against transparency-log evidence rather
+than trusted blindly. Its components (Rekor inclusion, Fulcio chain validation,
+embedded SCT) are tested against **real** Sigstore production/staging data; the
+end-to-end `verify_release` orchestration and the Sigsum half currently run
+against **synthetic** roots, and the verifier is not yet wired into an APK
+install/update flow (there are no releases yet). The keyless CI signing workflow
+lives at
+[`.github/workflows/release-sign.yml`](.github/workflows/release-sign.yml), with
+an operator guide at
+[`docs/runbooks/2b-keyless-release-sign.md`](docs/runbooks/2b-keyless-release-sign.md).
+The recruited Sigsum log and witness pool is funding-gated.
 
 ## Contributing
 
