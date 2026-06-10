@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Cairn maintainers and contributors
 
 [package]
+publish = false  # internal application crate; not for crates.io
 name = "cairn-trust-graph"
 version = "0.1.0-dev"
 description = "Cairn trust-graph operation envelopes (attestation / revocation / re-attestation) per D0006 §2"

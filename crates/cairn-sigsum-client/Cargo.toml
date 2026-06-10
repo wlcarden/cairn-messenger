@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Cairn maintainers and contributors
 
 [package]
+publish = false  # internal application crate; not for crates.io
 name = "cairn-sigsum-client"
 version = "0.1.0-dev"
 description = "Cairn Sigsum integration: commitment-only logging + witness-cosignature verification per D0023"

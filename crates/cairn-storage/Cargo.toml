@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Cairn maintainers and contributors
 
 [package]
+publish = false  # internal application crate; not for crates.io
 name = "cairn-storage"
 version = "0.1.0-dev"
 description = "Cairn persistent storage layer per D0022 (rusqlite + per-value XChaCha20-Poly1305)"

@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Cairn maintainers and contributors
 
 [package]
+publish = false  # internal application crate; not for crates.io
 name = "cairn-shamir"
 version = "0.1.0-dev"
 description = "Cairn Shamir Secret Sharing wrapping vsss-rs::Gf256 with BLAKE3 commit-of-secret per D0006 §9 + D0018 §3"

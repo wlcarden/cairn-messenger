@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Cairn maintainers and contributors
 
 [package]
+publish = false  # internal application crate; not for crates.io
 name = "cairn-recovery"
 version = "0.1.0-dev"
 description = "Cairn recovery primitives: master attestation of new operational identity per D0005 + D0006 §6"

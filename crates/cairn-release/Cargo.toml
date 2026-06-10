@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Cairn maintainers and contributors
 
 [package]
+publish = false  # internal application crate; not for crates.io
 name = "cairn-release"
 version = "0.1.0-dev"
 description = "Cairn release-producer: builds + signs a verifiable ReleaseBundle (the D0024 §6 / D0015 producer side)"
