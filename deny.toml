@@ -16,7 +16,9 @@ ignore = [
     # paired serde 1.0.220 pin bump (§9.1) that time 0.3.47's serde_core floor
     # required. No longer ignored; the audit/deny gates now enforce it.
     { id = "RUSTSEC-2024-0421", reason = "idna Punycode. Via url=2.5.2, used only to parse TRUSTED config URLs (Sigsum log URL, Tor bridge manifest), not untrusted domains. Fix (url 2.5.4 -> idna 1.0) drags in the heavy ICU tree; not worth it for this low-impact, trusted-input path." },
-    { id = "RUSTSEC-2025-0023", reason = "tokio broadcast clone/Sync. N/A: Cairn uses no tokio::sync::broadcast (verified by grep). Vulnerable API unreachable; the tokio=1.40.0 pin is deliberate (D0018 §9.1)." },
+    # RUSTSEC-2025-0023 (tokio broadcast clone/Sync) RESOLVED 2026-06-10: tokio
+    # 1.40.0 -> 1.43.1 (the patched line) per the D0018 §9.1 pin update. No longer
+    # ignored; the audit/deny gates now enforce it.
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained (not a vuln). Transitive via reqwest=0.12.5; fix is a reqwest pin bump (coordination event), deferred." },
     { id = "RUSTSEC-2021-0139", reason = "ansi_term unmaintained. DEV-ONLY: dudect-bencher -> clap 2.x (constant-time benchmark harness); never in shipped artifacts; upstream dudect-bencher pins clap 2.x." },
     { id = "RUSTSEC-2024-0375", reason = "atty unmaintained. DEV-ONLY: dudect-bencher -> clap 2.x; never shipped; upstream-bound." },

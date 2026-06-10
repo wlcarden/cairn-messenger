@@ -219,7 +219,7 @@ thiserror = "=1.0.63"
 # primitives ACROSS `.await` (a std::sync::Mutex held across await is the
 # `await_holding_lock` footgun). Also pulled transitively by
 # simploxide-ws-core, so this only makes an already-present feature explicit.
-tokio = { version = "=1.40.0", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio = { version = "=1.43.1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 
 # === SimpleX raw-WS sidecar client (D0026 §1.3) ===
 # The adapter speaks to the SimpleX Chat CLI sidecar over a loopback
@@ -239,8 +239,9 @@ tokio = { version = "=1.40.0", features = ["rt-multi-thread", "macros", "time", 
 #      serde-aux + serde-value + ordered-float from the message path, leaving
 #      Cairn to own the narrow command/JSON layer — D0026's "project-owned
 #      SMP client" thesis.
-# tokio stays at the workspace `=1.40.0` pin (cargo selects tokio-util 0.7.17
-# + socket2 0.5.10 to satisfy it); no tokio bump, no MSRV coordination event.
+# tokio is the workspace `=1.43.1` pin (bumped from 1.40.0 to clear
+# RUSTSEC-2025-0023 / GHSA-rr8g — a deliberate D0018 §9.1 coordination event,
+# re-validated); ws-core imposes no tokio-version or MSRV constraint of its own.
 simploxide-ws-core = "=0.2.0"
 
 # === SimpleX in-process FFI transport — ANDROID ONLY (D0026 §12) ===
