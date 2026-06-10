@@ -155,9 +155,10 @@ By contributing, you license your contribution under AGPL-3.0-only per
    document the rationale for crossing it.
 
 5. **CI must pass.** All required CI checks per D0018 §8.5 must pass before
-   merge. Some checks are informational (e.g., `cargo geiger`, the `dudect`
-   constant-time smoke test) and don't block; others (clippy, test, audit,
-   deny, discipline-grep) do.
+   merge. The `dudect` constant-time check runs as a smoke test (it does not
+   fail the build on the threshold; see §6) and does not block; the others —
+   clippy, test, doc, fmt, cargo-audit, cargo-deny, cargo-machete,
+   discipline-grep — do.
 
 6. **Maintainer review.** At v1 phase, the single maintainer is the entire
    review path. Review windows vary with maintainer availability per the
