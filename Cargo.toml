@@ -219,7 +219,7 @@ thiserror = "=1.0.63"
 # primitives ACROSS `.await` (a std::sync::Mutex held across await is the
 # `await_holding_lock` footgun). Also pulled transitively by
 # simploxide-ws-core, so this only makes an already-present feature explicit.
-tokio = { version = "=1.40.0", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio = { version = "=1.43.1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 
 # === SimpleX raw-WS sidecar client (D0026 §1.3) ===
 # The adapter speaks to the SimpleX Chat CLI sidecar over a loopback
