@@ -17,7 +17,7 @@ The first three are expert-tier; the fourth represents the target user, who is t
 
 ## Deployment
 
-Each prompt is a complete, standalone instruction set. Open a fresh Claude conversation (Sonnet 4.5 or Opus 4.x recommended), paste the prompt as the first user message, ensure file-system tools (Read, Grep, Glob, Bash) are enabled, and confirm the working directory is `/home/wlcarden/Desktop/Secure Messaging`.
+Each prompt is a complete, standalone instruction set. Open a fresh Claude conversation (Sonnet 4.5 or Opus 4.x recommended), paste the prompt as the first user message, ensure file-system tools (Read, Grep, Glob, Bash) are enabled, and confirm the working directory is `<repository root>`.
 
 **Important:** do not run all four in the same conversation. Each must be a fresh persona with no prior context from the others. Cross-pollination between personas defeats the independence.
 
