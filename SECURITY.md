@@ -5,9 +5,10 @@ This policy follows Cairn's published Researcher Safe Harbor commitment per
 and the CVE-response runbook per
 [`docs/runbooks/cve-response.md`](docs/runbooks/cve-response.md).
 
-**Pre-public-release note (May 2026):** Cairn has not yet shipped code to
-end users. This policy applies to pre-pilot implementation work; it becomes
-operationally load-bearing once v1 ships to pilot users.
+**Status:** Cairn is pre-pilot and pre-audit and has not shipped any code to
+end users (there are no releases). This policy applies to pre-pilot
+implementation work; it becomes operationally load-bearing once v1 ships to
+pilot users.
 
 ## Reporting a vulnerability
 

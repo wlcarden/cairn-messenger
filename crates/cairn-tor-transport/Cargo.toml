@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Cairn maintainers and contributors
 
 [package]
+publish = false  # internal application crate; not for crates.io
 name = "cairn-tor-transport"
 version = "0.1.0-dev"
 description = "Cairn Tor transport: Rust-side SOCKS5 + control-port client of the C-Tor ForegroundService per D0025 / D0020 §2"

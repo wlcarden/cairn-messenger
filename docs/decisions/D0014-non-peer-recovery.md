@@ -9,7 +9,7 @@ The Section 2 adversarial review surfaced finding §2 F12 (the pilot-user and pr
 
 The §2 review identifies this as the most acute audience-architecture gap in the brief: §2.1 names a threat tier the recovery architecture cannot serve for several of its most-acute subgroups, and §2.2 currently lists those subgroups as "out of scope" without naming them as the central population the architecture's social-recovery commitment systematically excludes.
 
-The §5 adversarial review (sections-5-review.md, applied via [D0005](D0005-recovery-peer-verification.md)) addressed the peer-verification mechanism but left the peer-network-existence assumption unaddressed. The §§8/9 review made conditional posture explicit but did not raise the non-peer recovery question because the architecture-vs-audience gap is a §2 issue.
+The §5 adversarial review (sections-5-review.md, applied via [D0005](D0005-peer-verification.md)) addressed the peer-verification mechanism but left the peer-network-existence assumption unaddressed. The §§8/9 review made conditional posture explicit but did not raise the non-peer recovery question because the architecture-vs-audience gap is a §2 issue.
 
 ## Decision
 
@@ -42,7 +42,7 @@ The user can choose either path, or both (peer recovery + paper shares can coexi
 The brief commits in §2.2 and §9.2 to the following:
 
 - Users without a peer network capable of holding recovery shares responsibly are out of scope for v1 recovery as architecturally designed.
-- The architecture's response to peer compromise (3-of-5 Shamir reconstruction with pre-shared peer challenges and 48-hour delay-and-confirm per [D0005](D0005-recovery-peer-verification.md)) requires the existence of a peer network the threat condition itself often precludes.
+- The architecture's response to peer compromise (3-of-5 Shamir reconstruction with pre-shared peer challenges and 48-hour delay-and-confirm per [D0005](D0005-peer-verification.md)) requires the existence of a peer network the threat condition itself often precludes.
 - This exclusion is named — the brief lists the populations who face the §2.1 threat tier but cannot use v1 recovery: sex workers in jurisdictions where peer networks are co-criminalized, domestic-abuse survivors with severed or hostile networks, undocumented organizers, queer people in jurisdictions criminalizing queerness whose peers face the same prosecution, religious minorities under family surveillance, prisoners' families.
 - For these users at v1, the honest acknowledgment is that Cairn v1 is an inappropriate tool because recovery cannot be designed against their threat condition. The brief does not recruit users into a product whose central recovery mechanism cannot serve them.
 
@@ -121,7 +121,7 @@ Fully reversible. If v1.x non-peer recovery ships, the v1-out-of-scope acknowled
 ## References
 
 - [docs/section-2-review.md](../section-2-review.md) — §2 F12, F3; pattern P2 (intimate network missing from §2).
-- [docs/decisions/D0005-recovery-peer-verification.md](D0005-recovery-peer-verification.md) — peer-verification mechanism this decision does not modify.
+- [docs/decisions/D0005-peer-verification.md](D0005-peer-verification.md) — peer-verification mechanism this decision does not modify.
 - [docs/decisions/D0013-pilot-consent-exit.md](D0013-pilot-consent-exit.md) — pilot consent protocol that the architecture-vs-audience honesty commitment parallels.
 - [docs/sections-8-9-review.md](../sections-8-9-review.md) — F12 limit-acknowledgment posture (Safe Harbor).
 - Research-ethics literature on protective-technology evaluation among populations whose threat condition is the absence of trusted networks.

@@ -1,6 +1,6 @@
 # Deep review prompt: practitioner cryptographer / messaging-security engineer
 
-**Intended deployment:** Claude Sonnet/Opus agent with Read/Grep/Glob/Bash tools, pointed at the project directory `/home/wlcarden/Desktop/Secure Messaging`. Single-turn or multi-turn; allow 30-90 minutes of agent time.
+**Intended deployment:** Claude Sonnet/Opus agent with Read/Grep/Glob/Bash tools, pointed at the project directory `<repository root>`. Single-turn or multi-turn; allow 30-90 minutes of agent time.
 
 ---
 

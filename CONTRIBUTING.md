@@ -1,7 +1,7 @@
 # Contributing to Cairn
 
-Thanks for your interest in Cairn. The project is at the start of v1
-implementation (May 29, 2026) and is structured as a solo-developer
+Thanks for your interest in Cairn. The project is in active v1
+implementation and is structured as a solo-developer
 project at volunteer baseline per
 [`docs/decisions/D0008-volunteer-baseline-cadence.md`](docs/decisions/D0008-volunteer-baseline-cadence.md).
 That said, contributor onboarding is a real concern (tracked as Q27 in the
@@ -29,11 +29,16 @@ project's discipline framework.
    committed to. Adding test coverage for these properties using `proptest`
    is high-value work and a good way to get familiar with the codebase.
 
-2. **Fuzz harness expansion.** D0018 §5.2 names six fuzz targets the
-   project commits to (`fuzz_envelope_parse`, `fuzz_envelope_decrypt`,
-   `fuzz_shamir_reconstruct`, `fuzz_cose_header`, `fuzz_canonical_cbor`,
-   `fuzz_uniffi_boundary`). Corpus expansion and edge-case generation are
-   well-scoped first-PR work.
+2. **Fuzz harness expansion.** Seven `cargo-fuzz` targets are built and run in
+   CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml) is the source of
+   truth): `fuzz_envelope_parse`, `fuzz_shamir_reconstruct`,
+   `fuzz_canonical_cbor`, `fuzz_capability_token`, `fuzz_trust_graph_op`,
+   `fuzz_master_attestation`, and `fuzz_release_bundle`. Corpus expansion and
+   edge-case generation for these are well-scoped first-PR work. Three targets
+   from the original D0018 §5.2 set are still unwritten and are open
+   contribution opportunities: `fuzz_envelope_decrypt`, `fuzz_cose_header`, and
+   `fuzz_uniffi_boundary` (the FFI-boundary memory-safety harness, the last
+   open UniFFI-surface gate).
 
 3. **Documentation improvements.** The user-facing onboarding documentation
    (the facilitator handbook; the peer-recovery handbook for share holders;
@@ -59,7 +64,8 @@ These require maintainer collaboration before starting; they cross the
 project's discipline boundary in ways that need design coordination:
 
 - Cryptographic primitive code (in `cairn-crypto`, `cairn-envelope`,
-  `cairn-shamir`). Requires the constant-time CI gate to pass; bound by
+  `cairn-shamir`). Subject to the constant-time discipline (the `dudect` CI
+  smoke test plus out-of-band threshold validation); bound by
   the libsignal/vodozemac version pinning per D0018 §1.
 - Integration adapter code (in `cairn-simplex-adapter`, `cairn-tor-transport`).
   Requires familiarity with D0020 integration architecture decisions and the
@@ -108,9 +114,11 @@ documentation.
 
 ### 6. Constant-time discipline
 
-For any function that operates on secret bytes, the implementation passes
-the `dudect-bencher` CI gate (Welch's t-statistic < 4.5 over 10⁶ iterations
-on release-profile build). This is the operational answer to the
+For any function that operates on secret bytes, the implementation is
+exercised by the `dudect-bencher` harness. CI runs it as a **smoke test**
+(it builds and runs the harness); hosted runners are too noisy for reliable
+threshold gating, so the Welch's t-statistic < 4.5 threshold is validated
+out-of-band on dedicated hardware per D0018. This is the operational answer to the
 Sprint 1 C15 audit-scope finding.
 
 ### 7. License consistency
@@ -147,8 +155,10 @@ By contributing, you license your contribution under AGPL-3.0-only per
    document the rationale for crossing it.
 
 5. **CI must pass.** All required CI checks per D0018 §8.5 must pass before
-   merge. Some checks are informational (e.g., `cargo geiger`) and don't
-   block; others (clippy, test, audit, deny, dudect, discipline-grep) do.
+   merge. The `dudect` constant-time check runs as a smoke test (it does not
+   fail the build on the threshold; see §6) and does not block; the others —
+   clippy, test, doc, fmt, cargo-audit, cargo-deny, cargo-machete,
+   discipline-grep — do.
 
 6. **Maintainer review.** At v1 phase, the single maintainer is the entire
    review path. Review windows vary with maintainer availability per the

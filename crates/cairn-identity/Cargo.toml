@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Cairn maintainers and contributors
 
 [package]
+publish = false  # internal application crate; not for crates.io
 name = "cairn-identity"
 version = "0.1.0-dev"
 description = "Cairn capability-token construction (operational identity → device) per D0006 §9"
@@ -36,7 +37,6 @@ ciborium = { workspace = true }
 x509-parser = { workspace = true }
 
 # === Memory hygiene (D0018 §1.6) ===
-zeroize = { workspace = true }
 
 # === Error handling (D0018 §4.2) ===
 thiserror = { workspace = true }

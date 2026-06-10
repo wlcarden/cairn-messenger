@@ -64,7 +64,7 @@
 //!   ECDSA P-256 verify against the pinned Rekor key per D0024 §3
 //!   (revised 2026-05-30: ECDSA, not Ed25519). Pure crypto, no
 //!   network; exhaustively unit-tested. The online fetch
-//!   ([`client::SigstoreVerifier::fetch_rekor_bundle`]) + its wiremock
+//!   (`client::SigstoreVerifier::fetch_rekor_bundle`) + its wiremock
 //!   harness landed alongside.
 //! - [`fulcio::validate_cert_chain`]: Fulcio cert-chain validation per
 //!   D0024 §2 — verifies the signing cert chains to the pinned root

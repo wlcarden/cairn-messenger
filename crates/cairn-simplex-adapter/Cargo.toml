@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Cairn maintainers and contributors
 
 [package]
+publish = false  # internal application crate; not for crates.io
 name = "cairn-simplex-adapter"
 version = "0.1.0-dev"
 description = "Cairn project-owned Rust SMP client + Cairn message envelope per D0026"
@@ -109,3 +110,8 @@ log = { workspace = true }
 # script hard-fails without a `libsimplex` bundle. See the workspace-pin note.
 [target.'cfg(target_os = "android")'.dependencies]
 simploxide-ffi-core = { workspace = true }
+
+# cargo-machete false positives / intentional deps:
+# used via #[derive(Serialize/Deserialize)] (machete misses derive-only use)
+[package.metadata.cargo-machete]
+ignored = ["serde"]

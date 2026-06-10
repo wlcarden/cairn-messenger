@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Cairn maintainers and contributors
 
 [package]
+publish = false  # internal application crate; not for crates.io
 name = "cairn-uniffi"
 version = "0.1.0-dev"
 description = "Cairn FFI boundary crate: the curated Kotlin-facing surface per D0027 (downstream of D0020 §3)"

@@ -457,6 +457,8 @@ This feature **statically removes** debug/trace call sites at compile time in re
 5. `fuzz_canonical_cbor`: bytes → canonical_decode → re-encode → expect byte-identity.
 6. `fuzz_uniffi_boundary`: harness that mimics Kotlin's call patterns (handle lifecycle); detect double-free, use-after-free, and Drop-skip scenarios.
 
+> **Update (2026-06-10): implemented suite reconciled.** The shipped fuzz suite has evolved from this original six-target list; `.github/workflows/ci.yml` is the source of truth for what is actively fuzzed. **Built + in CI (7):** `fuzz_envelope_parse`, `fuzz_shamir_reconstruct`, `fuzz_canonical_cbor` (3 of the original 6), plus four added to cover the trust-graph / identity / recovery / release surfaces — `fuzz_capability_token`, `fuzz_trust_graph_op`, `fuzz_master_attestation`, `fuzz_release_bundle`. **Still to write (3):** `fuzz_envelope_decrypt`, `fuzz_cose_header`, and `fuzz_uniffi_boundary` (the last remains the open FFI-boundary memory-safety gate for the UniFFI surface). The illustrative CI loop shown later in this document predates the implemented set; defer to `ci.yml`.
+
 **Corpus management.** Seed from project test vectors (per section 2.4); RFC 8152 / RFC 9052 / RFC 9053 test vectors; Cairn-generated Ed25519 corpus; OASIS SAM TSS v1.0 Shamir vectors. Commit `fuzz/corpus/<target>/` to git. Minimize before commit with `cargo fuzz cmin`.
 
 **CIFuzz** for short PR-time runs (60-second budget per target). OSS-Fuzz for continuous deep runs.

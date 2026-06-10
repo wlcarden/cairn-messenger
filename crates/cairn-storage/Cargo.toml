@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Cairn maintainers and contributors
 
 [package]
+publish = false  # internal application crate; not for crates.io
 name = "cairn-storage"
 version = "0.1.0-dev"
 description = "Cairn persistent storage layer per D0022 (rusqlite + per-value XChaCha20-Poly1305)"
@@ -16,7 +17,6 @@ workspace = true
 
 [dependencies]
 # === Foundational primitives ===
-cairn-crypto = { path = "../cairn-crypto" }
 cairn-envelope = { path = "../cairn-envelope" }
 
 # === Storage engine (D0022 §1) ===
@@ -45,3 +45,8 @@ thiserror = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 hex-literal = { workspace = true }
+
+# cargo-machete false positives / intentional deps:
+# deliberate RNG-backend pin per D0018 §1; used transitively, not by direct path
+[package.metadata.cargo-machete]
+ignored = ["getrandom"]

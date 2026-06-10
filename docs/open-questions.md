@@ -56,7 +56,7 @@ These checks gate the transition from working name to committed name, not from p
 - Per-jurisdiction profile feed content (v1 ships 2-3 profiles based on pilot context — which jurisdictions?).
 - Localization priority (if pilot users are predominantly one language other than English, v1.x localization picks itself).
 
-**Next step.** Begin informal validation conversations with candidate communities during documentation phase (handoff.md:329 recommends parallel outreach). Document candidates here once identified; pilot scope ceases to be hypothetical at that point.
+**Next step.** Begin informal validation conversations with candidate communities during documentation phase (handoff.md:383 recommends parallel outreach). Document candidates here once identified; pilot scope ceases to be hypothetical at that point.
 
 ---
 
@@ -169,7 +169,7 @@ These checks gate the transition from working name to committed name, not from p
 
 ## Q11. OIDC provider for Sigstore identity binding
 
-**Status:** Open. Architectural commitment made (use an OIDC provider for Sigstore release attestation); specific provider choice for v1 pilot deferred with provisional preference for a U.S.-based provider in pilot per Section 5.5.
+**Status:** Partially resolved by [D0042](decisions/D0042-sigstore-phase2-keyless-signing.md) (Accepted, 2026-06-09). The v1 release-signing path is **keyless via GitHub Actions ambient OIDC** — the release signer's identity is the **CI workflow identity** (issuer = GHA OIDC, SAN = workflow URI), a U.S.-based provider consistent with this question's provisional preference and the §5.5 / §3.4 trust placement; developer-email identity is retained only as the manual fallback. **Still open:** pinning the **specific production workflow identity** (the exact SAN-URI) and provisioning the production trust anchors — `PRODUCTION_ROOTS` remains `None` for the OIDC-identity piece, gated by D0042 on the repository going public plus project governance.
 
 **Context.** Sigstore's Fulcio binds each release signing certificate to a verified OIDC identity. The OIDC provider becomes a trust root (named explicitly in Section 3.4). The provider's jurisdiction matters: a U.S.-based provider is reachable by U.S. legal process; a provider in another jurisdiction shifts the trust placement accordingly.
 
@@ -179,7 +179,7 @@ These checks gate the transition from working name to committed name, not from p
 - Operational defenses (hardware-security-key requirement on the OIDC provider, alerts on token issuance, Rekor audit cadence) cannot be fully operationalized until a specific provider is chosen.
 - Partner organizations and pilot users in jurisdictions where the chosen provider's home jurisdiction is itself an adversary need to be informed of the trust placement; the user-facing documentation depends on knowing which provider.
 
-**Next step.** Choose a v1 pilot OIDC provider (U.S.-based: Google, GitHub, Microsoft are candidates; non-U.S.: limited options in 2026, mostly self-hosted Keycloak-style deployments). Acknowledge the jurisdiction in partner conversations. v1.5 may transition if pilot experience or partner feedback indicates the v1 jurisdiction choice is operationally inappropriate.
+**Next step.** The provider is chosen (GitHub Actions ambient OIDC, per D0042); the remaining work is pinning the specific production workflow identity (SAN-URI) and provisioning `PRODUCTION_ROOTS` once the repository is public, plus acknowledging the GitHub / U.S. jurisdiction trust placement in partner conversations. v1.5 may revisit if pilot experience or partner feedback indicates the jurisdiction choice is operationally inappropriate.
 
 ---
 
@@ -315,7 +315,7 @@ The choice between (a) and (b) is itself the open question. The project's workin
 
 ## Q20. Self-funding runway disclosure (resolution of §9.1's commitment)
 
-**Status:** Open. §9.1 explicitly commits §10 to deliver a runway figure; §10 currently does not. Surfaced by the §10 review (F4) as breach of an in-document commitment.
+**Status:** Resolved (recorded in design-brief §10.8 as of v0.9; register updated 2026-06-10). The runway figure is **confidential-to-funder**: disclosed in calendar months to Phase B funders under grant-agreement confidentiality rather than published, closing the §9.1-to-§10 commitment without converting the runway into public personal-finance disclosure (which the §3 threat model otherwise refuses). §1.6 and §9.1 were reconciled to point to this resolution 2026-06-10.
 
 **Context.** Section 9.1 states "Section 10 (when drafted) will state the developer's effective self-funding runway in calendar terms — the number of months the developer can sustain v1 development plus pilot operations under self-funded posture with no audit, no honoraria, and no team scaling." The current §10 draft does not deliver the figure; §10.8 acknowledges the gap honestly rather than letting it remain silent.
 
@@ -427,7 +427,7 @@ Selection requires engagement with partner organizations who facilitate the excl
 - §8.3 review-path scalability — the "subset designated for code review specifically" mechanism §8.3 names cannot operate until the reviewer pool exists and the architectural-decision delegation path is specified.
 - §8.4 governance evolution — under D0016 deferral, the partner advisory authority does not have architectural authority; under foundation-operating posture, the board does; the brief currently has no transition specification for the deferral-permanent case.
 
-**Next step.** Pre-implementation work: (a) identify three concrete "first-PR-friendly" surfaces and document them as such (candidates per maintainer external review: property-based test additions to the trust-graph CRDT; fuzz test corpus expansion; user-facing onboarding documentation for the facilitator handbook; reviewer toolkit Docker/Nix environment improvements per §8.2); (b) specify the architectural-decision delegation path for the deferral-permanent case; (c) commit to contributor-mentorship cadence at v1 ship (e.g., 2–4 hours/month of pair-review time with prospective second contributors). Track resolution as part of v1 documentation work and §8.3 commit-signing-requirements specification.
+**Next step.** (a) First-PR-friendly surfaces are now documented in [`CONTRIBUTING.md`](../CONTRIBUTING.md) (property-based test additions, fuzz-corpus expansion, documentation, reviewer-toolkit improvements); (b) specify the architectural-decision delegation path for the deferral-permanent case; (c) commit to a contributor-mentorship cadence at v1 ship (e.g., 2–4 hours/month of pair-review time with prospective second contributors). Track resolution as part of v1 documentation work and §8.3 commit-signing-requirements specification.
 
 ---
 

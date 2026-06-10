@@ -1,110 +1,207 @@
+<div align="center">
+
+<img src="cairn-icon.png" alt="Cairn logo" width="140" />
+
 # Cairn
 
-Secure communications for users facing state-actor adversaries — mercenary
-spyware (Pegasus, Predator), forensic-extraction tooling (Cellebrite, MSAB,
-GrayKey), and traditional state intelligence services. Cairn integrates
-existing cryptographic substrates (SimpleX, Briar, Tor, Sigstore, Sigsum,
-Shamir Secret Sharing, COSE) with original cryptographic engineering at the
-integration boundary: a three-tier identity model, a cryptographic trust graph
-with cascade-quarantine semantics, social recovery without centralized
-trustees, and a release-security stack with multi-channel distribution and
-multi-party verification.
+**Secure messaging for people whose adversaries will spend serious money to read their messages.**
 
-**Status:** Pre-implementation. The design brief at `docs/design-brief.md` is
-substantively complete (v0.10). Implementation begins May 29, 2026 with the
-Tier 1 MDC (cryptographic foundation crates). No releases yet.
+[![CI](https://github.com/wlcarden/cairn-messenger/actions/workflows/ci.yml/badge.svg)](https://github.com/wlcarden/cairn-messenger/actions/workflows/ci.yml)
+[![License: AGPL-3.0-only](https://img.shields.io/badge/license-AGPL--3.0--only-blue.svg)](LICENSE)
+[![Rust 1.91](https://img.shields.io/badge/rust-1.91-orange.svg)](rust-toolchain.toml)
+![Platform: GrapheneOS / Pixel](https://img.shields.io/badge/platform-GrapheneOS%20%2F%20Pixel-555.svg)
+[![Status: alpha · pre-audit](https://img.shields.io/badge/status-alpha%20%C2%B7%20pre--audit-crimson.svg)](docs/implementation-status.md)
 
-**Audience:** v1 is a closed pilot targeting 10–15 users in one or two local
-groups already known to the developer. The architecture is calibrated against
-the threat tier above; the deployable population at v1 is materially smaller
-than the threat tier the architecture is designed against. See
-`docs/design-brief.md` §1.2 and §2.2 for honest audience framing.
+</div>
 
-## Documentation
+Cairn is an end-to-end encrypted messenger built against the threat tier
+targeted by mercenary spyware (Pegasus, Predator), forensic-extraction
+tooling (Cellebrite, MSAB, GrayKey), and state intelligence services with
+authority over telecom and platform operators — the threat tier documented by
+research labs such as Citizen Lab and Amnesty International Security Lab. It runs on GrapheneOS-on-Pixel
+and integrates existing cryptographic substrates — SimpleX's identifier-less
+queue protocol, Tor, Sigstore/Sigsum transparency logs, Shamir Secret Sharing,
+COSE — with original engineering at the integration boundary: a three-tier
+identity model, a cryptographic trust graph with cascade-quarantine semantics,
+social recovery with no centralized trustees, and a transparency-anchored
+release-security stack.
 
-The complete project documentation is in `docs/`:
+> [!WARNING]
+> **Status: alpha, active development, not released.** Cairn is built **for** a closed pilot (a planned
+> 10–15 user cohort), pre-audit, and not yet distributed through
+> any channel. The cryptographic core and the Android app run, and an
+> end-to-end message round-trip has been demonstrated on two physical
+> GrapheneOS Pixels over bundled Tor — but individual defenses are at varying
+> maturity (several are PARTIAL; see
+> [`docs/implementation-status.md`](docs/implementation-status.md)), the
+> pre-pilot audit (D0011) has not happened, and there are no releases.
+> **Do not rely on it for safety yet.**
 
-- **`docs/design-brief.md`** — the substantive design brief (~1,900 lines).
-  Read §1 for executive summary; §2 for problem statement; §3 for threat
-  model; §5 for architecture; §6-7 for engineering scope and release roadmap;
-  §8-10 for operational, governance, and funding posture.
+## Who it's for (stated honestly)
 
-- **`docs/decisions/`** — every architectural and operational decision
-  documented as an ADR with rationale, alternatives considered, and
-  consequences. D0001 through D0020 as of May 2026.
+The design brief deliberately separates three audience layers ([design
+brief §1.2](docs/design-brief.md)); this README summarizes the two that bound
+what v1 delivers:
 
-- **`docs/architecture-diagrams.md`** — eight Mermaid diagrams covering the
-  layered architecture, software components, identity tiers, trust graph
-  semantics, recovery flow, release pipeline, external dependency surface,
-  and build/test/release pipeline.
+- **v1 deployable population** — who v1 _actually serves_: a working estimate
+  of low hundreds globally, the intersection of users meeting all four v1
+  preconditions (GrapheneOS-on-Pixel, a hardware-backed operational keypair, a
+  viable peer-recovery network, facilitator-supported provisioning). The pilot
+  is 10–15 users from this population.
+- **Threat tier the architecture is designed _against_** (a design target, not
+  a population v1 reaches): journalists, lawyers, organizers, civil-society
+  researchers, dissidents, abuse survivors with severed networks, and others
+  whose adversaries treat their communications as worth substantial resources
+  to compromise.
 
-- **`docs/open-questions.md`** — the project's open-questions tracker
-  (Q1-Q27).
+Cairn does not claim to reach the broad tier at v1. Populations it explicitly
+does **not** serve well at v1 (co-located adversaries, users with no peer
+network, non-English speakers pre-localization, cold-source contact) are named
+in [design brief §1.2](docs/design-brief.md).
 
-- **`docs/runbooks/`** — operational runbooks (CVE response; multi-party APK
-  signing-key custody).
+## Architecture
 
-- **`docs/reviews/`** — adversarial-review artifacts from the design phase:
-  per-lens findings, consolidated triages, external-read prompts and
-  findings.
+Three layers — **endpoint** (GrapheneOS-on-Pixel, a Rust core + a Kotlin/Compose
+UI shell), **transport** (Tor), **communications** (SimpleX in v1; Briar joins
+in v1.5) — with four commitments above the protocol layer:
 
-## Engineering foundation (D0018)
+1. **Three-tier identity** — master → operational → device-scoped capability
+   tokens, so routine-operation compromise is bounded in scope and time.
+2. **Cryptographic trust graph** — attestation, withdrawal, key-compromise
+   revocation, introduction, and vouch operations, anchored as commitment-only
+   (hash, not content) entries in a transparency log, with cascade-quarantine
+   to contain a compromised attester.
+3. **Social recovery without trustees** — Shamir-among-peers (3-of-5 default)
+   _and_ paper shares, gated by pre-shared challenge phrases and a 48-hour
+   delay-and-confirm window.
+4. **Transparency-anchored releases** — Sigstore keyless signing, Rekor, and a
+   Sigsum-anchored release log, checked by an on-device verifier (not yet wired
+   into an install path — see Releases & verification below).
 
-This repository ships under **AGPL-3.0-only** (per D0019). The cryptographic
-foundation is the RustCrypto stack at versions pinned to match libsignal and
-vodozemac production deployments. Memory hygiene via `zeroize` + `secrecy` +
-`subtle`. Constant-time discipline enforced by `subtle::ConstantTimeEq` at
-every secret comparison and `dudect-bencher` CI gate against release-profile
-builds.
+See [`docs/architecture-diagrams.md`](docs/architecture-diagrams.md) for the
+layered, component, identity, trust-graph, recovery, and release-pipeline
+diagrams.
 
-The Rust toolchain is pinned to `1.85.0` per `rust-toolchain.toml`. Target
-ABIs for Android: `aarch64-linux-android` and `x86_64-linux-android`. NDK
-r28+ required (16 KB page-size mandate).
+### Workspace crates
 
-For library selections + rationale + version-pinning policy see
-[`docs/decisions/D0018-engineering-foundation.md`](docs/decisions/D0018-engineering-foundation.md).
+The Rust core is a 15-crate workspace; the Kotlin/Compose app lives in
+[`android/`](android/).
 
-## Building
+| Crate                                                   | Responsibility                                                                                          |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| [`cairn-crypto`](crates/cairn-crypto)                   | Ed25519 / X25519 / HKDF / AEAD primitives; `zeroize`/`secrecy` memory hygiene; constant-time discipline |
+| [`cairn-envelope`](crates/cairn-envelope)               | Canonical CBOR + `COSE_Sign1` construction, with an external-signer (TEE) path                          |
+| [`cairn-shamir`](crates/cairn-shamir)                   | Shamir Secret Sharing over GF(256) with a BLAKE3 commit-of-secret                                       |
+| [`cairn-identity`](crates/cairn-identity)               | Capability-token construction (the three-tier identity model)                                           |
+| [`cairn-trust-graph`](crates/cairn-trust-graph)         | Trust-graph operations + `prior_hash` chain integrity + cascade quarantine                              |
+| [`cairn-recovery`](crates/cairn-recovery)               | Master-attestation of a new operational identity (social recovery)                                      |
+| [`cairn-storage`](crates/cairn-storage)                 | Encrypted persistent storage (`rusqlite` + per-value AEAD)                                              |
+| [`cairn-sigsum-client`](crates/cairn-sigsum-client)     | Sigsum commitment-only transparency logging                                                             |
+| [`cairn-sigstore-verify`](crates/cairn-sigstore-verify) | Release-artifact verification: Fulcio + Rekor + embedded-SCT + Sigsum-anchored release log              |
+| [`cairn-tor-transport`](crates/cairn-tor-transport)     | Tor transport (hand-rolled SOCKS5 + control-port; bundled `tor` on Android)                             |
+| [`cairn-simplex-adapter`](crates/cairn-simplex-adapter) | SimpleX SMP adapter + the Cairn message envelope                                                        |
+| [`cairn-uniffi`](crates/cairn-uniffi)                   | The curated Kotlin-facing FFI surface (UniFFI)                                                          |
+| [`cairn-release`](crates/cairn-release)                 | Release producer: build/sign/ingest a verifiable `ReleaseBundle`                                        |
+| [`cairn-cli`](crates/cairn-cli)                         | Host CLI composing the primitives (the minimum demoable capability)                                     |
+| [`cairn-ct-bench`](crates/cairn-ct-bench)               | Constant-time benchmark (`dudect`) infrastructure                                                       |
 
-This section is a placeholder until the first crate compiles. Once
-`cairn-crypto` lands, build with:
+## Building from source
+
+Requires the pinned toolchain in [`rust-toolchain.toml`](rust-toolchain.toml)
+(Rust **1.91**, auto-installed by rustup). The host workspace builds with no
+external services:
 
 ```sh
 cargo build --workspace
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo test  --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo fmt --all --check
 ```
 
-Reproducible builds use Nix; `flake.nix` will land alongside the build-system
-integration crates.
+A self-contained end-to-end demo of the release stack (synthetic roots, no
+network) — produce a signed bundle, then run the real verifier over it:
+
+```sh
+echo "demo artifact" > /tmp/app.bin
+cargo run -p cairn-release -- build --apk /tmp/app.bin --version 1.0.0-demo --out /tmp/rel
+cargo run -p cairn-release -- verify --bundle /tmp/rel/release-bundle.cbor --roots /tmp/rel/release-roots.json
+# -> verify_release: OK
+```
+
+The **Android app** (in [`android/`](android/)) cross-compiles the Rust core
+to `aarch64-/x86_64-linux-android` (NDK r28+, 16 KB page size) and bundles
+`tor` + the SimpleX runtime. It is built and validated on physical Pixels on
+GrapheneOS; see [`docs/decisions/D0028-android-shell-build-pipeline.md`](docs/decisions/D0028-android-shell-build-pipeline.md)
+for the device-build pipeline.
+
+## Repository layout
+
+```
+crates/     15-crate Rust workspace (the cryptographic + protocol core)
+android/    Kotlin + Jetpack Compose app (GrapheneOS-on-Pixel target)
+docs/       design brief, 41 ADRs, status, diagrams, runbooks, reviews
+fuzz/       cargo-fuzz harnesses (libFuzzer)
+.github/    CI gates + the keyless release-sign workflow
+```
+
+## Documentation
+
+- **[`docs/design-brief.md`](docs/design-brief.md)** — the substantive design
+  brief: executive summary, problem statement, threat model, architecture,
+  engineering scope, and the operational/governance/funding posture.
+- **[`docs/decisions/`](docs/decisions/)** — every architectural and
+  operational decision as an ADR with rationale, alternatives, and
+  consequences (D0001–D0042).
+- **[`docs/implementation-status.md`](docs/implementation-status.md)** — an
+  honest reconciliation of _what is actually implemented_ against what the
+  brief promises (IMPLEMENTED / PARTIAL / ASPIRATIONAL / DEFERRED), with code
+  references. Read this before trusting any claim above.
+- **[`docs/runbooks/`](docs/runbooks/)** — operator runbooks (keyless
+  release-signing, CVE response, multi-party APK-key custody).
+- **[`docs/open-questions.md`](docs/open-questions.md)** — the open-questions
+  register (Q1–Q27).
+- **[`metrics.md`](metrics.md)** — the empirical engineering-cadence tracker
+  (the project's evidence base in place of calendar projections, per D0018).
+
+## Releases & verification
+
+Cairn ships an on-device release **verifier** (`cairn-sigstore-verify`) that
+implements the full Sigstore-native stack — Fulcio identity, Rekor inclusion,
+embedded SCT, and a Sigsum-anchored release log — so that, once releases exist,
+an installed artifact can be checked against transparency-log evidence rather
+than trusted blindly. Its components (Rekor inclusion, Fulcio chain validation,
+embedded SCT) are tested against **real** Sigstore production/staging data; the
+end-to-end `verify_release` orchestration and the Sigsum half currently run
+against **synthetic** roots, and the verifier is not yet wired into an APK
+install/update flow (there are no releases yet). The keyless CI signing workflow
+lives at
+[`.github/workflows/release-sign.yml`](.github/workflows/release-sign.yml), with
+an operator guide at
+[`docs/runbooks/2b-keyless-release-sign.md`](docs/runbooks/2b-keyless-release-sign.md).
+The recruited Sigsum log and witness pool is funding-gated.
 
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md). The project specifically welcomes
 contributions to documentation, test infrastructure, and the reviewer
-toolkit. Cryptographic-engineering contributions require maintainer review +
-the constant-time CI gate to pass.
+toolkit; cryptographic-engineering changes require maintainer review and
+follow the project's constant-time discipline (a `dudect` smoke test runs in
+CI; threshold gating runs out-of-band on dedicated hardware, per D0018). By participating you agree to the
+[Contributor Covenant](https://www.contributor-covenant.org/version/2/1/code_of_conduct/)
+([`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)).
 
-## Security disclosure
+## Security
 
-See [`SECURITY.md`](SECURITY.md). Vulnerability reports go to
-`security@cairn-project.org` (PGP key fingerprint TBD; will be published once
-the production email and PGP key are established).
-
-For coordinated disclosure, Cairn's preferred relationships are with
-research labs whose work model is structured to disclose rather than sell:
-Citizen Lab, Amnesty International Security Lab, Access Now Digital Security
-Helpline, EFF Threat Lab. These are candidate disclosure-relationship
-partners; relationships are negotiated as part of Q5 partner outreach (not
-yet started; tracked in `docs/open-questions.md`).
+Report vulnerabilities privately per [`SECURITY.md`](SECURITY.md) —
+**not** via public issues. For coordinated disclosure Cairn's preferred
+partners are labs structured to disclose rather than sell (Citizen Lab,
+Amnesty International Security Lab, Access Now, EFF Threat Lab); these are
+candidate relationships, not yet established.
 
 ## License
 
+Cairn is free software under the **GNU Affero General Public License, version
+3 only** ([LICENSE](LICENSE)). The AGPL choice is deliberate and documented in
+[D0019](docs/decisions/D0019-license.md).
+
 Copyright © 2026 Cairn maintainers and contributors.
-
-Cairn is free software: you can redistribute it and/or modify it under the
-terms of the GNU Affero General Public License version 3, as published by
-the Free Software Foundation. See [LICENSE](LICENSE).
-
-The AGPL-3.0 license choice is deliberate and documented in
-[`docs/decisions/D0019-license.md`](docs/decisions/D0019-license.md).

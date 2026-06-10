@@ -434,7 +434,7 @@ impl SigstoreVerifier {
     ///    `manifest_bytes` — the exact blob the detached signature covers
     ///    (D0042 §3; no COSE wrapper).
     /// 2. Validate the Fulcio cert chain + OIDC pins
-    ///    ([`validate_cert_chain`]), yielding the developer's ECDSA P-256
+    ///    (`validate_cert_chain`), yielding the developer's ECDSA P-256
     ///    signing key.
     /// 3. Verify the detached ECDSA P-256 `manifest_signature` over
     ///    `manifest_bytes` against that key (the cosign sign-blob model;
