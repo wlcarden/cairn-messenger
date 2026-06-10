@@ -1,7 +1,7 @@
 # Contributing to Cairn
 
-Thanks for your interest in Cairn. The project is at the start of v1
-implementation (May 29, 2026) and is structured as a solo-developer
+Thanks for your interest in Cairn. The project is in active v1
+implementation and is structured as a solo-developer
 project at volunteer baseline per
 [`docs/decisions/D0008-volunteer-baseline-cadence.md`](docs/decisions/D0008-volunteer-baseline-cadence.md).
 That said, contributor onboarding is a real concern (tracked as Q27 in the
