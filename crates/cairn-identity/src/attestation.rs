@@ -36,7 +36,7 @@
 //!    validity window against `now_unix`.
 //! 2. Check the chain terminates at a self-signed cert whose
 //!    `SubjectPublicKeyInfo` equals the **pinned Google Hardware
-//!    Attestation Root** ([`PINNED_GOOGLE_ROOT_SPKI_DER`]).
+//!    Attestation Root** (`PINNED_GOOGLE_ROOT_SPKI_DER`).
 //! 3. Extract + ASN.1-decode the leaf's `KeyMint` `KeyDescription`.
 //! 4. Assert: `attestationChallenge == expected_challenge`;
 //!    `attestationSecurityLevel ∈ {TrustedEnvironment, StrongBox}`;
@@ -219,12 +219,12 @@ pub struct AttestationFacts {
 pub enum AttestationError {
     /// The chain was empty.
     EmptyChain,
-    /// The chain had fewer than [`MIN_CHAIN_LEN`] certs.
+    /// The chain had fewer than `MIN_CHAIN_LEN` certs.
     TooFewCertificates {
         /// Number of certs supplied.
         got: usize,
     },
-    /// The chain had more than [`MAX_CHAIN_LEN`] certs.
+    /// The chain had more than `MAX_CHAIN_LEN` certs.
     ChainTooLong {
         /// Number of certs supplied.
         got: usize,

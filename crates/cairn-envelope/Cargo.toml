@@ -24,8 +24,6 @@ coset = { workspace = true }
 
 # === Memory hygiene (D0018 §1.6) ===
 zeroize = { workspace = true }
-secrecy = { workspace = true }
-subtle = { workspace = true }
 
 # === Error handling (D0018 §4.2) ===
 thiserror = { workspace = true }

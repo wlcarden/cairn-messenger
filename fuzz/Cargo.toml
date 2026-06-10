@@ -34,7 +34,6 @@ libfuzzer-sys = "=0.4.10"
 # will align the pins and re-enable structure-aware derive.
 
 # === Targets under fuzz: Tier 1 MDC + Tier 2 protocol crates ===
-cairn-crypto = { path = "../crates/cairn-crypto" }
 cairn-envelope = { path = "../crates/cairn-envelope" }
 cairn-identity = { path = "../crates/cairn-identity" }
 cairn-recovery = { path = "../crates/cairn-recovery" }

@@ -41,3 +41,8 @@ thiserror = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 hex-literal = { workspace = true }
+
+# cargo-machete false positives / intentional deps:
+# used via secrecy::Secret* types (machete misses type-only use)
+[package.metadata.cargo-machete]
+ignored = ["secrecy"]

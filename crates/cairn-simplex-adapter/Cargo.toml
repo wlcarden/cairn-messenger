@@ -109,3 +109,8 @@ log = { workspace = true }
 # script hard-fails without a `libsimplex` bundle. See the workspace-pin note.
 [target.'cfg(target_os = "android")'.dependencies]
 simploxide-ffi-core = { workspace = true }
+
+# cargo-machete false positives / intentional deps:
+# used via #[derive(Serialize/Deserialize)] (machete misses derive-only use)
+[package.metadata.cargo-machete]
+ignored = ["serde"]

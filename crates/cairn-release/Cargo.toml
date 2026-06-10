@@ -23,7 +23,6 @@ path = "src/main.rs"
 # input contract: ReleaseBundle / ReleaseManifest / RekorBundle) ===
 cairn-sigstore-verify = { path = "../cairn-sigstore-verify" }
 cairn-sigsum-client = { path = "../cairn-sigsum-client" }
-cairn-envelope = { path = "../cairn-envelope" }
 cairn-crypto = { path = "../cairn-crypto" }
 # Storage backs the SigsumClient the `verify` subcommand constructs to
 # replay verify_release on the host (in-memory; never persisted).

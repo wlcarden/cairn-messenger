@@ -17,7 +17,7 @@
 //! # cairn-release
 //!
 //! The Cairn release-producer CLI: builds + signs a verifiable
-//! [`ReleaseBundle`](cairn_sigstore_verify::ReleaseBundle) — the producer
+//! [`ReleaseBundle`] — the producer
 //! counterpart to the `cairn-sigstore-verify` verifier (D0024 §6) and the
 //! engineering realization of the D0015 release-security posture's
 //! producer side.

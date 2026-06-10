@@ -32,7 +32,7 @@
 //!   with). A shipped build without that feature REFUSES them
 //!   ([`CairnFfiError::ReleaseRootsNotProvisioned`]).
 //! - [`ReleaseVerifierHandle::new_pinned`] is the production path: it uses
-//!   the compiled-in [`PRODUCTION_ROOTS`] (the real Fulcio root, Rekor
+//!   the compiled-in `PRODUCTION_ROOTS` (the real Fulcio root, Rekor
 //!   key, project OIDC identity, recruited Sigsum log + witness pool) and
 //!   accepts nothing from the caller.
 //!
@@ -182,7 +182,7 @@ impl ReleaseVerifierHandle {
     /// # Errors
     ///
     /// [`CairnFfiError::ReleaseRootsNotProvisioned`] while
-    /// [`PRODUCTION_ROOTS`] is `None` (phase 2/3 has not yet minted +
+    /// `PRODUCTION_ROOTS` is `None` (phase 2/3 has not yet minted +
     /// baked the real anchors). Once provisioned, the same errors as
     /// [`Self::new`]'s `build_verifier` path.
     #[cfg_attr(feature = "uniffi-bindings", uniffi::constructor)]
