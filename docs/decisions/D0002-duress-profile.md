@@ -51,7 +51,7 @@ A duress profile in the conventional sense is a feature where, under coercion to
 ## References
 
 - [docs/open-questions.md](../open-questions.md) — Q1, original open question, now resolved
-- [docs/handoff.md](../handoff.md) — adversarial review finding #7 surfaced the inconsistency; handoff:128 captured it as an open question
+- [docs/handoff.md](../handoff.md) — adversarial review finding #7 surfaced the inconsistency; handoff:165 captured it as an open question
 - GrapheneOS duress PIN documentation (https://grapheneos.org)
 - Cellebrite UFED and equivalent commercial forensic-extraction tooling: see Section 3 footnote `[^forensic-extraction]` in the design brief
 - VeraCrypt hidden-volume documentation (https://veracrypt.io) — historical precedent for concealment-style duress features and the detection arms race that followed

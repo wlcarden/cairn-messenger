@@ -1,6 +1,6 @@
 # Project Name Candidates
 
-Working brainstorm against the constraints captured in handoff.md:173 — avoid telegraphing use case, work across languages, available domain/package, no collision with adjacent projects. Each candidate notes etymology, metaphorical fit, phonetic properties, and known-collision flags. Domain availability and trademark searches are deferred to a follow-up pass against a shortlisted top three.
+Working brainstorm against the constraints captured in handoff.md:214 — avoid telegraphing use case, work across languages, available domain/package, no collision with adjacent projects. Each candidate notes etymology, metaphorical fit, phonetic properties, and known-collision flags. Domain availability and trademark searches are deferred to a follow-up pass against a shortlisted top three.
 
 ## Constraint logic
 

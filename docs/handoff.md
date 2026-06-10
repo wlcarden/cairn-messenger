@@ -1,8 +1,35 @@
 # Project Handoff Document
 
+> [!IMPORTANT]
+> **Historical snapshot — superseded.** This document captures the _initial_
+> design conversation that started Cairn (2026-05-27), preserved for provenance
+> and narrative context. It is **not** a current description of the project, and
+> several specific statements below are now outdated. Do not rely on it for
+> current facts — use the sources of truth instead.
+>
+> **Current sources of truth:**
+>
+> - [`../README.md`](../README.md) — what Cairn is now, honestly scoped
+> - [`implementation-status.md`](implementation-status.md) — what is actually built vs. promised
+> - [`design-brief.md`](design-brief.md) — the substantive design brief
+> - [`decisions/`](decisions/) — every architectural decision, D0001–D0042
+> - [`open-questions.md`](open-questions.md) — the live open-questions register
+>
+> **Specific facts below that have since changed:**
+>
+> - **Name:** "[Project Name TBD]" → **Cairn** ([D0001](decisions/D0001-project-name.md))
+> - **License:** "Apache 2.0" → **AGPL-3.0-only** ([D0019](decisions/D0019-license.md))
+> - **Status:** "pre-implementation" → **active v1 implementation**: a 15-crate Rust core plus a Kotlin/Compose Android app, with messaging validated end-to-end on two physical GrapheneOS Pixels over bundled Tor
+> - **Briar:** listed as v1 scope → moved to **v1.5** ([D0004](decisions/D0004-v1-scope-cuts.md))
+> - **Implementation language:** Kotlin-native (the prior preference) → **Rust** core + Kotlin/Compose shell ([D0003](decisions/D0003-implementation-language.md))
+> - **Most "Open Questions / Still to Decide" below are resolved** — see [`open-questions.md`](open-questions.md) and [`decisions/`](decisions/); e.g. the duress-profile question and the project name were both resolved 2026-05-27
+>
+> The conversation journey, original rationale, and reference materials below
+> remain useful as historical context.
+
 **Purpose:** Capture the full context of design decisions, discussions, and open questions from the initial design conversation, for transfer to a Claude Code project where work can continue with better tooling (sub-agents for adversarial review, sustained project context, proper file management).
 
-**Status:** Handoff snapshot
+**Status:** Historical snapshot — superseded 2026-05-27 (see notice above)
 **Source conversation:** Initial design discussion, Anthropic chat interface
 **Companion file:** `design-brief.md` (the in-progress design brief, with Section 3 drafted)
 
@@ -55,12 +82,14 @@ The discussion proceeded roughly in this order:
 Each decision below was discussed in depth with alternatives considered. The rationale is summarized; the design brief Appendix A is intended to contain the full reasoning for each.
 
 ### Protocol stack
+
 - **Primary messaging:** SimpleX (no persistent identifiers, queue-based servers that know minimum, self-hostable or use defaults)
 - **Highest-sensitivity channel:** Briar (pure peer-to-peer over Tor, no servers at all, both-parties-online requirement accepted for metadata resistance)
 - **Transport:** Tor with pluggable obfuscation transports as needed for jurisdiction-specific DPI
 - **Side-channel (v3+):** Meshtastic and MeshCore, protocol-agnostic integration, deferred from v1
 
 ### Identity model
+
 - **Three-tier capability tokens** (master / operational / device)
 - **Master identity:** Ed25519 keypair, generated at provisioning, immediately Shamir-split among recovery peers, never stored after split
 - **Operational identity:** Ed25519 keypair signed by master at provisioning, held in phone's Titan M2 hardware element, used for signing capability tokens and trust graph operations
@@ -68,6 +97,7 @@ Each decision below was discussed in depth with alternatives considered. The rat
 - **Rationale:** capability tokens provide independent revocation, scope flexibility, and natural alignment with the trust graph; preferred over HD keys (which couple all derived keys to one secret) and threshold signatures (which are too operationally heavy for daily use)
 
 ### Trust graph
+
 - **Data model:** signed operations (attest / revoke / introduce / rotate) with issuer, subject, context, strength, timestamp, expiry, prior-hash, signature fields
 - **Propagation:** via the messaging layer itself, as metadata accompanying user-to-user traffic
 - **Replication model:** operation-based CRDT, eventual consistency, conflicts resolved by signed timestamps and prior-hash chains
@@ -75,17 +105,20 @@ Each decision below was discussed in depth with alternatives considered. The rat
 - **Revocation behavior:** soft cascade quarantine (flag, don't lock out)
 
 ### Recovery
+
 - **Model:** Shamir Secret Sharing of the master identity, default 3-of-5
 - **Peer designation:** at provisioning time, by the user, from their contact list
 - **Failure mode:** graceful (fewer than threshold available = recovery fails closed, no information leakage)
 - **Alternative path:** fresh identity with in-person re-introduction by existing contact, accepting loss of historical state
 
 ### Hardware token role (v1 phones-only)
+
 - **Phone:** signing keys live in Titan M2 hardware element, unlocked by passphrase. No external token required for daily use.
 - **USB (v2+):** external token (NitroKey/YubiKey) OR hardware-encrypted USB drive (Apricorn Aegis/Kingston IronKey)
 - **Master operations:** optional external token for the rare master-key ceremonies
 
 ### Updates and release security
+
 - **Signing:** Sigstore identity-based signing (no long-lived signing keys)
 - **Builds:** reproducible builds required (anyone can independently verify binaries match source)
 - **External review:** 2-3 reviewers per release publishing signed attestations
@@ -94,11 +127,13 @@ Each decision below was discussed in depth with alternatives considered. The rat
 - **Why not TUF:** overkill for solo-developer project scale; Sigstore + reproducible builds + external attestations gets most of the benefit
 
 ### Platform
+
 - **v1 target:** GrapheneOS on Pixel only (no other Android, no iOS)
 - **Rationale:** hardware attestation via Titan M2, reduced testing surface, security baseline guaranteed, simpler distribution
 - **Tradeoff acknowledged:** meaningfully smaller addressable user base than full grassroots target audience
 
 ### Cell architecture (for future versions / sophisticated users)
+
 - **Cellular compartmentation** with designated liaisons as cutouts
 - **Cross-cell collaboration** via dedicated project infrastructure, not direct cell-to-cell federation
 - **Double-wrapped sensitive content** at the project level
@@ -106,6 +141,7 @@ Each decision below was discussed in depth with alternatives considered. The rat
 - **Note:** v1 doesn't implement formal cell structures — these are organizational patterns users adopt, supported by the underlying trust graph capabilities
 
 ### Open source license and governance
+
 - **License:** Apache 2.0 (permissive, maximizes downstream reuse by allied projects)
 - **Governance:** starts as project, foundation incorporation when funding/scale justifies (estimated 18-24 months out)
 - **Reference models:** Signal Foundation, Tor Project, Briar Project trajectories
@@ -115,6 +151,7 @@ Each decision below was discussed in depth with alternatives considered. The rat
 ## v1 Scope (MVP)
 
 ### In scope
+
 - Android app for GrapheneOS Pixel only
 - SimpleX integration as primary messaging
 - Briar integration for highest-sensitivity channel
@@ -125,9 +162,10 @@ Each decision below was discussed in depth with alternatives considered. The rat
 - Sigstore-based update distribution
 - Encrypted at-rest storage tied to passphrase and hardware element
 - Documentation for users and pilot administrators
-- *Open question: duress profile support — was claimed in Section 3 draft but needs verification it's actually in v1 plan*
+- _Open question: duress profile support — was claimed in Section 3 draft but needs verification it's actually in v1 plan_
 
 ### Explicitly deferred
+
 - USB-bootable variant → v2
 - iOS support → v2
 - Non-Pixel Android → never (product remains anchored to GrapheneOS-Pixel)
@@ -138,6 +176,7 @@ Each decision below was discussed in depth with alternatives considered. The rat
 - Group/cell formal infrastructure → v3+
 
 ### Pilot plan
+
 - 10-15 users in 1-2 local groups identified by developer
 - Devices provided: GrapheneOS pre-installed on Pixels (likely Pixel 8a for cost, possibly Pixel 9 for newer hardware)
 - App pre-installed but identity not yet provisioned (user does that with developer present)
@@ -147,6 +186,7 @@ Each decision below was discussed in depth with alternatives considered. The rat
 - Budget estimate: $5-12K hardware + developer time
 
 ### Forward-compatibility design choices in v1
+
 1. Protocol versioning fields in all signed messages from day one
 2. Capability tokens with arbitrary scope strings (not hardcoded permissions)
 3. Multi-device awareness in the protocol even though v1 ships only phones
@@ -170,33 +210,40 @@ Each decision below was discussed in depth with alternatives considered. The rat
 ## Open Questions / Still to Decide
 
 ### Project identity
+
 - **Name:** placeholder "[Project Name TBD]" — not yet chosen. Considerations: avoid telegraphing use case, work across languages, check domain/package availability, avoid collision with adjacent projects.
 
 ### Funding
+
 - **Strategy:** OTF grant likely primary candidate ($50-150K range), supplemented by foundation grants (Ford, Open Society, Mozilla, Knight, Omidyar), self-funded development through pilot phase
 - **Sustainability:** post-v1 includes established-org paid tier as subsidy mechanism
 
 ### Pilot specifics
+
 - Specific local groups not yet identified in document (developer has them in mind)
 - Pilot start timing unclear
 - Pilot evaluation criteria not yet defined
 
 ### NGO partnerships
+
 - Targets identified: Tactical Tech, Front Line Defenders, Access Now, Citizen Lab, OTF
 - Outreach not yet begun
 - Roles partners would play not yet defined (review? facilitation? threat intel? localization?)
 
 ### Localization
+
 - v1 launches English-only
 - Post-pilot expansion to which languages first? Considerations: pilot user demographics, partner NGO geographic coverage, target deployment regions
 - Recruitment of native-speaker security trainers as translators
 
 ### Audit
+
 - External cryptographic audit before broad release (post-pilot)
 - Budget: $20-50K estimated
 - Audit firm not yet identified
 
 ### Specific technical decisions deferred to architecture spec
+
 - Exact Android codebase architecture (Kotlin native is current preference)
 - Specific CRDT library choice for trust graph
 - Specific COSE library
@@ -204,6 +251,7 @@ Each decision below was discussed in depth with alternatives considered. The rat
 - Push notification mechanism (no Google Play Services in GrapheneOS by default)
 
 ### Voice/video calls
+
 - SimpleX supports them but adds complexity
 - Defer to v1.x or v2 depending on time
 
@@ -250,6 +298,7 @@ The Section 3 (Threat Model) draft in `design-brief.md` was reviewed adversarial
 ## Reference Materials
 
 ### Protocols and standards
+
 - **SimpleX Chat** (https://simplex.chat/) — primary messaging spine, no-identifier architecture
 - **Briar** (https://briarproject.org/) — peer-to-peer over Tor, highest-sensitivity tier
 - **Tor** (https://torproject.org/) — transport anonymization layer
@@ -263,6 +312,7 @@ The Section 3 (Threat Model) draft in `design-brief.md` was reviewed adversarial
 - **The Update Framework (TUF)** — referenced but rejected for v1 as overkill
 
 ### Existing products surveyed
+
 - **Signal** — rejected as primary (phone number, centralized)
 - **Matrix / Element** — rejected as primary (server burden, metadata exposure)
 - **Wickr** — rejected (AWS-owned, enterprise focus)
@@ -273,6 +323,7 @@ The Section 3 (Threat Model) draft in `design-brief.md` was reviewed adversarial
 - **Threema** — Swiss commercial, expensive at scale
 
 ### Hardware
+
 - **Pixel devices** with GrapheneOS — v1 target platform
 - **Titan M2 secure element** — hardware key storage
 - **LoRa hardware** (for v3): Heltec WiFi LoRa 32 V3, LILYGO T-Beam, RAK WisBlock, Seeed SenseCAP
@@ -280,6 +331,7 @@ The Section 3 (Threat Model) draft in `design-brief.md` was reviewed adversarial
 - **Hardware-encrypted USB** (alternative for v2): Apricorn Aegis Secure Key, Kingston IronKey D500S
 
 ### Community organizations
+
 - **Citizen Lab** (Munk School, University of Toronto) — threat intelligence and forensic research
 - **EFF Surveillance Self-Defense** — user education reference
 - **Tactical Tech** + **Front Line Defenders** — Security in-a-Box, training and resources
@@ -288,6 +340,7 @@ The Section 3 (Threat Model) draft in `design-brief.md` was reviewed adversarial
 - **Amnesty International Security Lab** — additional threat intel source
 
 ### Threat intelligence cases referenced
+
 - **Paragon Graphite targeting European journalists** (Citizen Lab, June 2025, CVE-2025-43200)
 - **Cellebrite extraction of Boniface Mwangi's phone** (Kenya, July 2025)
 - **Jordan civil-society device-seizure cluster** (late 2023 to mid-2025)
@@ -298,6 +351,7 @@ The Section 3 (Threat Model) draft in `design-brief.md` was reviewed adversarial
 ## Suggested Next Steps in Claude Code
 
 1. **Set up project repository** with this handoff document and the design brief as initial documentation. Recommended structure:
+
    ```
    project-root/
      docs/
@@ -364,4 +418,4 @@ A few things that work differently between this environment and Claude Code:
 
 ---
 
-*End of handoff document.*
+_End of handoff document._

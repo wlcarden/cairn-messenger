@@ -7,7 +7,7 @@
 
 The project needed a working name before further documentation, partner outreach, decision-file accumulation, or any code-naming work could proceed without placeholder churn. The placeholder `[Project Name TBD]` was propagating through working documents and was the highest-leverage small unblocking decision available.
 
-Naming constraints captured in the prior conversation (handoff.md:173):
+Naming constraints captured in the prior conversation (handoff.md:214):
 
 - Avoid telegraphing the use case (no Secure-, Crypt-, Shield-, Vault-, etc.).
 - Work across languages — pronounceable, no English-only idioms or puns.
@@ -68,4 +68,4 @@ The dev-tooling collision is the only one in a domain that overlaps with this pr
 
 - [docs/name-candidates.md](../name-candidates.md) — full candidate set with metaphorical fit, phonetics, and collision analysis
 - [docs/open-questions.md](../open-questions.md) — Q2 (now resolved) and follow-up verification items
-- handoff.md:173 — original naming constraints from prior conversation
+- handoff.md:214 — original naming constraints from prior conversation
