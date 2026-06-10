@@ -244,8 +244,6 @@ dependencies = [
  "cairn-crypto",
  "ciborium",
  "coset",
- "secrecy",
- "subtle",
  "thiserror 1.0.63",
  "zeroize",
 ]
@@ -254,7 +252,6 @@ dependencies = [
 name = "cairn-fuzz"
 version = "0.0.0"
 dependencies = [
- "cairn-crypto",
  "cairn-envelope",
  "cairn-identity",
  "cairn-recovery",
@@ -275,7 +272,6 @@ dependencies = [
  "ciborium",
  "thiserror 1.0.63",
  "x509-parser",
- "zeroize",
 ]
 
 [[package]]
@@ -319,7 +315,6 @@ dependencies = [
  "cairn-storage",
  "ciborium",
  "p256",
- "reqwest",
  "serde",
  "serde_json",
  "sha2",
@@ -341,7 +336,6 @@ dependencies = [
  "ciborium",
  "reqwest",
  "serde",
- "serde_json",
  "sha2",
  "thiserror 1.0.63",
  "tokio",
@@ -355,7 +349,6 @@ name = "cairn-storage"
 version = "0.1.0-dev"
 dependencies = [
  "argon2",
- "cairn-crypto",
  "cairn-envelope",
  "chacha20poly1305",
  "getrandom 0.2.15",
