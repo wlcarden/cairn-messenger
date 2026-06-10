@@ -169,7 +169,7 @@ These checks gate the transition from working name to committed name, not from p
 
 ## Q11. OIDC provider for Sigstore identity binding
 
-**Status:** Open. Architectural commitment made (use an OIDC provider for Sigstore release attestation); specific provider choice for v1 pilot deferred with provisional preference for a U.S.-based provider in pilot per Section 5.5.
+**Status:** Partially resolved by [D0042](decisions/D0042-sigstore-phase2-keyless-signing.md) (Accepted, 2026-06-09). The v1 release-signing path is **keyless via GitHub Actions ambient OIDC** — the release signer's identity is the **CI workflow identity** (issuer = GHA OIDC, SAN = workflow URI), a U.S.-based provider consistent with this question's provisional preference and the §5.5 / §3.4 trust placement; developer-email identity is retained only as the manual fallback. **Still open:** pinning the **specific production workflow identity** (the exact SAN-URI) and provisioning the production trust anchors — `PRODUCTION_ROOTS` remains `None` for the OIDC-identity piece, gated by D0042 on the repository going public plus project governance.
 
 **Context.** Sigstore's Fulcio binds each release signing certificate to a verified OIDC identity. The OIDC provider becomes a trust root (named explicitly in Section 3.4). The provider's jurisdiction matters: a U.S.-based provider is reachable by U.S. legal process; a provider in another jurisdiction shifts the trust placement accordingly.
 
@@ -179,7 +179,7 @@ These checks gate the transition from working name to committed name, not from p
 - Operational defenses (hardware-security-key requirement on the OIDC provider, alerts on token issuance, Rekor audit cadence) cannot be fully operationalized until a specific provider is chosen.
 - Partner organizations and pilot users in jurisdictions where the chosen provider's home jurisdiction is itself an adversary need to be informed of the trust placement; the user-facing documentation depends on knowing which provider.
 
-**Next step.** Choose a v1 pilot OIDC provider (U.S.-based: Google, GitHub, Microsoft are candidates; non-U.S.: limited options in 2026, mostly self-hosted Keycloak-style deployments). Acknowledge the jurisdiction in partner conversations. v1.5 may transition if pilot experience or partner feedback indicates the v1 jurisdiction choice is operationally inappropriate.
+**Next step.** The provider is chosen (GitHub Actions ambient OIDC, per D0042); the remaining work is pinning the specific production workflow identity (SAN-URI) and provisioning `PRODUCTION_ROOTS` once the repository is public, plus acknowledging the GitHub / U.S. jurisdiction trust placement in partner conversations. v1.5 may revisit if pilot experience or partner feedback indicates the jurisdiction choice is operationally inappropriate.
 
 ---
 
