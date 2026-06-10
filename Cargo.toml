@@ -37,8 +37,8 @@ members = [
     # Sigstore release verification: identity-based signing + Rekor
     # + Sigsum-anchored release log composition per D0024
     "crates/cairn-sigstore-verify",
-    # Tor transport: Arti-embedded client + pluggable-transports
-    # architecture per D0025
+    # Tor transport: Rust-side SOCKS5 + control-port client of the bundled
+    # C-Tor service (not Arti-embedded; arti deferred per the D0025 revision)
     "crates/cairn-tor-transport",
     # SimpleX adapter: project-owned Rust SMP client + Cairn message
     # envelope per D0026
