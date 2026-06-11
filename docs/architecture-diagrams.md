@@ -297,7 +297,7 @@ sequenceDiagram
 
     User->>App: Install Cairn, initiate recovery
     App->>User: Display public master fingerprint<br/>+ peer contact info
-    User->>Peer1: Out-of-band request<br/>("I need recovery; my Cairn fingerprint is X")
+    User->>Peer1: Out-of-band request<br/>("I need recovery, my Cairn fingerprint is X")
     User->>Peer2: Out-of-band request
     User->>Peer3: Out-of-band request
 
@@ -327,12 +327,12 @@ sequenceDiagram
         Peer2->>Peer2: Discard scheduled share release
         Peer3->>Peer3: Discard scheduled share release
         App->>Sigsum: Log "recovery cancelled" (optional)
-        Note over App: No shares delivered; no master reconstruction
+        Note over App: No shares delivered, no master reconstruction
     else 48 hours elapse (per peer's own clock)
         Peer1->>App: Release encrypted share<br/>(via SimpleX or out-of-band)
         Peer2->>App: Release encrypted share
         Peer3->>App: Release encrypted share
-        App->>App: Reconstruct master seed from shares<br/>(secrecy-wrapped pinned memory; atomic re-split per C10)
+        App->>App: Reconstruct master seed from shares<br/>(secrecy-wrapped pinned memory, atomic re-split per C10)
         App->>App: Re-split master, distribute new shares to peers<br/>(atomic — all peers receive or none)
         App->>App: Generate new operational identity<br/>(only after re-split completes)
         App->>App: Sign new operational identity with master
@@ -340,7 +340,7 @@ sequenceDiagram
         App->>Sigsum: Log "key rotation" operation<br/>(propagates via trust graph)
     end
 
-    Note over User,Sigsum: Day 2 onward: recovery complete; new operational identity active
+    Note over User,Sigsum: Day 2 onward: recovery complete, new operational identity active
 ```
 
 **Online Sigsum dependency at v1.** Per [§9.2](design-brief.md#92-recovery-and-trust-graph-risks) and D0014, v1 recovery requires online connectivity to Sigsum — the trust-graph evaluation queries Sigsum directly. v1.5 adds local caching that mitigates the most common case but does not address full-offline recovery.
