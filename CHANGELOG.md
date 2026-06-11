@@ -24,7 +24,7 @@ per-feature reconciliation.
 - Rust cryptographic + protocol core (15-crate workspace): three-tier identity,
   a trust graph with cascade-quarantine, Shamir-among-peers social recovery,
   canonical-CBOR / COSE envelopes, Tor transport, the SimpleX adapter, and the
-  release-verification stack.
+  release-verification stack (partial; see Known limitations).
 - Kotlin/Compose Android shell over the core via UniFFI, bundling Tor and the
   SimpleX runtime. An end-to-end message round-trip has been demonstrated on two
   physical GrapheneOS Pixels over bundled Tor.
@@ -34,7 +34,11 @@ per-feature reconciliation.
 - Several individual defenses are PARTIAL; the pre-pilot audit (D0011) has not
   been performed.
 - The on-device release verifier is not yet wired into the install / update
-  path; a downloaded APK is verified by its published SHA-256 checksum and
-  signing-certificate fingerprint.
+  path. Until it is, the installer must verify a downloaded APK MANUALLY: check
+  the published SHA-256 checksum and compare the signing-certificate fingerprint
+  against the value distributed out-of-band (see Installing in the README).
 - Sigsum transparency anchoring runs against synthetic roots; the production log
   and witness pool are funding-gated.
+
+[Unreleased]: https://github.com/wlcarden/cairn-messenger/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/wlcarden/cairn-messenger/releases/tag/v0.1.0

@@ -1,6 +1,6 @@
 # Open Questions
 
-Tracker for decisions deferred or unresolved. Each entry: the question, why it's open, what it blocks, and candidate resolutions. Resolved questions move to `decisions/` with full rationale.
+Tracker for decisions deferred or unresolved. Each entry: the question, why it's open, what it blocks, and candidate resolutions. Resolved questions are marked Resolved in place with a resolution summary and a link to the governing decision in `decisions/`; they are not deleted, to preserve the open->resolved trail.
 
 ---
 
@@ -21,7 +21,7 @@ Tracker for decisions deferred or unresolved. Each entry: the question, why it's
 - Domain availability check (.org, .com).
 - Package-namespace check (npm, PyPI, Maven, F-Droid).
 - GitHub organization name availability.
-- USPTO and EUIPO trademark search before any public launch.
+- USPTO and EUIPO trademark search before the committed-name / public-marketing launch (this gate is the marketing launch under the committed name, not source publication).
 
 These checks gate the transition from working name to committed name, not from placeholder to working name.
 
@@ -35,7 +35,7 @@ These checks gate the transition from working name to committed name, not from p
 
 **What it blocks.**
 
-- Section 10 (Funding) of the design brief beyond placeholder numbers.
+- Section 10 (Funding) of the design brief is drafted; the open part is the specific source choice and sequencing (serial vs. parallel) behind its numbers.
 - Timing of approach to partner NGOs (some partners are easier to engage when funding is locked).
 - Pilot start date (depends on hardware budget availability).
 
@@ -74,7 +74,7 @@ These checks gate the transition from working name to committed name, not from p
 - Pilot consent and partner-mediated reporting channel per D0013 — this is on the v1 critical path; partner organization must be willing to operate the mediation channel.
 - Localization partnerships specifically — translation work likely runs through one of these.
 
-**Next step.** Decide on a primary partner candidate for each role before outreach. Defer outreach until design brief is shareable.
+**Next step.** Decide on a primary partner candidate for each role before outreach. The design brief is now public, so the prior "defer until the brief is shareable" gate no longer applies; partner outreach is unblocked.
 
 ---
 
@@ -101,7 +101,7 @@ These checks gate the transition from working name to committed name, not from p
 
 **What it blocks.**
 
-- Section 10 budget breakdown precision.
+- Section 10.3 (post-pilot broad-release audit) is drafted; the open part is the specific firm choice that pins its budget breakdown precision.
 - Audit timing in the roadmap.
 - Implementation choices that affect auditability (some firms prefer specific languages, dependency tree shapes, etc., though this is a weak constraint).
 
@@ -191,7 +191,7 @@ These checks gate the transition from working name to committed name, not from p
 
 - **Recovery cooling-off window** (48 hours per [D0005](decisions/D0005-peer-verification.md)). May prove too long if recovery delays significantly degrade user trust, or too short against determined adversaries.
 - **Stale-flag escalation period** (90 days per [D0006](decisions/D0006-cryptographic-envelope.md)). May prove too long if cascade quarantines linger past their useful signal, or too short if users need more time to triage.
-- **Push notification default** (off per Section 5.4). May prove too restrictive if polling latency makes the app operationally unusable for the pilot audience.
+- **Push notification default** — RESOLVED 2026-05-29 to push-opt-in-with-explicit-disclosure (see the Q12 update block below and design-brief §5.4/§6.1).
 - **Polling interval** (default 15 minutes per Section 5.4). Same tunability concern.
 - **Shamir threshold** (3-of-5 default per Section 5.3). User-configurable at provisioning; the default may need adjustment based on pilot peer-network properties.
 - **Token validity period** (hours to days per Section 5.1). Specific value not pinned; the tradeoff is passphrase-reprompt frequency vs. post-revocation compromise window.
@@ -440,5 +440,5 @@ Q12 framing updated from "is 15-min polling operationally usable" to "what is th
 ## Conventions
 
 - New questions append to the bottom with the next sequential ID.
-- Resolved questions move to `decisions/` (one file per decision) with full rationale, alternatives considered, and references. A short note links from here.
+- Resolved questions are marked Resolved in place with a resolution summary and a link to the governing decision in `decisions/`; not deleted, to preserve the open->resolved trail. The governing decision document (one file per decision) carries the full rationale, alternatives considered, and references.
 - Questions that turn out to be malformed or duplicated get marked **withdrawn** with a note, not deleted, to preserve provenance.

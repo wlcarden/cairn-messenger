@@ -1,14 +1,28 @@
 # Contributing to Cairn
 
-Thanks for your interest in Cairn. The project is in active v1
-implementation and is structured as a solo-developer
-project at volunteer baseline per
+Thanks for your interest in Cairn. Cairn is a pre-audit alpha; v0.1.0 is
+published as a pilot pre-release. Active development targets v1 — the first
+facilitator-supported closed-pilot release. The project is structured as a
+solo-developer project at volunteer baseline per
 [`docs/decisions/D0008-volunteer-baseline-cadence.md`](docs/decisions/D0008-volunteer-baseline-cadence.md).
 That said, contributor onboarding is a real concern (tracked as Q27 in the
 open-questions register), and the project will benefit materially from
 contributions in a few specific surfaces.
 
-Before contributing, please read at minimum:
+## Quick start
+
+```sh
+git clone https://github.com/wlcarden/cairn-messenger.git
+cd cairn-messenger
+# The pinned toolchain auto-installs from rust-toolchain.toml (Rust 1.91).
+cargo build --workspace
+cargo test --workspace
+```
+
+For the full build environment (Android SDK/NDK, libsimplex), see the
+README "Building from source" section.
+
+Before proposing architectural or cryptographic changes, read:
 
 - `docs/design-brief.md` §§1-3 (executive summary, problem statement,
   threat model)
@@ -21,7 +35,7 @@ Before contributing, please read at minimum:
 The maintainer has identified the following surfaces as concrete entry
 points for first contributions. These do **not** require deep cryptographic
 expertise — they require careful engineering and willingness to follow the
-project's discipline framework.
+project's CI gates (the "Discipline framework" section below).
 
 1. **Property-based test additions.** The cryptographic surfaces (envelope
    round-trip, Shamir threshold completeness, signing determinism, CBOR
@@ -55,8 +69,8 @@ project's discipline framework.
 5. **Test-vector cross-validation.** Per D0018 §2.4, Cairn's COSE envelope
    test vectors are byte-validated against `veraison/go-cose`. Writing the
    cross-validation harness (Cairn produces; go-cose verifies; differences
-   are CI-blocking) is bounded work that establishes the project's
-   audit-credibility substrate.
+   are CI-blocking) is bounded work that gives an auditor byte-level evidence
+   that Cairn's COSE output matches an independent implementation.
 
 ## Larger contribution surfaces
 
@@ -75,12 +89,11 @@ project's discipline boundary in ways that need design coordination:
 
 ## Discipline framework
 
-By contributing, you commit to following the project's engineering
-discipline framework. The discipline is enforced via CI gates per D0018 §8.5
-— PRs that violate the discipline cannot merge until the issue is
-addressed.
+By contributing, you commit to following the project's engineering rules,
+enforced via CI gates per D0018 §8.5 — PRs that violate these rules cannot
+merge until the issue is addressed.
 
-Key disciplines:
+Key rules:
 
 ### 1. No raw byte payloads in error variants
 
@@ -151,7 +164,7 @@ By contributing, you license your contribution under AGPL-3.0-only per
    applicable.
 
 4. **Open PR against `main`.** Describe what changed, why, and any
-   architectural cross-references. If the change touches a discipline gate,
+   architectural cross-references. If the change touches one of the CI gates,
    document the rationale for crossing it.
 
 5. **CI must pass.** All required CI checks per D0018 §8.5 must pass before
@@ -183,9 +196,12 @@ the social layer are addressed by the maintainer.
 
 ## Questions
 
-For questions about contributing, open a GitHub Discussion or email
-`contact@cairn-project.org` (placeholder; operational email lands before v1
-alpha).
+For questions about contributing, open a GitHub Discussion. For confidential
+matters, use the repository's private vulnerability reporting (GitHub Security
+Advisory) as the working interim channel. The domain address
+(`contact@cairn-project.org`) and its PGP key are **not yet operational** and
+should not be used until announced — the operational address will be published
+before the audited closed-pilot release; v0.1.0 is a pre-pilot pre-release.
 
 For security-relevant questions, see [`SECURITY.md`](SECURITY.md) — do not
 discuss security issues in public GitHub issues or discussions.
