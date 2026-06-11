@@ -14,7 +14,7 @@ D0018 §8.6 enumerates `cairn-storage` in the workspace layout but does not spec
 5. Atomic re-split coordination per D0018 §3.5 (two-phase commit across N peers)
 6. Soft-flag UI acknowledgment state (which attestations the user has touched vs. left to auto-quarantine)
 
-The [storage research substrate](../storage-research.md) surveyed the realistic option space against three already-locked-in constraints (D0018 §1.4 XChaCha20-Poly1305 at-rest AEAD; D0018 §6 cairn-storage is synchronous; D0020 §3 StrongBox mediation via UniFFI callback). Three survivors after the engineering screen + the quality screen: rusqlite, redb, hand-rolled append-only logs. This decision picks among them and specifies the encryption layering + schema discipline that goes with the choice.
+The the storage research (in git history) surveyed the realistic option space against three already-locked-in constraints (D0018 §1.4 XChaCha20-Poly1305 at-rest AEAD; D0018 §6 cairn-storage is synchronous; D0020 §3 StrongBox mediation via UniFFI callback). Three survivors after the engineering screen + the quality screen: rusqlite, redb, hand-rolled append-only logs. This decision picks among them and specifies the encryption layering + schema discipline that goes with the choice.
 
 ## Decision summary
 
@@ -58,7 +58,7 @@ SQLite build-time omissions (passed to libsqlite3-sys via `features`):
 
 ### 1.2 Rationale
 
-Four arguments dominate the security calculus per the analysis in [storage-research.md §"Decision factors"](../storage-research.md) and the follow-on security comparison:
+Four arguments dominate the security calculus per the analysis in the storage research's decision-factors analysis (in git history) and the follow-on security comparison:
 
 1. **Durability matters more than memory safety for Cairn's failure mode.** Lost ratchet state breaks message decryption forever (no recovery within the storage layer; only via Shamir social recovery + identity rotation). Failed-to-persist revocation means a compromised key keeps appearing valid until the next attempt. SQLite's WAL + `synchronous=FULL` has decades of crash-tested durability semantics with near-zero remaining bug rate. redb's durability is documented but younger.
 2. **The memory-safety win for redb is reduced by Cairn's architecture.** The storage engine sees only ciphertext blobs from our own per-value AEAD; attacker bytes go through canonical-CBOR decode + AEAD verify _before_ SQLite touches them. The attack path "exploit SQLite memory-safety bug" requires first compromising our encoding pipeline, at which point a SQLite bug isn't the dominant concern.
@@ -243,7 +243,7 @@ The `KeyProvider` trait is the only Hardware-Abstraction-Layer surface `cairn-st
 
 ## 5. Alternatives considered
 
-Per the [storage research substrate](../storage-research.md):
+Per the the storage research (in git history):
 
 ### 5.1 redb
 
@@ -390,5 +390,5 @@ Subsequent commits expose category-specific storage paths as the consuming crate
 - [D0018 — engineering foundation](D0018-engineering-foundation.md) — §1.4 XChaCha20-Poly1305; §6 synchronous discipline; §8.1 `unsafe_code` exception; §8.6 workspace layout
 - [D0020 — integration architecture](D0020-integration-architecture.md) — §3 UniFFI callback for hardware-mediated operations
 - [D0021 — library pin audit](D0021-library-pin-audit.md) — pin discipline this decision must follow
-- [storage research substrate](../storage-research.md) — alternatives analysis source
+- the storage research (in git history) — alternatives analysis source
 - [implementation-status reconciliation](../implementation-status.md) — the D0022-blocked rows this decision unblocks

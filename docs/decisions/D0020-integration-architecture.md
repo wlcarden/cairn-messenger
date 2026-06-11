@@ -6,7 +6,7 @@
 
 ## Context
 
-Per the consolidated external-reads triage Sprint 3 research (`docs/reviews/external-reads-consolidated.md`), seven research agents investigated current state-of-the-art for the three substantial integration surfaces Cairn must specify before v1 implementation begins:
+Per the consolidated external-reads triage Sprint 3 research (`docs/archive/reviews/external-reads-consolidated.md`), seven research agents investigated current state-of-the-art for the three substantial integration surfaces Cairn must specify before v1 implementation begins:
 
 1. **SimpleX integration** — how the Rust core talks to SimpleX's protocol stack; whether to FFI in-process, run as sidecar, reimplement, or hybrid
 2. **Tor integration** — whether to embed arti, use C-Tor via JNI, or use Orbot; which pluggable transports to bundle; mobile lifecycle handling
@@ -684,5 +684,5 @@ Per D0018's empirical-metrics framing, no calendar projection. Each surface has 
 - [D0017](D0017-calyxos-inclusion.md) — CalyxOS inclusion (consumes this document's verified-boot-attestation specifics)
 - [D0018](D0018-engineering-foundation.md) — Cryptographic library and Rust ecosystem foundation (this document consumes D0018 library decisions and discipline framework)
 - [D0019](D0019-license.md) — Project license (consumes this document's SimpleX license-isolation rationale)
-- [docs/reviews/external-reads-consolidated.md](../reviews/external-reads-consolidated.md) — Sprint 3 origin and triage
+- [docs/archive/reviews/external-reads-consolidated.md](../archive/reviews/external-reads-consolidated.md) — Sprint 3 origin and triage
 - [docs/design-brief.md](../design-brief.md) §3.4, §5.1, §5.4, §5.5, §6.1, §6.3, §7.1, §9.4

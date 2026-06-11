@@ -54,7 +54,7 @@ The decision is to acknowledge multi-device as v2 work; it does not foreclose an
 
 ## References
 
-- [docs/section-5-review.md](../section-5-review.md) F11
+- [docs/section-5-review.md](../archive/section-5-review.md) F11
 - [docs/decisions/D0003-implementation-language.md](D0003-implementation-language.md) — Rust core forward-compatibility implications (the core can target USB and mesh hardware).
 - [docs/decisions/D0004-v1-scope-cuts.md](D0004-v1-scope-cuts.md) — the v1 scope cuts that constrain what can be specified.
 - [docs/decisions/D0006-cryptographic-envelope.md](D0006-cryptographic-envelope.md) — the five-operation trust-graph schema this decision is consistent with.

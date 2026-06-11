@@ -120,8 +120,8 @@ Fully reversible. If v1.x non-peer recovery ships, the v1-out-of-scope acknowled
 
 ## References
 
-- [docs/section-2-review.md](../section-2-review.md) — §2 F12, F3; pattern P2 (intimate network missing from §2).
+- [docs/section-2-review.md](../archive/section-2-review.md) — §2 F12, F3; pattern P2 (intimate network missing from §2).
 - [docs/decisions/D0005-peer-verification.md](D0005-peer-verification.md) — peer-verification mechanism this decision does not modify.
 - [docs/decisions/D0013-pilot-consent-exit.md](D0013-pilot-consent-exit.md) — pilot consent protocol that the architecture-vs-audience honesty commitment parallels.
-- [docs/sections-8-9-review.md](../sections-8-9-review.md) — F12 limit-acknowledgment posture (Safe Harbor).
+- [docs/sections-8-9-review.md](../archive/sections-8-9-review.md) — F12 limit-acknowledgment posture (Safe Harbor).
 - Research-ethics literature on protective-technology evaluation among populations whose threat condition is the absence of trusted networks.

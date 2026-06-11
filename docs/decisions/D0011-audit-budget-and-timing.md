@@ -96,7 +96,7 @@ The pre-beta audit budget at the upper bound ($150K) is conditional on funding c
 
 ## References
 
-- [docs/sections-8-9-review.md](../sections-8-9-review.md) — F8, F20.
+- [docs/sections-8-9-review.md](../archive/sections-8-9-review.md) — F8, F20.
 - [docs/open-questions.md](../open-questions.md) — Q7 (audit firm selection; updated by this decision).
 - Open Tech Fund Secure Audit program: https://www.opentech.fund/funds/secure-audit/
 - Cure53 audit history and engagement model: https://cure53.de

@@ -5,7 +5,7 @@
 
 ## Context
 
-Q8 in [open-questions.md](../open-questions.md) named library selection for cryptographic primitives as a question requiring resolution before v1 implementation begins. Sprint 3 of the consolidated external-reads triage (per `docs/reviews/external-reads-consolidated.md`) committed to resolving this as the first engineering decision under the MDC (Minimum Demoable Capability) pathway: working code first, then partner conversations against code-as-evidence.
+Q8 in [open-questions.md](../open-questions.md) named library selection for cryptographic primitives as a question requiring resolution before v1 implementation begins. Sprint 3 of the consolidated external-reads triage (per `docs/archive/reviews/external-reads-consolidated.md`) committed to resolving this as the first engineering decision under the MDC (Minimum Demoable Capability) pathway: working code first, then partner conversations against code-as-evidence.
 
 Seven research agents with web-search access were dispatched on 2026-05-29 to investigate current state-of-the-art across:
 
@@ -1057,5 +1057,5 @@ The decision is **layered reversibility**:
 - [D0019](D0019-license.md) — Project license (AGPL-3.0-only; informs `cargo deny` license allowlist)
 - [D0020](D0020-integration-architecture.md) — Integration architectures (consumes this document's library decisions; specifies SimpleX + Tor + FFI patterns)
 - [open-questions.md](../open-questions.md) — Q8 resolution
-- [docs/reviews/external-reads-consolidated.md](../reviews/external-reads-consolidated.md) — Sprint 3 origin and triage
+- [docs/archive/reviews/external-reads-consolidated.md](../archive/reviews/external-reads-consolidated.md) — Sprint 3 origin and triage
 - [docs/design-brief.md](../design-brief.md) §4.1, §5.1, §5.5, §5.7, §6.1, §6.3, §9.4, §10.4

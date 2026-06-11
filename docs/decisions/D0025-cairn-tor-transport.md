@@ -6,7 +6,7 @@
 
 ## Revision note (2026-05-30)
 
-The original 2026-05-29 version of this document specified `arti-client` embedded in-process as the Tor implementation. **That contradicted [D0020](D0020-integration-architecture.md) §2, which had already chosen C-Tor via `guardianproject/tor-android` on the strength of the Sprint 3 consolidated triage research** (`docs/reviews/external-reads-consolidated.md`). The original D0025 was written without engaging D0020's prior decision — a process error.
+The original 2026-05-29 version of this document specified `arti-client` embedded in-process as the Tor implementation. **That contradicted [D0020](D0020-integration-architecture.md) §2, which had already chosen C-Tor via `guardianproject/tor-android` on the strength of the Sprint 3 consolidated triage research** (`docs/archive/reviews/external-reads-consolidated.md`). The original D0025 was written without engaging D0020's prior decision — a process error.
 
 The contradiction was resolved in favor of D0020 after a security analysis (recorded in the project log) found that the pure-Rust embedding did not deliver a net security benefit over D0020's choice:
 
@@ -293,4 +293,4 @@ The workspace pin posture: this crate does NOT pin `arti-client` (the original D
 - [D0024 — cairn-sigstore-verify](D0024-sigstore-release-verification.md) — bridge-manifest signature verification
 - [D0026 — cairn-simplex-adapter](D0026-cairn-simplex-adapter.md) — the SimpleX sidecar whose outbound traffic routes through the C-Tor proxy this crate manages
 - [design brief §5.4 Communications Protocols](../design-brief.md) — Tor-as-transport commitment
-- [docs/network-transport-research.md](../network-transport-research.md) — superseded by D0020 §2 for the integration model (see that doc's corrective header)
+- the network-transport research (in git history) — superseded by D0020 §2 for the integration model (see that doc's corrective header)

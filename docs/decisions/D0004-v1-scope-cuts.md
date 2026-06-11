@@ -5,7 +5,7 @@
 
 ## Context
 
-The Section 5 adversarial review (see [section-5-review.md](../section-5-review.md), pattern P3 and finding F7) identified that v1 architecture as drafted exceeds what a solo developer can produce in the stated 9-12 month timeline. The engineering-feasibility lens estimated 18-30 months at the current scope.
+The Section 5 adversarial review (see [section-5-review.md](../archive/section-5-review.md), pattern P3 and finding F7) identified that v1 architecture as drafted exceeds what a solo developer can produce in the stated 9-12 month timeline. The engineering-feasibility lens estimated 18-30 months at the current scope.
 
 The estimate is LLM-generated and carries uncertainty; the project treats it as directionally correct (the underlying engineering is real) but not literally precise. The directional message is unambiguous: scope cuts are needed if v1 is to ship in the original window.
 
@@ -111,7 +111,7 @@ The "in-scope" paragraph adjusts to acknowledge that v1's highest-sensitivity ti
 
 ## References
 
-- [docs/section-5-review.md](../section-5-review.md) — adversarial review findings F7, F8, F9, F10, F11; pattern P3.
+- [docs/section-5-review.md](../archive/section-5-review.md) — adversarial review findings F7, F8, F9, F10, F11; pattern P3.
 - [docs/decisions/D0003-implementation-language.md](D0003-implementation-language.md) — language stack decision; precondition for the engineering-cost recalculation that justifies these specific cuts.
 - [docs/decisions/D0002-duress-profile.md](D0002-duress-profile.md) — establishes the pattern of "deferred to v1.5 with architectural answer in v1"; duress-wipe deferral in v1.5 is now collected with the cuts above.
 - Engineering reviewer's recommendation list specifically (within the engineering-feasibility section of the consolidated review).

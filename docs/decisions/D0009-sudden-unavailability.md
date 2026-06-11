@@ -95,7 +95,7 @@ The mechanism is reversible at low cost. If pilot evidence shows the dead-man's-
 
 ## References
 
-- [docs/sections-8-9-review.md](../sections-8-9-review.md) — F6, pattern P5; multi-reviewer convergence.
-- [docs/section-5-review.md](../section-5-review.md) — P1, F2; the developer as a target at this threat tier.
+- [docs/sections-8-9-review.md](../archive/sections-8-9-review.md) — F6, pattern P5; multi-reviewer convergence.
+- [docs/section-5-review.md](../archive/section-5-review.md) — P1, F2; the developer as a target at this threat tier.
 - Section 9.4 sunset plan — existing framework this decision extends.
 - Section 5.5 signing identity compromise plan — pre-staged response that this decision extends to the unavailable-developer case.

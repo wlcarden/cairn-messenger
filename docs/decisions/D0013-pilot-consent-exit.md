@@ -103,8 +103,8 @@ The decision is reversible at low cost before pilot deployment; partner-organiza
 
 ## References
 
-- [docs/section-2-review.md](../section-2-review.md) — §2 F19; pattern P3 ("architectural commitment" language compressing user-borne cost).
-- [docs/sections-8-9-review.md](../sections-8-9-review.md) — F17 partner-availability-without-consultation cluster.
+- [docs/section-2-review.md](../archive/section-2-review.md) — §2 F19; pattern P3 ("architectural commitment" language compressing user-borne cost).
+- [docs/sections-8-9-review.md](../archive/sections-8-9-review.md) — F17 partner-availability-without-consultation cluster.
 - [docs/decisions/D0009-sudden-unavailability.md](D0009-sudden-unavailability.md) — partner advisory authority infrastructure that the partner-mediation channel parallels.
 - [docs/decisions/D0011-audit-budget-and-timing.md](D0011-audit-budget-and-timing.md) — pre-pilot audit as parallel Phase B precondition.
 - Citizen Lab research-ethics framework: https://citizenlab.ca

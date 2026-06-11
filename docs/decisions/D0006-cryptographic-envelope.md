@@ -217,7 +217,7 @@ This makes `docs/design-brief.md:422`'s scope-bounding claim true: a forensic ex
 
 ## References
 
-- [docs/section-5-review.md](../section-5-review.md) F4, F5, F23
+- [docs/section-5-review.md](../archive/section-5-review.md) F4, F5, F23
 - [docs/decisions/D0003-implementation-language.md](D0003-implementation-language.md) — Rust core; `coset` crate; typestate enforcement.
 - RFC 9052 (COSE), RFC 9053 (algorithms), RFC 8949 (CBOR), RFC 8032 (Ed25519).
 - Shamir's Secret Sharing: original construction (Shamir, 1979); GF(256) practical implementations widely audited (Trezor's `slips`, OpenBao's secret-sharing code, the `vsss-rs` crate).

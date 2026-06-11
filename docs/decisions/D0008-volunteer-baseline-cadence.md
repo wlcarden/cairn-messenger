@@ -51,6 +51,6 @@ The decision is fully reversible at the honoraria transition. The architectural 
 
 ## References
 
-- [docs/sections-8-9-review.md](../sections-8-9-review.md) — F2, pattern P2; multi-reviewer convergence on the volunteer-baseline gap.
+- [docs/sections-8-9-review.md](../archive/sections-8-9-review.md) — F2, pattern P2; multi-reviewer convergence on the volunteer-baseline gap.
 - [docs/decisions/D0004-v1-scope-cuts.md](D0004-v1-scope-cuts.md) — establishes the self-funded-MVP posture this decision operates within.
 - Section 5.5 — three-of-five attestation threshold is preserved by this decision; only cadence assumption changes.
