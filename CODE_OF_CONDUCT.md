@@ -47,16 +47,19 @@ text linked above.
 
 ## Reporting
 
-Report concerns to the project maintainer at **conduct@cairn-project.org**
-(placeholder; the operational address and its PGP key will be published
-before v1 alpha).
+Report concerns through the repository's **private vulnerability reporting**
+(GitHub Security Advisory) on the project repository — the working interim
+confidential channel until the project's own infrastructure is live. The
+domain address (`conduct@cairn-project.org`) and its PGP key are **not yet
+operational** and should not be used until announced.
 
-For **security vulnerabilities**, do **not** use this address — use the
+For **security vulnerabilities**, do **not** use the conduct channel — use the
 separate disclosure channel in [`SECURITY.md`](SECURITY.md) instead.
 
-All reports are reviewed and investigated promptly and fairly. The maintainer
-is obligated to respect the privacy and security of the person who reports an
-incident.
+Reports are reviewed and investigated as promptly as the project's
+volunteer-baseline cadence (D0008) allows, and always handled confidentially
+and in good faith. The maintainer is obligated to respect the privacy and
+security of the person who reports an incident.
 
 ## Enforcement
 

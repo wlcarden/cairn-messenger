@@ -15,14 +15,20 @@ called out, and your facilitator handles the parts that need a technical helper.
 
 ## What you need before you start
 
-- **A GrapheneOS-on-Pixel phone.** Cairn runs only on
-  [GrapheneOS](https://grapheneos.org) (a hardened Android) on a supported Pixel.
-  Your facilitator provisions this device with you — installing GrapheneOS is
-  itself part of onboarding and is **not** covered here.
+- **A GrapheneOS-on-Pixel phone.** Cairn is built and supported for
+  [GrapheneOS](https://grapheneos.org) (a hardened Android) on a supported Pixel,
+  the configuration its security guarantees assume. It will install and run on
+  stock Pixel Android too, but stock has weaker verified boot and key
+  attestation and ships Google services Cairn does not use, so the hardened
+  guarantees do **not** hold there — do not use stock for at-risk communication.
+  The pilot is GrapheneOS-only for that reason. Your facilitator provisions the
+  device with you; installing GrapheneOS is part of onboarding and not covered
+  here.
 - **Your facilitator.** They help you verify the download is genuine (below) and
   set up your recovery network. This is precondition four of the v1 pilot — see
   [Who it's for](../README.md#who-its-for-stated-honestly).
-- **The release file**, `cairn-<version>.apk`, from the project's
+- **The release files** — `cairn-<version>.apk` (the app) and
+  `cairn-<version>.apk.sha256` (its checksum) — from the project's
   [Releases page](https://github.com/wlcarden/cairn-messenger/releases).
 
 <details>

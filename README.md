@@ -17,13 +17,15 @@
 Cairn is an end-to-end encrypted messenger built against the threat tier
 targeted by mercenary spyware (Pegasus, Predator), forensic-extraction
 tooling (Cellebrite, MSAB, GrayKey), and state intelligence services with
-authority over telecom and platform operators — the threat tier documented by
-research labs such as Citizen Lab and Amnesty International Security Lab. It runs on GrapheneOS-on-Pixel
-and integrates existing cryptographic substrates — SimpleX's identifier-less
-queue protocol, Tor, Sigstore/Sigsum transparency logs, Shamir Secret Sharing,
-COSE — with original engineering at the integration boundary: a three-tier
-identity model, a cryptographic trust graph with cascade-quarantine semantics,
-social recovery with no centralized trustees, and a transparency-anchored
+authority over telecom and platform operators. That threat tier is documented
+by research labs such as Citizen Lab and Amnesty International Security Lab.
+Cairn targets GrapheneOS-on-Pixel — the configuration its threat model assumes;
+see the [install guide](docs/install-guide.md) for the stock-Android caveat — and
+integrates existing cryptographic substrates (SimpleX's identifier-less queue
+protocol, Tor, Sigstore/Sigsum transparency logs, Shamir Secret Sharing, COSE)
+with original engineering at the integration boundary: a three-tier identity
+model, a cryptographic trust graph with cascade-quarantine semantics, social
+recovery with no centralized trustees, and a transparency-anchored
 release-security stack.
 
 > [!WARNING]
@@ -39,7 +41,7 @@ release-security stack.
 > [`docs/implementation-status.md`](docs/implementation-status.md)), and the
 > pre-pilot audit (D0011) has not happened. **Do not rely on it for safety yet.**
 
-## Who it's for (stated honestly)
+## Who it's for
 
 The design brief deliberately separates three audience layers ([design
 brief §1.2](docs/design-brief.md)); this README summarizes the two that bound
@@ -65,20 +67,25 @@ in [design brief §1.2](docs/design-brief.md).
 
 Three layers — **endpoint** (GrapheneOS-on-Pixel, a Rust core + a Kotlin/Compose
 UI shell), **transport** (Tor), **communications** (SimpleX in v1; Briar joins
-in v1.5) — with four commitments above the protocol layer:
+in v1.5) — with three commitments above the protocol layer, plus a v1
+release-security posture:
 
 1. **Three-tier identity** — master → operational → device-scoped capability
    tokens, so routine-operation compromise is bounded in scope and time.
 2. **Cryptographic trust graph** — attestation, withdrawal, key-compromise
-   revocation, introduction, and vouch operations, anchored as commitment-only
-   (hash, not content) entries in a transparency log, with cascade-quarantine
-   to contain a compromised attester.
+   revocation, introduction, and key-rotation operations, anchored as
+   commitment-only (hash, not content) entries in a transparency log, with
+   cascade-quarantine to contain a compromised attester.
 3. **Social recovery without trustees** — Shamir-among-peers (3-of-5 default)
    _and_ paper shares, gated by pre-shared challenge phrases and a 48-hour
    delay-and-confirm window.
-4. **Transparency-anchored releases** — Sigstore keyless signing, Rekor, and a
-   Sigsum-anchored release log, checked by an on-device verifier (not yet wired
-   into an install path — see Releases & verification below).
+
+Above these sits a **v1 release-security posture**: Sigstore keyless signing,
+Rekor, and a Sigsum-anchored release log, checked by an on-device verifier (not
+yet wired into an install path; see [Releases & verification](#releases--verification)).
+It aligns Cairn with comparable open-source security tools (Briar, GrapheneOS,
+F-Droid, Signal Android), and becomes additionally distinct at v1.5 with the
+recruited reviewer pool and reproducible builds.
 
 See [`docs/architecture-diagrams.md`](docs/architecture-diagrams.md) for the
 layered, component, identity, trust-graph, recovery, and release-pipeline
@@ -176,7 +183,7 @@ fuzz/       cargo-fuzz harnesses (libFuzzer)
   identity & verification, pairing by QR, and conversations (with screenshots).
 - **[`docs/decisions/`](docs/decisions/)** — every architectural and
   operational decision as an ADR with rationale, alternatives, and
-  consequences (D0001–D0042).
+  consequences (D0001–D0042; D0039 unallocated).
 - **[`docs/implementation-status.md`](docs/implementation-status.md)** — an
   honest reconciliation of _what is actually implemented_ against what the
   brief promises (IMPLEMENTED / PARTIAL / ASPIRATIONAL / DEFERRED), with code

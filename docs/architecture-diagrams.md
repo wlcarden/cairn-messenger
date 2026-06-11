@@ -29,7 +29,7 @@ flowchart TB
         Identity["Three-Tier Identity<br/>(master / operational / device-scoped tokens)<br/>§5.1"]
         TrustGraph["Trust Graph<br/>(5 op types, cascade quarantine)<br/>§5.2, D0006"]
         Recovery["Shamir Social Recovery<br/>(pre-shared challenges + 48h delay)<br/>§5.3, D0005"]
-        ReleaseSec["Release Security<br/>(v1: Sigstore + Sigsum + F-Droid)<br/>§5.5, D0015"]
+        ReleaseSec["Release Security<br/>(v1: Sigstore + Sigsum + F-Droid)<br/>(planned v1 channels; v0.1.0 ships via GitHub Releases only)<br/>§5.5, D0015"]
     end
 
     subgraph TransportLayer["Transport Layer"]
@@ -120,7 +120,7 @@ flowchart LR
     RustWorkspace --> UDL
     UDL --> KotlinUI
 
-    Build["Build outputs:<br/>cairn-android-v1.0.apk<br/>+ Sigstore signature<br/>+ Sigsum log entry<br/>+ source archive (for §5.5 review)<br/>v1.5: + reproducible-build pipeline"]
+    Build["Build outputs:<br/>cairn-&lt;version&gt;.apk<br/>+ Sigstore signature<br/>+ Sigsum log entry<br/>+ source archive (for §5.5 review)<br/>v1.5: + reproducible-build pipeline"]
     KotlinUI --> Build
     RustWorkspace --> Build
 
@@ -343,7 +343,7 @@ sequenceDiagram
     Note over User,Sigsum: Day 2 onward: recovery complete, new operational identity active
 ```
 
-**Online Sigsum dependency at v1.** Per [§9.2](design-brief.md#92-recovery-and-trust-graph-risks) and D0014, v1 recovery requires online connectivity to Sigsum — the trust-graph evaluation queries Sigsum directly. v1.5 adds local caching that mitigates the most common case but does not address full-offline recovery.
+**Online Sigsum dependency at v1.** Per [§9.2](design-brief.md#92-product-limitations) and D0014, v1 recovery requires online connectivity to Sigsum — the trust-graph evaluation queries Sigsum directly. v1.5 adds local caching that mitigates the most common case but does not address full-offline recovery.
 
 **Excluded populations at v1.** Per [D0014](decisions/D0014-non-peer-recovery.md), users whose threat condition precludes a peer-recovery network (sex workers under criminalization with co-prosecuted peers; abuse survivors with severed networks; isolated dissidents; etc.) are out of scope for v1 recovery as architecturally designed. Candidate v1.x/v2 paths (printed paper shares; time-locked self-recovery; single-trustee attorney-privilege; explicit no-recovery option) are named in D0014.
 
@@ -363,7 +363,7 @@ flowchart TB
 
     subgraph BuildPipeline["Build pipeline (CI: GitHub Actions)"]
         Build["cargo build + ./gradlew assembleRelease<br/>(reproducible-build pipeline lands at v1.5)"]
-        Artifact["cairn-android-v1.0.apk"]
+        Artifact["cairn-&lt;version&gt;.apk"]
         Build --> Artifact
     end
 
@@ -376,12 +376,12 @@ flowchart TB
 
     subgraph PublicLog["Public transparency log layer"]
         Rekor["Rekor<br/>(Sigstore signing event log)"]
-        Sigsum["Sigsum<br/>(release log + witness cosignatures<br/>via partner pool, conditional on Q5)"]
+        Sigsum["Sigsum<br/>(release log + witness cosignatures<br/>via partner pool, conditional on Q5)<br/>(synthetic roots at v0.1.0; production log + witness pool funding-gated)"]
         Sigstore --> Rekor
         APKKey -.->|"release commitment"| Sigsum
     end
 
-    subgraph Distribution["Distribution channels (v1 per F17)"]
+    subgraph Distribution["Distribution channels (planned v1 per F17; v0.1.0 ships via GitHub Releases only)"]
         FDroid["F-Droid<br/>(primary; rebuild-attestation substrate for v1.5)"]
         Accrescent["Accrescent"]
         DirectDL["Direct download<br/>(project-controlled domain)"]
@@ -391,10 +391,10 @@ flowchart TB
         Artifact --> DirectDL
     end
 
-    subgraph ClientVerify["Client-side verification (per release install)"]
+    subgraph ClientVerify["Client-side verification (TARGET v1 flow — NOT yet wired into the install path; see README Releases & verification)"]
         VerifyAPK["Verify APK signature against pinned key chain<br/>(Android installer)"]
         VerifySigstore["Verify Sigstore signature against Rekor<br/>(cairn-sigstore-verify)"]
-        VerifySigsum["Verify release log entry against Sigsum<br/>(cairn-sigsum-client)"]
+        VerifySigsum["Verify release log entry against Sigsum<br/>(cairn-sigsum-client)<br/>(synthetic roots at v0.1.0; production log + witness pool funding-gated)"]
         Refuse["Refuse install<br/>(if any verification fails)"]
         Install["Install + activate"]
 
@@ -424,17 +424,15 @@ flowchart TB
     classDef projectComponent stroke:#0a0,stroke-width:2px
     classDef external stroke:#888
     classDef v15 stroke-dasharray: 5 5
-    classDef failPath stroke:#a00,stroke-width:2px
 
-    class DevReview,Build,Artifact,VerifyAPK,VerifySigstore,VerifySigsum,Install projectComponent
+    class DevReview,Build,Artifact,VerifyAPK projectComponent
     class Source,APKKey,Sigstore,Rekor,Sigsum,FDroid,Accrescent,DirectDL external
-    class ReproBuild,ReviewerPool,FDroidRebuild v15
-    class Refuse failPath
+    class ReproBuild,ReviewerPool,FDroidRebuild,VerifySigstore,VerifySigsum,Refuse,Install v15
 ```
 
-**v1 supply-chain gap (acknowledged per D0015 and D0013 pilot consent):** developer source review does not detect a compromised build pipeline producing a malicious binary from clean source. The v1 release log + witness cosignatures detect _broad_ attacks (an adversary cannot deliver a signed update without a corresponding Sigsum entry) but do not catch a build-pipeline compromise that produces logged-but-malicious binaries. v1.5's reproducible-build + recruited reviewer pool + F-Droid rebuild attestation closes this gap with binary-equivalence multi-party verification.
+**v1 supply-chain gap (acknowledged per D0015 and D0013 pilot consent):** developer source review does not detect a compromised build pipeline producing a malicious binary from clean source. As intended in the v1 design, the release log + witness cosignatures are meant to detect _broad_ attacks (an adversary cannot deliver a signed update without a corresponding Sigsum entry) but would not catch a build-pipeline compromise that produces logged-but-malicious binaries. As of v0.1.0 this Sigsum half runs against synthetic roots with the production log and witness pool funding-gated, so the detection property is not yet live. v1.5's reproducible-build + recruited reviewer pool + F-Droid rebuild attestation closes this gap with binary-equivalence multi-party verification.
 
-**The witness pool _is_ a v1 commitment** even though the recruited reviewer pool defers. Per D0015, witness cosignatures via the partner pool are the v1 mechanism for detecting Sigsum log tampering by the log operator; recruitment is conditional on Q5 partner outreach per §8.6.
+**The witness pool is a v1 commitment** even though the recruited reviewer pool defers. Per D0015, witness cosignatures via the partner pool are the planned v1 mechanism for detecting Sigsum log tampering by the log operator — not yet established as of v0.1.0; the pool is funding-gated and recruitment is conditional on Q5 partner outreach per §8.6.
 
 ---
 
@@ -576,8 +574,8 @@ flowchart LR
         BuildAPK["Build APK<br/>(reproducible-build pipeline at v1.5)"]
         SignAPK["Sign APK<br/>(long-lived key + Sigstore identity)"]
         LogRekor["Log to Rekor"]
-        LogSigsum["Log to Sigsum<br/>(witness cosignatures)"]
-        Publish["Publish to F-Droid + Accrescent + direct download"]
+        LogSigsum["Log to Sigsum<br/>(witness cosignatures)<br/>(TARGET v1; synthetic roots at v0.1.0, production log + witness pool funding-gated)"]
+        Publish["Publish to F-Droid + Accrescent + direct download<br/>(planned v1 channels; v0.1.0 ships via GitHub Releases only)"]
 
         TagRelease --> BuildAPK --> SignAPK --> LogRekor --> LogSigsum --> Publish
     end
@@ -589,10 +587,12 @@ flowchart LR
     classDef devWork stroke:#0a0,stroke-width:2px
     classDef ci stroke:#06c
     classDef release stroke:#80c,stroke-width:2px
+    classDef v15 stroke-dasharray: 5 5
 
     class Code,UnitTest,IntegTest,DiffTest,StaticAnal,Format,SignCommit devWork
     class CIRun,ReviewQueue ci
-    class TagRelease,BuildAPK,SignAPK,LogRekor,LogSigsum,Publish release
+    class TagRelease,BuildAPK,SignAPK,LogRekor,Publish release
+    class LogSigsum v15
 ```
 
 **v1 self-audit and tooling commitments (per §8.5).** During implementation: property-based testing for the trust-graph CRDT and operation envelope; fuzz testing for COSE/CBOR parsers, Shamir reconstruction, and the capability-token verifier; known-answer tests matching test vectors from RFC 8032 / RFC 9052; differential testing against the SimpleX reference where Cairn reuses its protocol semantics; continuous integration on every commit; clippy + equivalent Kotlin static analysis.

@@ -1,7 +1,7 @@
 # Release runbook — building, signing, and publishing a Cairn APK
 
 **Status:** Draft v1 (Phase 1: GitHub Releases, out-of-band signing)
-**Last reviewed:** 2026-06-10
+**Last reviewed:** 2026-06-11
 **Owner:** Maintainer (developer)
 **Scope:** How a downloadable, installable, signed Cairn APK is produced and
 published on GitHub Releases — the end-to-end producer procedure.
@@ -159,6 +159,13 @@ and is recorded here so it is not re-raised.
 > pre-release** carrying the synthetic-roots affordance — acceptable only while
 > the verifier is unwired and the release is labeled accordingly (the README
 > status banner: _"do not rely on it for safety yet"_).
+>
+> v0.1.0 was cut with synthetic-release-roots still compiled into the shipped
+> cdylib (the cargoNdk feature list is global; D0041 §6.1). It is inert by
+> construction — the feature only behaviour-gates the caller-roots constructor,
+> which no install path invokes, and the production `new_pinned` path errors
+> regardless because `PRODUCTION_ROOTS` is empty — but it must be scoped to the
+> debug variant before any build whose verifier is relied upon.
 
 ---
 
@@ -267,7 +274,7 @@ arm64-v8a only; GrapheneOS-on-Pixel target.
    `sha256sum -c cairn-0.1.0.apk.sha256`
 2. Signing certificate — confirm the SHA-256 matches the published fingerprint:
    `apksigner verify --print-certs cairn-0.1.0.apk`
-   Expected signer SHA-256: `AA:BB:…` ← published once, in the README
+   Expected signer SHA-256: (copy the canonical value from the README — do not retype)
 
 ### Changes
 

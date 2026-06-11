@@ -31,11 +31,15 @@ cannot be recovered, so write it down somewhere safe. You can optionally enable
 <details>
 <summary>🔍 Why no account or server?</summary>
 
-Cairn has no central server holding accounts, so there is nothing to subpoena,
-breach, or use to tie your identity to a phone number. Keys are generated and
-kept on the device (in secure hardware — see §2), and messages route
-peer-to-peer over Tor. The trade-off is the one the screen warns about: no
-server also means no password reset. See the [design brief](design-brief.md).
+Cairn has no central account server, so there is no account database to breach
+or subpoena and nothing tying your identity to a phone number. Keys are
+generated and kept on the device (in secure hardware — see
+[§2](#2-your-identity--verifying-contacts)). Messages route over Tor through
+SimpleX's identifier-less relay queues: relays forward your traffic but never
+see a phone number, an account, or your contact list, and each relay sees only
+the messages passing through it. The trade-off is the one the screen warns
+about: no server also means no password reset. See the
+[design brief](design-brief.md).
 
 </details>
 
@@ -120,7 +124,8 @@ Open one to chat. Messages are end-to-end encrypted and routed over Tor:
 <img src="images/user-guide/09-conversation.png" width="280" alt="A conversation with messages" />
 
 The **"Unverified — tap Verify"** banner stays until you've verified the contact
-(§2). Verify before treating a conversation as trusted.
+(see [§2](#2-your-identity--verifying-contacts)). Verify before treating a
+conversation as trusted.
 
 ## Recovery
 

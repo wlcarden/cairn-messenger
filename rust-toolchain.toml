@@ -8,7 +8,7 @@
 #   (2) the high-level simploxide-client (`const Duration::from_hours`, ~1.87+);
 #   (3) the `time` RUSTSEC-2026-0009 fix (time >= 0.3.47 needs 1.88).
 # Re-validation: all four CI gates (clippy --all-targets --all-features
-# -D warnings / test / doc / fmt) pass on 1.88 across all 14 crates. Churn was
+# -D warnings / test / doc / fmt) pass on 1.88 across all 15 crates. Churn was
 # minimal: dropped a removed `clippy::match_on_vec_items` allow (now covered by
 # indexing_slicing), reworded a `doc_link_code` doc comment, and allowed the
 # nursery `format_push_string` (a tracked style follow-up). 1.85 was the prior

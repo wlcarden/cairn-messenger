@@ -5,15 +5,18 @@ This policy follows Cairn's published Researcher Safe Harbor commitment per
 and the CVE-response runbook per
 [`docs/runbooks/cve-response.md`](docs/runbooks/cve-response.md).
 
-**Status:** Cairn is pre-pilot and pre-audit and has not shipped any code to
-end users (there are no releases). This policy applies to pre-pilot
-implementation work; it becomes operationally load-bearing once v1 ships to
-pilot users.
+**Status:** Cairn is alpha and pre-audit. v0.1.0 is published as a closed-pilot
+pre-release on GitHub Releases to a planned 10–15 user cohort; it is not
+distributed through public app stores, and the pre-pilot audit (D0011) has not
+happened. This disclosure policy is **in force now** — for v0.1.0 and for
+ongoing implementation work.
 
 ## Reporting a vulnerability
 
-Email `security@cairn-project.org` (placeholder; the operational email and
-PGP key will be published before v1 alpha).
+Report privately via GitHub's **private vulnerability reporting** — the
+repository's **Security** tab → **Report a vulnerability**. A dedicated security
+inbox and PGP key are not yet operational; **do not** send vulnerability details
+to `security@cairn-project.org` until this notice is removed.
 
 Include:
 
