@@ -170,6 +170,8 @@ fuzz/       cargo-fuzz harnesses (libFuzzer)
   engineering scope, and the operational/governance/funding posture.
 - **[`docs/install-guide.md`](docs/install-guide.md)** — closed-pilot install
   guide: getting the app onto a GrapheneOS Pixel, with build verification.
+- **[`docs/user-guide.md`](docs/user-guide.md)** — using the app: first run,
+  identity & verification, pairing by QR, and conversations (with screenshots).
 - **[`docs/decisions/`](docs/decisions/)** — every architectural and
   operational decision as an ADR with rationale, alternatives, and
   consequences (D0001–D0042).

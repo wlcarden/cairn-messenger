@@ -117,7 +117,7 @@ path. See [Releases & verification](../README.md#releases--verification).)
 
 When Cairn opens for the first time it guides you through creating your identity
 and setting up recovery with your peers. A full screen-by-screen walkthrough is
-in the **User Guide** (in progress) — go through first-run setup **with your
+in the [User Guide](user-guide.md) — go through first-run setup **with your
 facilitator**, who ensures your recovery network is configured correctly.
 
 ---
