@@ -95,6 +95,12 @@ extracted from the SimpleX APK's `lib/arm64-v8a/` and provided at build time
 (never committed). Place it so that `<dir>/arm64-v8a/libsimplex.so` exists, and
 pass `<dir>` as `cairnSimplexLibsDir` and `<dir>/arm64-v8a` as `SXCRT` (below).
 
+> [!TIP]
+> If a prior debug build exists but the provided source dir is misplaced, the
+> library can be recovered from the build tree —
+> `android/app/build/intermediates/merged_jni_libs/debug/…/arm64-v8a/libsimplex.so`
+> — and copied back into a clean `<dir>/arm64-v8a/`.
+
 ---
 
 ## Versioning discipline
@@ -123,32 +129,36 @@ mistaken for a shipped build.
 
 ## Release-build gates (read before the first real release)
 
-Two properties of the **debug** build pipeline must change for a build that is
-actually relied upon. Both are currently latent — inert only because the
-on-device verifier is not yet wired into an install path — and both are tracked
-here as release gates rather than silently shipped.
+One build property must change before a build is actually relied upon. A second
+concern raised in an earlier draft was **disproven by a validated release build**
+and is recorded here so it is not re-raised.
 
-1. **Drop `synthetic-release-roots`.** The shipped cdylib is currently
+1. **Drop `synthetic-release-roots`** (open gate). The shipped cdylib is
    cross-compiled with `--features uniffi-bindings,synthetic-release-roots`
-   (`android/app/build.gradle.kts`, the `cargoNdk` block). The
-   `synthetic-release-roots` feature lets the release verifier accept
-   _caller-supplied_ roots (a test affordance, D0041 §6.1). A real release must
-   build the cdylib **without** it, so only the baked-in pinned-roots path
-   (`new_pinned`) remains. The build file's own comment flags this: _"A
-   production build must OMIT it … scope this to the debug variant only."_
-2. **Build the native core in release profile.** cargo-ndk currently
-   cross-compiles the Rust core in debug profile. A real release should compile
-   it optimized (release profile) — smaller, faster, and the profile under
-   which the constant-time discipline (dudect, D0018) is validated.
+   (`android/app/build.gradle.kts`, the `cargoNdk` block). That feature lets the
+   release verifier accept _caller-supplied_ roots (a test affordance, D0041
+   §6.1). A real release must build the cdylib **without** it, so only the
+   baked-in pinned-roots path (`new_pinned`) remains. The build file's own
+   comment flags this: _"A production build must OMIT it … scope this to the
+   debug variant only."_ Latent today — inert only because the on-device
+   verifier is not yet wired into an install path — it must be scoped to the
+   debug variant before any build whose verifier is relied upon.
+2. **Release-profile native code** (already handled — validated). An earlier
+   draft listed this as an open gate, on the inference that cargo-ndk built the
+   core in debug profile. A validated `assembleRelease` disproves it: the plugin
+   maps the Gradle `release` buildType to the Cargo **release** profile
+   (`buildCargoNdkRelease`), and the shipped `libcairn_uniffi.so` is the ~5.9 MB
+   release artifact from `target/aarch64-linux-android/release/`, not the
+   ~167 MB debug build. The `target/debug` references in `build.gradle.kts` are
+   the **host** bindgen/test builds, which are not shipped. No action needed.
 
 > [!NOTE]
-> Both gates are cargo-ndk plugin wiring that must be validated on a machine
-> with the Android SDK/NDK + libsimplex (they cannot be build-tested in a
-> headless CI-less environment). Until they are wired and validated, a release
-> cut from this tree is a **pilot pre-release** of debug-profile native code
-> with the synthetic-roots affordance present — acceptable only while the
-> verifier is unwired and the release is labeled accordingly (the README status
-> banner: _"do not rely on it for safety yet"_).
+> The remaining gate (1) is cargo-ndk plugin wiring — per-variant feature
+> scoping that must be validated on a machine with the Android SDK/NDK +
+> libsimplex. Until it is scoped, a release cut from this tree is a **pilot
+> pre-release** carrying the synthetic-roots affordance — acceptable only while
+> the verifier is unwired and the release is labeled accordingly (the README
+> status banner: _"do not rely on it for safety yet"_).
 
 ---
 
@@ -167,9 +177,15 @@ From a clean checkout of the merged commit:
 
 ```sh
 cd android
+# cargo-ndk locates the NDK via ANDROID_NDK_HOME — Gradle finds the SDK through
+# local.properties, but the cross-compile does NOT inherit that. Point it at the
+# NDK version build.gradle.kts pins, or the cargo step fails "Could not find any
+# NDK." --no-daemon ensures SXCRT propagates to the cargo subprocess.
+export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"   # or an absolute path
 SXCRT=<libsimplex-dir>/arm64-v8a \
-  ./gradlew :app:assembleRelease -PcairnSimplexLibsDir=<libsimplex-dir>
-# -> app/build/outputs/apk/release/app-release-unsigned.apk
+  ./gradlew :app:assembleRelease \
+    -PcairnSimplexLibsDir=<libsimplex-dir> --no-daemon
+# -> app/build/outputs/apk/release/app-release-unsigned.apk  (≈216 MB, arm64-v8a)
 ```
 
 The output is **arm64-v8a only** (D0026 §12 — there is no x86_64 libsimplex);
