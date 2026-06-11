@@ -27,15 +27,17 @@ social recovery with no centralized trustees, and a transparency-anchored
 release-security stack.
 
 > [!WARNING]
-> **Status: alpha, active development, not released.** Cairn is built **for** a closed pilot (a planned
-> 10–15 user cohort), pre-audit, and not yet distributed through
-> any channel. The cryptographic core and the Android app run, and an
-> end-to-end message round-trip has been demonstrated on two physical
-> GrapheneOS Pixels over bundled Tor — but individual defenses are at varying
-> maturity (several are PARTIAL; see
-> [`docs/implementation-status.md`](docs/implementation-status.md)), the
-> pre-pilot audit (D0011) has not happened, and there are no releases.
-> **Do not rely on it for safety yet.**
+> **Status: alpha, pre-audit — v0.1.0 pilot pre-release.** Cairn is built **for**
+> a closed pilot (a planned 10–15 user cohort). v0.1.0 is published as a **pilot
+> pre-release** on [GitHub
+> Releases](https://github.com/wlcarden/cairn-messenger/releases) for the pilot
+> cohort and for transparency — it is **not** distributed through public app
+> stores (Google Play, F-Droid, Accrescent). The cryptographic core and the
+> Android app run, and an end-to-end message round-trip has been demonstrated on
+> two physical GrapheneOS Pixels over bundled Tor — but individual defenses are
+> at varying maturity (several are PARTIAL; see
+> [`docs/implementation-status.md`](docs/implementation-status.md)), and the
+> pre-pilot audit (D0011) has not happened. **Do not rely on it for safety yet.**
 
 ## Who it's for (stated honestly)
 
@@ -191,25 +193,32 @@ fuzz/       cargo-fuzz harnesses (libFuzzer)
 
 Cairn ships an on-device release **verifier** (`cairn-sigstore-verify`) that
 implements the full Sigstore-native stack — Fulcio identity, Rekor inclusion,
-embedded SCT, and a Sigsum-anchored release log — so that, once releases exist,
-an installed artifact can be checked against transparency-log evidence rather
-than trusted blindly. Its components (Rekor inclusion, Fulcio chain validation,
+embedded SCT, and a Sigsum-anchored release log — so that an installed artifact
+can be checked against transparency-log evidence rather than trusted blindly. Its components (Rekor inclusion, Fulcio chain validation,
 embedded SCT) are tested against **real** Sigstore production/staging data; the
 end-to-end `verify_release` orchestration and the Sigsum half currently run
 against **synthetic** roots, and the verifier is not yet wired into an APK
-install/update flow (there are no releases yet). The keyless CI signing workflow
+install/update flow. The keyless CI signing workflow
 lives at
 [`.github/workflows/release-sign.yml`](.github/workflows/release-sign.yml), with
 an operator guide at
 [`docs/runbooks/2b-keyless-release-sign.md`](docs/runbooks/2b-keyless-release-sign.md).
 The recruited Sigsum log and witness pool is funding-gated.
 
-Releases will be published as signed APKs on [GitHub
+Releases are published as signed APKs on [GitHub
 Releases](https://github.com/wlcarden/cairn-messenger/releases); the
 producer-side procedure — building, out-of-band signing, and publishing — is
 documented in [`docs/runbooks/release.md`](docs/runbooks/release.md). Until the
 on-device verifier is wired into the install path, a downloaded APK is verified
-by its published SHA-256 checksum and APK-signature certificate fingerprint.
+by its published SHA-256 checksum and the **release signing-key fingerprint** —
+the durable anchor, identical for every release:
+
+```
+4E:5B:C1:FE:13:17:92:23:E7:36:10:5B:E6:52:AF:D7:EB:0C:97:C8:6B:20:60:A4:A8:58:04:1C:7A:7C:BB:8E
+```
+
+See [`docs/install-guide.md`](docs/install-guide.md) for how a pilot user
+verifies a download.
 
 ## Contributing
 
