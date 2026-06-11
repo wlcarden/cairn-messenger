@@ -471,4 +471,4 @@ This document is accepted (revised). The matching `cairn-simplex-adapter` crate 
 - [D0025 — cairn-tor-transport](D0025-cairn-tor-transport.md) — the C-Tor proxy the CLI sidecar's traffic routes through
 - [design brief §5.4 Communications Protocols](../design-brief.md) — SimpleX-as-protocol; double-ratchet derivative properties
 - [design brief §3.3](../design-brief.md) — size-bin padding; group-membership minimization
-- [docs/network-transport-research.md](../network-transport-research.md) — superseded by D0020 §1 for the integration model (see that doc's corrective header)
+- the network-transport research (in git history) — superseded by D0020 §1 for the integration model (see that doc's corrective header)

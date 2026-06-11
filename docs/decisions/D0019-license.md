@@ -5,7 +5,7 @@
 
 ## Context
 
-Sprint 3 of the consolidated external-reads triage (per `docs/reviews/external-reads-consolidated.md`) committed the project to making engineering-foundation decisions before partner-conversation outreach (per the MDC pathway: working code first, then partner conversations against code-as-evidence). The license decision is on the critical path because:
+Sprint 3 of the consolidated external-reads triage (per `docs/archive/reviews/external-reads-consolidated.md`) committed the project to making engineering-foundation decisions before partner-conversation outreach (per the MDC pathway: working code first, then partner conversations against code-as-evidence). The license decision is on the critical path because:
 
 - **Cargo workspace baseline** requires a `license` field in `Cargo.toml` per workspace metadata
 - **`cargo deny` license allowlist** requires knowing which licenses are compatible with the project's own choice
@@ -164,7 +164,7 @@ The pilot consent protocol per D0013 includes a license-disclosure section: pilo
 
 The following brief sections are updated to reference the license decision:
 
-- **§1.4 v1 scope**: add "the project ships under AGPL-3.0-only per [D0019](decisions/D0019-license.md); source code is published on a public repository under that license"
+- **§1.4 v1 scope**: add "the project ships under AGPL-3.0-only per [D0019](D0019-license.md); source code is published on a public repository under that license"
 - **§4.2 minimal-project-operated-infrastructure principle**: add license-rationale paragraph explaining AGPL-3.0 alignment with the principle
 - **§5.5 release security**: reference license-disclosure as part of the signed release content
 - **§7.1 release sequence**: no changes (license applies uniformly across releases)
@@ -197,5 +197,5 @@ These outcomes are acceptable trade-offs for the protection AGPL-3.0 provides ag
 - Signal-Android GPL-3.0 precedent: <https://github.com/signalapp/Signal-Android/blob/main/LICENSE>
 - [D0018](D0018-engineering-foundation.md) — Sprint 3 cryptographic library and Rust ecosystem foundation (consumes this license decision in workspace baseline)
 - [D0020](D0020-integration-architecture.md) — Sprint 3 SimpleX + Tor + FFI integration architectures (consumes this license decision in SimpleX sidecar isolation rationale)
-- [docs/reviews/external-reads-consolidated.md](../reviews/external-reads-consolidated.md) — Sprint 3 origin
+- [docs/archive/reviews/external-reads-consolidated.md](../archive/reviews/external-reads-consolidated.md) — Sprint 3 origin
 - [docs/design-brief.md](../design-brief.md) §2.1, §2.3, §4.2, §10.4 — positioning context informing license rationale

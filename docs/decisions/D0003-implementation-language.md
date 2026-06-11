@@ -109,9 +109,9 @@ The boundary decision (what's in Rust vs. Kotlin) is reversible at small cost du
 
 ## References
 
-- [docs/section-5-review.md](../section-5-review.md) — Section 5 adversarial review; findings F2, F4, F7, F8, F10, F23 directly motivate this decision.
+- [docs/section-5-review.md](../archive/section-5-review.md) — Section 5 adversarial review; findings F2, F4, F7, F8, F10, F23 directly motivate this decision.
 - [docs/open-questions.md](../open-questions.md) Q8 — original deferred technical-choice question, now partially resolved.
-- [docs/handoff.md](../handoff.md) — prior conversation Q8 noting Kotlin native as the current preference; this decision re-evaluates that preference against the review findings.
+- the initial design conversation (in git history) — prior conversation Q8 noting Kotlin native as the current preference; this decision re-evaluates that preference against the review findings.
 - UniFFI documentation: https://mozilla.github.io/uniffi-rs/
 - Relevant Rust crates: `zeroize`, `secrecy`, `subtle`, `ed25519-dalek`, `coset`, `rs-merkle`, `proptest`.
 - Architectural precedents: Signal's libsignal (Rust core, multi-platform UI), the Matrix Rust SDK, the Briar project's increasing Rust adoption for cryptographic primitives.

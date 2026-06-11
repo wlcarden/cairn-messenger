@@ -139,7 +139,7 @@ for the device-build pipeline.
 ```
 crates/     15-crate Rust workspace (the cryptographic + protocol core)
 android/    Kotlin + Jetpack Compose app (GrapheneOS-on-Pixel target)
-docs/       design brief, 41 ADRs, status, diagrams, runbooks, reviews
+docs/       design brief, 41 ADRs, status, diagrams, runbooks, archive
 fuzz/       cargo-fuzz harnesses (libFuzzer)
 .github/    CI gates + the keyless release-sign workflow
 ```

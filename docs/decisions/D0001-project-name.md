@@ -7,7 +7,7 @@
 
 The project needed a working name before further documentation, partner outreach, decision-file accumulation, or any code-naming work could proceed without placeholder churn. The placeholder `[Project Name TBD]` was propagating through working documents and was the highest-leverage small unblocking decision available.
 
-Naming constraints captured in the prior conversation (handoff.md:214):
+Naming constraints captured in the prior conversation (the initial design conversation):
 
 - Avoid telegraphing the use case (no Secure-, Crypt-, Shield-, Vault-, etc.).
 - Work across languages — pronounceable, no English-only idioms or puns.
@@ -42,11 +42,11 @@ The metaphorical fit is direct. The trust graph operates exactly as a chain of c
 
 **Lichen**. Symbiotic organism, extreme resilience under hostile conditions. Strong metaphorical fit. Ruled out by pronunciation drift across languages (English /ˈlaɪ.kən/ vs. German /ˈliç.ən/ and several intermediate forms).
 
-Full candidate analysis: [docs/name-candidates.md](../name-candidates.md).
+Full candidate analysis: the name-candidates brainstorm (in git history).
 
 ## Consequences
 
-**Renames performed.** [Project Name TBD] replaced in docs/design-brief.md title. Historical artifact in docs/handoff.md preserves the placeholder to maintain provenance of the conversation that established the constraint set.
+**Renames performed.** [Project Name TBD] replaced in the docs/design-brief.md title. The original placeholder and the constraint-set provenance are preserved in git history (the initial design conversation).
 
 **Open question Q2 closed.** docs/open-questions.md updated to reference this decision. The remaining items moved out of Q2 into a follow-up list: domain availability check (.org, .com), package-namespace check (npm, PyPI, Maven, F-Droid), GitHub organization name availability, USPTO and EUIPO trademark search before any public launch.
 
@@ -60,12 +60,12 @@ Full candidate analysis: [docs/name-candidates.md](../name-candidates.md).
 
 The dev-tooling collision is the only one in a domain that overlaps with this project's likely future audience. Mitigation: if the project ships and the Cairn Markdown editor remains active, the disambiguation will resolve naturally through scale differential. If both projects scale unexpectedly, the working name is reversible at low cost while documentation-only.
 
-**Reversibility.** The decision is recorded as a working name. Domain, package, and trademark verification have not yet been performed. If a verification finds a hard blocker, this decision is reversible: the documentation rename is a single search-and-replace, the decisions/ folder retains the rationale, and the alternative candidates remain documented in name-candidates.md.
+**Reversibility.** The decision is recorded as a working name. Domain, package, and trademark verification have not yet been performed. If a verification finds a hard blocker, this decision is reversible: the documentation rename is a single search-and-replace, the decisions/ folder retains the rationale, and the alternative candidates remain documented in git history.
 
 **Not addressed by this decision.** Pronunciation guidance for the design brief (whether to gloss the pronunciation parenthetically on first use), branding direction (typography, color palette), or any visual identity work. These are downstream and not gated by the working-name decision.
 
 ## References
 
-- [docs/name-candidates.md](../name-candidates.md) — full candidate set with metaphorical fit, phonetics, and collision analysis
+- the name-candidates brainstorm (in git history) — full candidate set with metaphorical fit, phonetics, and collision analysis
 - [docs/open-questions.md](../open-questions.md) — Q2 (now resolved) and follow-up verification items
-- handoff.md:214 — original naming constraints from prior conversation
+- the initial design conversation — original naming constraints from prior conversation

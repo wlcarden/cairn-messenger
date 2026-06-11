@@ -134,7 +134,7 @@ The structural-mitigation framing in §10.7 (mitigations remain at stated-intent
 
 ## References
 
-- [docs/architecture-simplification-review.md](../architecture-simplification-review.md) — F6 (the foundation-incorporation deferral case).
+- [docs/architecture-simplification-review.md](../archive/architecture-simplification-review.md) — F6 (the foundation-incorporation deferral case).
 - [docs/decisions/D0009-sudden-unavailability.md](D0009-sudden-unavailability.md) — partner advisory authority becomes permanent governance scaffold.
 - [docs/decisions/D0010-foundation-jurisdiction.md](D0010-foundation-jurisdiction.md) — jurisdictional analysis substrate the project acts on if trigger activates.
 - [docs/decisions/D0012-researcher-safe-harbor.md](D0012-researcher-safe-harbor.md) — Safe Harbor formalization timing reframes.

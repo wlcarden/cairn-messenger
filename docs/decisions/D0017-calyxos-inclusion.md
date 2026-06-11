@@ -5,7 +5,7 @@
 
 ## Context
 
-Q26 in [open-questions.md](../open-questions.md) surfaced the question whether CalyxOS should be added to v1's supported configuration alongside GrapheneOS-on-Pixel as the security baseline. The consolidated external-reads triage (`docs/reviews/external-reads-consolidated.md` X10 / P3) elevated Q26's resolution timing from "after pilot evidence" to "before formal pilot recruitment" because partner-organization evaluation of v1 facilitation feasibility depends on knowing the device baseline; pilot-recruitment math is materially different under GrapheneOS-only vs GrapheneOS-and-CalyxOS scope.
+Q26 in [open-questions.md](../open-questions.md) surfaced the question whether CalyxOS should be added to v1's supported configuration alongside GrapheneOS-on-Pixel as the security baseline. The consolidated external-reads triage (`docs/archive/reviews/external-reads-consolidated.md` X10 / P3) elevated Q26's resolution timing from "after pilot evidence" to "before formal pilot recruitment" because partner-organization evaluation of v1 facilitation feasibility depends on knowing the device baseline; pilot-recruitment math is materially different under GrapheneOS-only vs GrapheneOS-and-CalyxOS scope.
 
 This decision evaluates the four dimensions Q26 names: (a) which GrapheneOS-specific hardening properties Cairn depends on; (b) whether CalyxOS provides equivalent properties; (c) whether §3.4 trust-roots framing extends cleanly; (d) whether §5.5 release-security stack operates identically on CalyxOS.
 
@@ -82,7 +82,7 @@ The v1.5 broader-release evaluation (per §7.1) is a natural moment for re-evalu
 ## References
 
 - [open-questions.md](../open-questions.md) Q26 — the question this decision resolves
-- [docs/reviews/external-reads-consolidated.md](../reviews/external-reads-consolidated.md) X10 / P3 — the elevation of Q26 resolution timing to pre-pilot-recruitment
+- [docs/archive/reviews/external-reads-consolidated.md](../archive/reviews/external-reads-consolidated.md) X10 / P3 — the elevation of Q26 resolution timing to pre-pilot-recruitment
 - [docs/design-brief.md](../design-brief.md) §2.2 — Pixel-affordability precondition framing
 - [docs/design-brief.md](../design-brief.md) §3.4 — trust roots
 - [docs/decisions/D0004-v1-scope-cuts.md](D0004-v1-scope-cuts.md) — the single-OS architectural simplicity framing this decision reinforces

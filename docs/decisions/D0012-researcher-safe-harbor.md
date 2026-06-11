@@ -79,7 +79,7 @@ The decision is fully reversible at foundation incorporation. If the project cho
 
 ## References
 
-- [docs/sections-8-9-review.md](../sections-8-9-review.md) — F12.
+- [docs/sections-8-9-review.md](../archive/sections-8-9-review.md) — F12.
 - [docs/decisions/D0010-foundation-jurisdiction.md](D0010-foundation-jurisdiction.md) — foundation incorporation timeline that this decision interlocks with.
 - disclose.io Safe Harbor template: https://disclose.io
 - Bugcrowd "We Will Not Sue" model: https://www.bugcrowd.com/resources/levelup/standard-disclosure-terms/

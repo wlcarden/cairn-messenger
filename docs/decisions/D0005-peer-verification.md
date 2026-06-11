@@ -7,7 +7,7 @@
 
 The Section 5 adversarial review surfaced finding F1: the recovery flow's out-of-band verification is the load-bearing element of the compelled-unlock answer in D0002, the master-not-on-device property in 5.1, and the recovery-network-surface mitigation in 5.3. The mechanism was specified only as "peers are expected to" verify out-of-band before releasing shares, with no enforcement protocol. Under stress, peers will release shares to whoever can place a phone call with credible voice and context — and voice cloning is off-the-shelf in 2026 while contextual material exfiltrates with compelled unlock.
 
-Three mechanism options were considered (see [section-5-review.md F1](../section-5-review.md)): pre-shared peer challenges, delay-and-confirm protocol, two-peer cross-validation, or combinations.
+Three mechanism options were considered (see [section-5-review.md F1](../archive/section-5-review.md)): pre-shared peer challenges, delay-and-confirm protocol, two-peer cross-validation, or combinations.
 
 ## Decision
 
@@ -81,6 +81,6 @@ The mechanism can be revised in v1.x if pilot evidence shows specific failure mo
 
 ## References
 
-- [docs/section-5-review.md](../section-5-review.md) F1
+- [docs/section-5-review.md](../archive/section-5-review.md) F1
 - [docs/decisions/D0002-duress-profile.md](D0002-duress-profile.md) — the compelled-unlock answer this mechanism makes load-bearing
 - Prior art: similar delay-and-confirm patterns in cryptocurrency cold-wallet recovery (Trezor, Ledger); pre-shared challenge phrases in operational tradecraft (signal/countersign protocols).

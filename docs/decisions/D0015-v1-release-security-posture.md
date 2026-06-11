@@ -108,7 +108,7 @@ If subsequent evidence (pilot feedback, partner-organization conversations durin
 
 ## References
 
-- [docs/architecture-simplification-review.md](../architecture-simplification-review.md) — F4 (the single highest-leverage cut surfaced).
+- [docs/architecture-simplification-review.md](../archive/architecture-simplification-review.md) — F4 (the single highest-leverage cut surfaced).
 - [docs/decisions/D0004-v1-scope-cuts.md](D0004-v1-scope-cuts.md) — v1 scope cuts this decision extends.
 - [docs/decisions/D0008-volunteer-baseline-cadence.md](D0008-volunteer-baseline-cadence.md) — cadence decoupling from quorum formation.
 - [docs/decisions/D0011-audit-budget-and-timing.md](D0011-audit-budget-and-timing.md) — audit scope revision following this decision.

@@ -85,7 +85,7 @@ The placeholder structure is reversible at any time the project has consulted co
 
 ## References
 
-- [docs/sections-8-9-review.md](../sections-8-9-review.md) — F7, pattern P6; multi-reviewer convergence on the depth gap.
+- [docs/sections-8-9-review.md](../archive/sections-8-9-review.md) — F7, pattern P6; multi-reviewer convergence on the depth gap.
 - Software Freedom Conservancy: https://sfconservancy.org
 - Open Collective Foundation: https://opencollective.com
 - Code for Science & Society: https://codeforscience.org

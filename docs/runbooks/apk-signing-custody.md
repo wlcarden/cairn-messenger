@@ -169,7 +169,7 @@ The arrangement requires periodic test exercises to verify operational readiness
 
 ## References
 
-- `docs/reviews/external-reads-consolidated.md` — X4, M19 findings requiring this runbook
+- `docs/archive/reviews/external-reads-consolidated.md` — X4, M19 findings requiring this runbook
 - `docs/design-brief.md` §5.5 — multi-party APK signing-key custody commitment
 - `docs/decisions/D0009-sudden-unavailability.md` — sudden-unavailability contingency
 - `docs/decisions/D0015-v1-release-security-posture.md` — emergency-release path mechanics

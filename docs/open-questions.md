@@ -56,7 +56,7 @@ These checks gate the transition from working name to committed name, not from p
 - Per-jurisdiction profile feed content (v1 ships 2-3 profiles based on pilot context — which jurisdictions?).
 - Localization priority (if pilot users are predominantly one language other than English, v1.x localization picks itself).
 
-**Next step.** Begin informal validation conversations with candidate communities during documentation phase (handoff.md:383 recommends parallel outreach). Document candidates here once identified; pilot scope ceases to be hypothetical at that point.
+**Next step.** Begin informal validation conversations with candidate communities during documentation phase (the initial design conversation recommends parallel outreach). Document candidates here once identified; pilot scope ceases to be hypothetical at that point.
 
 ---
 
