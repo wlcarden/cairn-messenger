@@ -134,6 +134,25 @@ to `aarch64-linux-android` (arm64-v8a only; NDK r28+, 16 KB page size) and bundl
 GrapheneOS; see [`docs/decisions/D0028-android-shell-build-pipeline.md`](docs/decisions/D0028-android-shell-build-pipeline.md)
 for the device-build pipeline.
 
+## Installing (closed pilot)
+
+Cairn v1 is a **facilitator-supported closed pilot** on GrapheneOS-on-Pixel, not
+a public self-serve install (see
+[Who it's for](#who-its-for-stated-honestly)). Pilot participants install with a
+facilitator who helps verify the build and configure recovery; the full
+non-technical walkthrough is [`docs/install-guide.md`](docs/install-guide.md).
+
+1. Download `cairn-<version>.apk` and its `.sha256` from
+   [Releases](https://github.com/wlcarden/cairn-messenger/releases).
+2. **Verify before installing** — `sha256sum -c cairn-<version>.apk.sha256`, and
+   confirm the signing-certificate fingerprint matches (via
+   `apksigner verify --print-certs`):
+   `4E:5B:C1:FE:13:17:92:23:E7:36:10:5B:E6:52:AF:D7:EB:0C:97:C8:6B:20:60:A4:A8:58:04:1C:7A:7C:BB:8E`
+3. Open the `.apk` on your GrapheneOS Pixel and install.
+
+> [!WARNING]
+> Alpha, pre-audit — **do not rely on it for safety yet.**
+
 ## Repository layout
 
 ```
@@ -149,6 +168,8 @@ fuzz/       cargo-fuzz harnesses (libFuzzer)
 - **[`docs/design-brief.md`](docs/design-brief.md)** — the substantive design
   brief: executive summary, problem statement, threat model, architecture,
   engineering scope, and the operational/governance/funding posture.
+- **[`docs/install-guide.md`](docs/install-guide.md)** — closed-pilot install
+  guide: getting the app onto a GrapheneOS Pixel, with build verification.
 - **[`docs/decisions/`](docs/decisions/)** — every architectural and
   operational decision as an ADR with rationale, alternatives, and
   consequences (D0001–D0042).
