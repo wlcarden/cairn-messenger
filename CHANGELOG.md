@@ -15,6 +15,9 @@ signed release:
 - Design-level changes are tracked in the design brief's own changelog
   ([`docs/design-brief.md`](docs/design-brief.md)) and in the architecture
   decision records ([`docs/decisions/`](docs/decisions/)).
+- The procedure for cutting a release — building, out-of-band signing, and
+  publishing the signed APK on GitHub Releases — is documented in
+  [`docs/runbooks/release.md`](docs/runbooks/release.md).
 
 The first dated entry here will accompany the first transparency-anchored
 release.

@@ -129,7 +129,7 @@ cargo run -p cairn-release -- verify --bundle /tmp/rel/release-bundle.cbor --roo
 ```
 
 The **Android app** (in [`android/`](android/)) cross-compiles the Rust core
-to `aarch64-/x86_64-linux-android` (NDK r28+, 16 KB page size) and bundles
+to `aarch64-linux-android` (arm64-v8a only; NDK r28+, 16 KB page size) and bundles
 `tor` + the SimpleX runtime. It is built and validated on physical Pixels on
 GrapheneOS; see [`docs/decisions/D0028-android-shell-build-pipeline.md`](docs/decisions/D0028-android-shell-build-pipeline.md)
 for the device-build pipeline.
@@ -156,8 +156,9 @@ fuzz/       cargo-fuzz harnesses (libFuzzer)
   honest reconciliation of _what is actually implemented_ against what the
   brief promises (IMPLEMENTED / PARTIAL / ASPIRATIONAL / DEFERRED), with code
   references. Read this before trusting any claim above.
-- **[`docs/runbooks/`](docs/runbooks/)** — operator runbooks (keyless
-  release-signing, CVE response, multi-party APK-key custody).
+- **[`docs/runbooks/`](docs/runbooks/)** — operator runbooks (the release
+  process, keyless release-signing, CVE response, multi-party APK-key
+  custody).
 - **[`docs/open-questions.md`](docs/open-questions.md)** — the open-questions
   register (Q1–Q27).
 - **[`metrics.md`](metrics.md)** — the empirical engineering-cadence tracker
@@ -179,6 +180,13 @@ lives at
 an operator guide at
 [`docs/runbooks/2b-keyless-release-sign.md`](docs/runbooks/2b-keyless-release-sign.md).
 The recruited Sigsum log and witness pool is funding-gated.
+
+Releases will be published as signed APKs on [GitHub
+Releases](https://github.com/wlcarden/cairn-messenger/releases); the
+producer-side procedure — building, out-of-band signing, and publishing — is
+documented in [`docs/runbooks/release.md`](docs/runbooks/release.md). Until the
+on-device verifier is wired into the install path, a downloaded APK is verified
+by its published SHA-256 checksum and APK-signature certificate fingerprint.
 
 ## Contributing
 
