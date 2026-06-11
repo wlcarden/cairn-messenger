@@ -47,7 +47,7 @@ android {
         minSdk = 31
         targetSdk = 34
         versionCode = 1
-        versionName = "0.1.0-dev"
+        versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Restrict packaged native libs to **arm64-v8a only** (D0026 §12):
