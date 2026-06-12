@@ -188,6 +188,9 @@ fuzz/       cargo-fuzz harnesses (libFuzzer)
   honest reconciliation of _what is actually implemented_ against what the
   brief promises (IMPLEMENTED / PARTIAL / ASPIRATIONAL / DEFERRED), with code
   references. Read this before trusting any claim above.
+- **[`docs/REVIEW.md`](docs/REVIEW.md)** — a one-page scope for security
+  reviewers and audit funders: the priority cryptographic targets, what is in
+  and out of scope, and where each construction lives.
 - **[`docs/runbooks/`](docs/runbooks/)** — operator runbooks (the release
   process, keyless release-signing, CVE response, multi-party APK-key
   custody).
@@ -244,6 +247,9 @@ Report vulnerabilities privately per [`SECURITY.md`](SECURITY.md) —
 partners are labs structured to disclose rather than sell (Citizen Lab,
 Amnesty International Security Lab, Access Now, EFF Threat Lab); these are
 candidate relationships, not yet established.
+
+Scoping a cryptographic review? [`docs/REVIEW.md`](docs/REVIEW.md) lists the
+priority targets and what is in scope.
 
 ## License
 

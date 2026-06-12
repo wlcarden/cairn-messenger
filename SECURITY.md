@@ -11,6 +11,10 @@ distributed through public app stores, and the pre-pilot audit (D0011) has not
 happened. This disclosure policy is **in force now** — for v0.1.0 and for
 ongoing implementation work.
 
+**Scoping a review?** See [`docs/REVIEW.md`](docs/REVIEW.md) for the priority
+cryptographic targets, what is in and out of scope, and where each construction
+lives in the tree.
+
 ## Reporting a vulnerability
 
 Report privately via GitHub's **private vulnerability reporting** — the
