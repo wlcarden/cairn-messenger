@@ -51,17 +51,17 @@ Any drift in canonical CBOR encoding, header construction, `Sig_structure` order
 
 The JSON files are the canonical reference format consumed by:
 
-- `veraison/go-cose` (Go) — deferred until Go toolchain lands in CI per D0021 §6
+- `veraison/go-cose` (Go) — **landed**: the harness in [`../../interop/go-cose/`](../../interop/go-cose/) (CI job `go-cose-interop`)
 - `pycose` (Python) — academic / IETF audit cross-check
 - `laurencelundblade/t_cose` (C) — embedded-focused validation
 
-When the Go CI lane lands, a separate Go program reads each JSON and verifies:
+The Go cross-check is implemented in [`../../interop/go-cose/interop_test.go`](../../interop/go-cose/interop_test.go). For each vector it:
 
-1. `payload_cbor_hex` decodes to the documented schema fields
-2. `Sig_structure` reconstruction from the documented intermediates produces `sig_structure_cbor_hex`
-3. `envelope_cbor_hex` decodes + verifies under the documented pubkey + AAD
+1. derives the signing pubkey from `signing_key_seed_hex`
+2. decodes `envelope_cbor_hex` via `veraison/go-cose` and checks the payload matches `payload_cbor_hex`
+3. verifies the Ed25519 signature under that pubkey + `external_aad_hex` (a divergent `Sig_structure` would fail here), and confirms a single-byte tamper fails
 
-Until then the Rust-side tests are the source of truth; the JSON files document the wire format for future cross-implementation verifiers.
+The Rust-side tests remain the source of truth for every pinned intermediate; the Go harness is the independent-implementation oracle per D0018 §2.5.
 
 ## Adding new vectors
 

@@ -908,11 +908,11 @@ mod proptests {
 /// role per D0021 §2.3 — both must agree that Cairn-emitted bytes are
 /// well-formed `COSE_Sign1` envelopes with valid signatures.
 ///
-/// The Go-side `veraison/go-cose` check is deferred until the Go
-/// toolchain is set up in CI; the harness will read fixture files
-/// emitted from a future `cairn-envelope` example binary. Until
-/// then, the coset cross-check below provides the v1 interop
-/// evidence at the Rust side.
+/// The Go-side `veraison/go-cose` check is implemented in
+/// `interop/go-cose/`: it reads the pinned `tests/vectors/*.json` and
+/// verifies each envelope under go-cose (the `go-cose-interop` CI job).
+/// The coset cross-check below is the in-crate Rust-side oracle; together
+/// they satisfy the D0018 §2.4 interop gate.
 #[cfg(test)]
 mod interop_tests {
     use super::*;
