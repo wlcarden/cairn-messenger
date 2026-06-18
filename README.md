@@ -181,6 +181,11 @@ fuzz/       cargo-fuzz harnesses (libFuzzer)
   guide: getting the app onto a GrapheneOS Pixel, with build verification.
 - **[`docs/user-guide.md`](docs/user-guide.md)** — using the app: first run,
   identity & verification, pairing by QR, and conversations (with screenshots).
+- **Pilot handbooks** — for the facilitator-supported pilot:
+  [`facilitator-handbook.md`](docs/facilitator-handbook.md) (provisioning and
+  support), [`peer-recovery-handbook.md`](docs/peer-recovery-handbook.md) (for
+  people who hold a recovery share), and
+  [`after-seizure.md`](docs/after-seizure.md) (if a device is taken).
 - **[`docs/decisions/`](docs/decisions/)** — every architectural and
   operational decision as an ADR with rationale, alternatives, and
   consequences (D0001–D0042; D0039 unallocated).

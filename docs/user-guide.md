@@ -131,14 +131,18 @@ conversation as trusted.
 
 If you lose your device you can restore your identity from shares held by your
 peers, and you can entrust shares to verified contacts to help them later. These
-social-recovery flows are set up **with your facilitator** as part of the pilot,
-and a full walkthrough will be added here. (A contact's recovery options appear
-once that contact is **verified**.)
+social-recovery flows are set up **with your facilitator** as part of the pilot.
+For the role-specific details see the
+[peer-recovery handbook](peer-recovery-handbook.md) (what someone who holds a
+share does) and the [after-seizure guide](after-seizure.md) (if your device is
+taken); facilitators have the [facilitator handbook](facilitator-handbook.md). A
+step-by-step screen walkthrough will be added here. (A contact's recovery
+options appear once that contact is **verified**.)
 
 ## What this guide doesn't cover yet
 
-This is an early guide for a pre-audit pilot. Not yet documented: the full
-recovery walkthrough, vouching and introductions between contacts, and
+This is an early guide for a pre-audit pilot. Not yet documented here: the
+step-by-step recovery screens, vouching and introductions between contacts, and
 quick-unlock management. For what is actually implemented vs. planned, see
 [`implementation-status.md`](implementation-status.md).
 
