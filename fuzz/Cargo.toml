@@ -34,11 +34,19 @@ libfuzzer-sys = "=0.4.10"
 # will align the pins and re-enable structure-aware derive.
 
 # === Targets under fuzz: Tier 1 MDC + Tier 2 protocol crates ===
+# cairn-crypto supplies the AEAD decrypt boundary (fuzz_envelope_decrypt).
+cairn-crypto = { path = "../crates/cairn-crypto" }
 cairn-envelope = { path = "../crates/cairn-envelope" }
 cairn-identity = { path = "../crates/cairn-identity" }
 cairn-recovery = { path = "../crates/cairn-recovery" }
 cairn-shamir = { path = "../crates/cairn-shamir" }
 cairn-trust-graph = { path = "../crates/cairn-trust-graph" }
+# FFI boundary crate (D0027): the recovery-card + introduction-message
+# decode entry points the Kotlin shell drives (fuzz_uniffi_boundary).
+# Default features only — the `uniffi-bindings` macro surface stays off, so
+# the decode fns are plain `pub fn`. Host-buildable; the android-only deps
+# are cfg-gated out on the fuzz host.
+cairn-uniffi = { path = "../crates/cairn-uniffi" }
 # Release-pipeline decode boundary (D0024 §6.4 / D0041 §6.3). Pulls the
 # full sigstore-verify dep tree into the fuzz build; the fuzz package is
 # a standalone workspace, so this does not affect the main build graph.
@@ -98,5 +106,23 @@ doc = false
 [[bin]]
 name = "fuzz_release_bundle"
 path = "fuzz_targets/fuzz_release_bundle.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_envelope_decrypt"
+path = "fuzz_targets/fuzz_envelope_decrypt.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_cose_header"
+path = "fuzz_targets/fuzz_cose_header.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_uniffi_boundary"
+path = "fuzz_targets/fuzz_uniffi_boundary.rs"
 test = false
 doc = false
