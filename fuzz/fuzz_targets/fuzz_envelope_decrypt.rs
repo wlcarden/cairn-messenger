@@ -23,7 +23,7 @@
 
 #![no_main]
 
-use cairn_crypto::aead::{decrypt, Key, Nonce, KEY_LEN, NONCE_LEN};
+use cairn_crypto::aead::{KEY_LEN, Key, NONCE_LEN, Nonce, decrypt};
 use libfuzzer_sys::fuzz_target;
 use zeroize::Zeroizing;
 

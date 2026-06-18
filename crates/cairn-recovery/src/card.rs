@@ -246,3 +246,70 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "proptests build known-length arrays + index the ASCII card body within generated bounds; a panic IS the failure signal"
+)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Strategy for a structurally-valid recovery card (non-zero Shamir id).
+    fn arb_card() -> impl Strategy<Value = RecoveryCard> {
+        (
+            1u8..=u8::MAX,
+            proptest::collection::vec(any::<u8>(), SECRET_LEN),
+            proptest::collection::vec(any::<u8>(), COMMITMENT_LEN),
+            proptest::collection::vec(any::<u8>(), MASTER_PUBKEY_LEN),
+        )
+            .prop_map(|(id, value, commitment, master)| RecoveryCard {
+                id,
+                value: value.try_into().expect("len == SECRET_LEN"),
+                commitment: commitment.try_into().expect("len == COMMITMENT_LEN"),
+                master: master.try_into().expect("len == MASTER_PUBKEY_LEN"),
+            })
+    }
+
+    proptest! {
+        /// Round-trip: any structurally-valid card encodes to the labelled
+        /// text form and decodes back to the identical card. The unit test
+        /// covers one fixed sample; this covers the whole input space.
+        #[test]
+        fn prop_card_round_trip(card in arb_card()) {
+            let text = encode_card(&card);
+            prop_assert!(text.starts_with(LABEL));
+            let decoded = decode_card(&text).expect("valid card must decode");
+            prop_assert_eq!(decoded, card);
+        }
+
+        /// Integrity: replacing any base64 char in the first 8 body
+        /// positions (well inside the checksum-covered signed region, clear
+        /// of base64 trailing-bit aliasing near the end) is always rejected.
+        /// A mistyped or mutated card never silently decodes.
+        #[test]
+        fn prop_early_char_tamper_rejected(
+            card in arb_card(),
+            pos in 0usize..8,
+            repl in 0usize..64,
+        ) {
+            const ALPHABET: &[u8; 64] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            let mut bytes = encode_card(&card).into_bytes();
+            // The base64 body is ASCII, so the byte index equals the char index.
+            let i = LABEL.len() + pos;
+            let new = ALPHABET[repl % ALPHABET.len()];
+            prop_assume!(bytes[i] != new);
+            bytes[i] = new;
+            let tampered = String::from_utf8(bytes).expect("ascii stays utf8");
+            prop_assert!(matches!(
+                decode_card(&tampered),
+                Err(RecoveryError::MalformedPayload)
+            ));
+        }
+    }
+}
