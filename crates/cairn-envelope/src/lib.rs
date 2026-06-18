@@ -43,11 +43,12 @@
 //!
 //! Per D0018 §2.2 + §2.5: `COSE_Sign1` byte forms produced by this crate
 //! MUST validate against an independent implementation. Cairn targets
-//! `veraison/go-cose` as the cross-implementation oracle: a future
-//! integration-test step exports our envelopes to a Go test harness that
-//! parses and re-verifies them. Discrepancies indicate either a Cairn bug
-//! or a `coset` regression; the gate is mandatory before declaring the
-//! envelope module audit-ready.
+//! `veraison/go-cose` as the cross-implementation oracle: the Go test
+//! harness in `interop/go-cose/` parses and re-verifies the pinned
+//! `tests/vectors/*.json` envelopes (run via the `go-cose-interop` CI
+//! job). Discrepancies indicate either a Cairn bug or a `coset`
+//! regression; the gate is mandatory before declaring the envelope
+//! module audit-ready.
 //!
 //! ## Stability commitment
 //!

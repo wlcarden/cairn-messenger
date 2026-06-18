@@ -170,6 +170,21 @@ jobs:
           path: fuzz/artifacts/
           if-no-files-found: ignore
 
+  # Cross-implementation COSE interop gate per D0018 §2.4/§2.5: an
+  # independent Go COSE implementation (veraison/go-cose) decodes the pinned
+  # COSE_Sign1 vectors and verifies their Ed25519 signatures, so a divergence
+  # between Cairn's encoder and the wider COSE ecosystem fails the build.
+  go-cose-interop:
+    name: go-cose cross-validation (D0018 §2.4)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: Cross-validate COSE_Sign1 vectors against veraison/go-cose
+        run: go -C crates/cairn-envelope/interop/go-cose test -v ./...
+
   # dudect-bencher smoke test: builds the cairn-ct-bench harness in
   # release mode (per D0018 §5.3 — release-profile timing tests
   # because `subtle`'s historical `opt-level` regressions reintroduced
