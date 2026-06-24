@@ -23,7 +23,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use cairn_crypto::ed25519::VerifyingKey;
 use cairn_sigstore_verify::{SigstoreVerifier, SigstoreVerifierConfig};
-use cairn_sigsum_client::{RetryBudget, SigsumClient, SigsumClientConfig, parse_witness_pool};
+use cairn_sigsum_client::{
+    RetryBudget, SigsumClient, SigsumClientConfig, WitnessPolicy, parse_witness_pool,
+};
 use cairn_storage::Storage;
 use cairn_storage::key_provider::testing::InMemoryKeyProvider;
 use serde::{Deserialize, Serialize};
@@ -102,7 +104,7 @@ impl ReleaseRoots {
     /// verifier rejects its config.
     pub fn build_verifier(&self) -> Result<SigstoreVerifier> {
         let log_pubkey = parse_log_pubkey(&self.sigsum_log_pubkey_hex)?;
-        let witness_pool = parse_witness_pool(&self.witnesses_toml)
+        let witness_pool = parse_witness_pool(&self.witnesses_toml, &WitnessPolicy::LEGACY)
             .map_err(|e| anyhow::anyhow!("parse witness pool: {e}"))?;
 
         let provider = InMemoryKeyProvider::new();
@@ -117,6 +119,7 @@ impl ReleaseRoots {
                     .context("placeholder sigsum log url")?,
                 log_pubkey,
                 witness_pool,
+                witness_policy: WitnessPolicy::LEGACY,
                 default_retry_budget: RetryBudget::default(),
             },
             storage,

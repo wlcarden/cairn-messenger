@@ -224,13 +224,35 @@ Pool changes — adding witnesses, rotating pubkeys, removing witnesses — requ
 
 ### 3.4 Acceptance threshold
 
+_[Revised 2026-06-24: pool size and cosignature threshold are now governed by a `WitnessPolicy` struct rather than hard-coded constants. The original spec required exactly 3 witnesses with a 2-of-3 threshold. Per guidance from Rasmus Dahlberg (Sigsum maintainer): one external witness is strictly better than none, and independence of each witness (different organization, country, software/hardware stack) matters more than count. The sweet spot is somewhere around 5/9 or 7/11, with diminishing returns past ~15 witnesses. A graduated policy lets Cairn ship with whatever witnesses are recruited without code changes at each step.]_
+
 A tree head is accepted iff:
 
-- The pool has exactly 3 witnesses configured (the "minimum 3 witnesses" per D0015).
-- At least 2 of those 3 witnesses produced a cosignature over the C2SP `tlog-cosignature/v1` signed message for this tree head (binding `tree_size` + `root_hash` via the checkpoint note + the witness's own `timestamp`). _[Revised 2026-05-30: was "the same `tree_size || root_hash || timestamp` triple".]_
+- The pool has at least `policy.min_pool_size()` witnesses configured. _[Revised 2026-06-24: was "exactly 3 witnesses".]_
+- At least `policy.required_cosignatures()` of those witnesses produced a cosignature over the C2SP `tlog-cosignature/v1` signed message for this tree head (binding `tree_size` + `root_hash` via the checkpoint note + the witness's own `timestamp`). _[Revised 2026-05-30: was "the same `tree_size || root_hash || timestamp` triple".]_
 - Each accepted cosignature verifies via `verify_strict` against the configured pubkey.
 
-If the witness pool config has fewer than 3 entries, every `accept_tree_head` call fails with `SigsumError::WitnessPoolTooSmall`. This is the "v1 ships without operational Sigsum witness coverage" failure mode per D0015 §"Sigsum witness threshold"; it surfaces as a typed error rather than silent degradation.
+Predefined policies:
+
+| Policy                     | Pool minimum | Threshold | Use case                                              |
+| -------------------------- | ------------ | --------- | ----------------------------------------------------- |
+| `WitnessPolicy::BOOTSTRAP` | 1            | 1-of-1    | Initial recruitment; strictly better than self-minted |
+| `WitnessPolicy::LEGACY`    | 3            | 2-of-3    | Original D0023 spec; backward compatibility           |
+| `WitnessPolicy::TARGET`    | 5            | 3-of-5    | Target deployment per Dahlberg's guidance             |
+
+Custom policies are constructible via `WitnessPolicy::new(min, required)`, validated to ensure `required <= min` and both nonzero.
+
+### 3.5 Witness independence criteria
+
+_[Added 2026-06-24.]_ Per Dahlberg's guidance, a witness contributes meaningful split-view protection only if it adds independence along at least one of these dimensions:
+
+1. **Organizational independence** — operated by a different entity with no shared authority chain.
+2. **Jurisdictional independence** — hosted in a different legal jurisdiction; a coordinated legal demand cannot compel both the log and the witness.
+3. **Infrastructure independence** — different software stack, hosting provider, and hardware; a single exploit or supply-chain compromise does not pop both.
+
+A witness that shares all three dimensions with the log or with another configured witness contributes near-zero additional split-view protection. When recruiting, optimize for independence first, count second.
+
+If the witness pool config has fewer entries than the policy's minimum, every `accept_tree_head` call fails with `SigsumError::WitnessPoolTooSmall`. This surfaces as a typed error rather than silent degradation.
 
 ---
 

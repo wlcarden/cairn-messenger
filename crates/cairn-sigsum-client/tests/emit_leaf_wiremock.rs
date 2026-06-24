@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use cairn_crypto::ed25519::SigningKey;
 use cairn_sigsum_client::{
-    EmittedLeaf, RetryBudget, SigsumClient, SigsumClientConfig, SigsumError,
+    EmittedLeaf, RetryBudget, SigsumClient, SigsumClientConfig, SigsumError, WitnessPolicy,
     cache_record_id_for_leaf, parse_witness_pool,
 };
 use cairn_storage::key_provider::testing::InMemoryKeyProvider;
@@ -68,13 +68,15 @@ fn open_storage() -> Arc<Storage> {
 }
 
 fn make_client(server: &MockServer, storage: Arc<Storage>, budget: RetryBudget) -> SigsumClient {
-    let pool = parse_witness_pool(&make_witness_pool_toml(3)).unwrap();
+    let policy = WitnessPolicy::LEGACY;
+    let pool = parse_witness_pool(&make_witness_pool_toml(3), &policy).unwrap();
     let log_pubkey = SigningKey::generate(&mut OsRng).verifying_key();
     let log_url = Url::parse(&format!("{}/", server.uri())).unwrap();
     let config = SigsumClientConfig {
         log_url,
         log_pubkey,
         witness_pool: pool,
+        witness_policy: policy,
         default_retry_budget: budget,
     };
     SigsumClient::new(config, storage).unwrap()

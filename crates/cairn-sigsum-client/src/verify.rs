@@ -132,7 +132,7 @@ pub async fn verify_chain_links_with_sigsum<'a>(
 mod tests {
     use super::*;
     use crate::client::{SigsumClient, SigsumClientConfig};
-    use crate::witness::parse_witness_pool;
+    use crate::witness::{WitnessPolicy, parse_witness_pool};
     use cairn_crypto::ed25519::SigningKey;
     use cairn_identity::{CapabilityToken, capabilities};
     use cairn_storage::Storage;
@@ -172,13 +172,15 @@ mod tests {
 
     fn make_client() -> SigsumClient {
         let storage = open_storage();
+        let policy = WitnessPolicy::LEGACY;
         let toml = make_witness_pool_toml(3);
-        let pool = parse_witness_pool(&toml).unwrap();
+        let pool = parse_witness_pool(&toml, &policy).unwrap();
         let log_pubkey = SigningKey::generate(&mut OsRng).verifying_key();
         let config = SigsumClientConfig {
             log_url: Url::parse("https://log.example.org").unwrap(),
             log_pubkey,
             witness_pool: pool,
+            witness_policy: policy,
             default_retry_budget: crate::RetryBudget::default(),
         };
         SigsumClient::new(config, storage).unwrap()

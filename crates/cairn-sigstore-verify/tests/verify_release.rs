@@ -44,8 +44,9 @@ use cairn_sigsum_client::witness::{
     build_cosignature_signed_message, build_tree_head_note, witness_key_hash,
 };
 use cairn_sigsum_client::{
-    EmittedLeaf, LeafHash, RetryBudget, SigsumClient, SigsumClientConfig, SigsumError, WitnessPool,
-    build_tree_leaf, leaf_hash_for_signature_bytes, parse_witness_pool,
+    EmittedLeaf, LeafHash, RetryBudget, SigsumClient, SigsumClientConfig, SigsumError,
+    WitnessPolicy, WitnessPool, build_tree_leaf, leaf_hash_for_signature_bytes,
+    parse_witness_pool,
 };
 use cairn_storage::Storage;
 use cairn_storage::key_provider::testing::InMemoryKeyProvider;
@@ -280,7 +281,7 @@ fn make_sigsum_log() -> SigsumLog {
     for (i, (name, sk)) in witnesses.iter().enumerate() {
         out_witness(&mut toml, i, name, sk);
     }
-    let pool = parse_witness_pool(&toml).unwrap();
+    let pool = parse_witness_pool(&toml, &WitnessPolicy::LEGACY).unwrap();
     SigsumLog {
         log_sk,
         witnesses,
@@ -368,6 +369,7 @@ fn make_sigsum_client(log: &SigsumLog) -> SigsumClient {
         log_url: Url::parse("https://log.example.org").unwrap(),
         log_pubkey: log.log_sk.verifying_key(),
         witness_pool: log.pool.clone(),
+        witness_policy: WitnessPolicy::LEGACY,
         default_retry_budget: RetryBudget::default(),
     };
     SigsumClient::new(config, storage).unwrap()

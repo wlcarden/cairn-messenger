@@ -46,7 +46,9 @@ use std::sync::Arc;
 
 use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, VerifyingKey};
 use cairn_sigstore_verify::{ReleaseBundle, SigstoreVerifier, SigstoreVerifierConfig};
-use cairn_sigsum_client::{RetryBudget, SigsumClient, SigsumClientConfig, parse_witness_pool};
+use cairn_sigsum_client::{
+    RetryBudget, SigsumClient, SigsumClientConfig, WitnessPolicy, parse_witness_pool,
+};
 use cairn_storage::Storage;
 use url::Url;
 
@@ -274,8 +276,8 @@ fn build_verifier(
         .map_err(|_| CairnFfiError::MalformedData)?;
     let log_pubkey =
         VerifyingKey::from_bytes(&pubkey_bytes).map_err(|_| CairnFfiError::MalformedData)?;
-    let witness_pool =
-        parse_witness_pool(&roots.witnesses_toml).map_err(|_| CairnFfiError::MalformedData)?;
+    let witness_pool = parse_witness_pool(&roots.witnesses_toml, &WitnessPolicy::LEGACY)
+        .map_err(|_| CairnFfiError::MalformedData)?;
     let sigsum_client = SigsumClient::new(
         SigsumClientConfig {
             // Offline bundled verify never fetches; the URL is only used by
@@ -284,6 +286,7 @@ fn build_verifier(
                 .map_err(|_| CairnFfiError::MalformedData)?,
             log_pubkey,
             witness_pool,
+            witness_policy: WitnessPolicy::LEGACY,
             default_retry_budget: RetryBudget::default(),
         },
         storage,

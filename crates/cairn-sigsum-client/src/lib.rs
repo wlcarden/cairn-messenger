@@ -102,6 +102,6 @@ pub use leaf::{
 };
 pub use verify::{VerifyChainWithSigsumError, verify_chain_links_with_sigsum};
 pub use witness::{
-    MIN_WITNESS_COUNT, REQUIRED_COSIGNATURE_COUNT, Witness, WitnessPool, parse_witness_pool,
-    verify_cosignature,
+    MIN_WITNESS_COUNT, REQUIRED_COSIGNATURE_COUNT, Witness, WitnessPolicy, WitnessPool,
+    parse_witness_pool, verify_cosignature,
 };

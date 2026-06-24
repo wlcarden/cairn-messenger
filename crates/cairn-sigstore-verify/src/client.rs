@@ -677,7 +677,7 @@ impl SigstoreVerifier {
 mod tests {
     use super::*;
     use cairn_crypto::ed25519::SigningKey;
-    use cairn_sigsum_client::{SigsumClientConfig, parse_witness_pool};
+    use cairn_sigsum_client::{SigsumClientConfig, WitnessPolicy, parse_witness_pool};
     use cairn_storage::Storage;
     use cairn_storage::key_provider::testing::InMemoryKeyProvider;
     use rand_core::OsRng;
@@ -711,12 +711,13 @@ mod tests {
         let passphrase = Zeroizing::new(b"test passphrase".to_vec());
         let storage = Arc::new(Storage::open_in_memory(&provider, &passphrase).unwrap());
         let toml = make_witness_pool_toml(3);
-        let pool = parse_witness_pool(&toml).unwrap();
+        let pool = parse_witness_pool(&toml, &WitnessPolicy::LEGACY).unwrap();
         let log_pubkey = SigningKey::generate(&mut OsRng).verifying_key();
         let config = SigsumClientConfig {
             log_url: Url::parse("https://log.example.org").unwrap(),
             log_pubkey,
             witness_pool: pool,
+            witness_policy: WitnessPolicy::LEGACY,
             default_retry_budget: RetryBudget::default(),
         };
         SigsumClient::new(config, storage).unwrap()
