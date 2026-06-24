@@ -87,7 +87,7 @@ use crate::error::SigsumError;
 ///
 /// Callers should use [`WitnessPolicy`] instead of bare constants.
 /// Retained for backward-compatible test references; new code should
-/// construct a policy via [`WitnessPolicy::legacy`].
+/// construct a policy via [`WitnessPolicy::LEGACY`].
 pub const MIN_WITNESS_COUNT: u8 = 3;
 
 /// Legacy required cosignature count per the original D0023 §3.4.
