@@ -275,7 +275,10 @@ impl WitnessPool {
 ///   missing field, malformed pubkey hex, or invalid URL
 /// - [`SigsumError::WitnessPoolTooSmall`] if the parsed pool has
 ///   fewer than `policy.min_pool_size()` entries
-pub fn parse_witness_pool(toml_text: &str, policy: &WitnessPolicy) -> Result<WitnessPool, SigsumError> {
+pub fn parse_witness_pool(
+    toml_text: &str,
+    policy: &WitnessPolicy,
+) -> Result<WitnessPool, SigsumError> {
     #[derive(Deserialize, Default)]
     struct Wrapper {
         #[serde(default, rename = "witness")]

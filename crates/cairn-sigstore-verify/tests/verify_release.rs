@@ -45,8 +45,7 @@ use cairn_sigsum_client::witness::{
 };
 use cairn_sigsum_client::{
     EmittedLeaf, LeafHash, RetryBudget, SigsumClient, SigsumClientConfig, SigsumError,
-    WitnessPolicy, WitnessPool, build_tree_leaf, leaf_hash_for_signature_bytes,
-    parse_witness_pool,
+    WitnessPolicy, WitnessPool, build_tree_leaf, leaf_hash_for_signature_bytes, parse_witness_pool,
 };
 use cairn_storage::Storage;
 use cairn_storage::key_provider::testing::InMemoryKeyProvider;

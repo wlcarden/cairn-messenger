@@ -50,8 +50,8 @@ use crate::cache::{
 use crate::error::SigsumError;
 use crate::leaf::LeafHash;
 use crate::witness::{
-    WitnessPolicy, WitnessPool, build_cosignature_signed_message,
-    build_tree_head_note, witness_key_hash,
+    WitnessPolicy, WitnessPool, build_cosignature_signed_message, build_tree_head_note,
+    witness_key_hash,
 };
 
 /// Retry budget per D0023 §5.3.
