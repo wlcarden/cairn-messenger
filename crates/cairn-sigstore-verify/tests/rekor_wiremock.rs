@@ -43,7 +43,9 @@ use std::time::Duration;
 use base64::Engine as _;
 use cairn_crypto::ed25519::SigningKey as EdSigningKey;
 use cairn_sigstore_verify::{SigstoreVerifier, SigstoreVerifierConfig, SigstoreVerifyError};
-use cairn_sigsum_client::{RetryBudget, SigsumClient, SigsumClientConfig, parse_witness_pool};
+use cairn_sigsum_client::{
+    RetryBudget, SigsumClient, SigsumClientConfig, WitnessPolicy, parse_witness_pool,
+};
 use cairn_storage::Storage;
 use cairn_storage::key_provider::testing::InMemoryKeyProvider;
 use p256::ecdsa::Signature;
@@ -218,12 +220,13 @@ fn make_sigsum_client() -> SigsumClient {
     let provider = InMemoryKeyProvider::new();
     let passphrase = Zeroizing::new(b"test passphrase".to_vec());
     let storage = Arc::new(Storage::open_in_memory(&provider, &passphrase).unwrap());
-    let pool = parse_witness_pool(&make_witness_pool_toml(3)).unwrap();
+    let pool = parse_witness_pool(&make_witness_pool_toml(3), &WitnessPolicy::LEGACY).unwrap();
     let log_pubkey = EdSigningKey::generate(&mut OsRng).verifying_key();
     let config = SigsumClientConfig {
         log_url: Url::parse("https://log.example.org").unwrap(),
         log_pubkey,
         witness_pool: pool,
+        witness_policy: WitnessPolicy::LEGACY,
         default_retry_budget: RetryBudget::default(),
     };
     SigsumClient::new(config, storage).unwrap()

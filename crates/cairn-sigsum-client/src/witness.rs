@@ -66,9 +66,16 @@
 //!
 //! ## Acceptance threshold
 //!
-//! D0023 §3.4: pool size must be exactly 3 (per D0015's "minimum 3
-//! witnesses" rule); at least 2 of 3 cosignatures must verify.
-//! Smaller pools fail with [`crate::SigsumError::WitnessPoolTooSmall`].
+//! D0023 §3.4 (revised 2026-06-24): pool size and cosignature
+//! threshold are governed by a [`WitnessPolicy`] supplied at
+//! construction time. The original policy required exactly 3
+//! witnesses with a 2-of-3 threshold ([`WitnessPolicy::LEGACY`]);
+//! the revised design supports graduated deployment from 1-of-1
+//! ([`WitnessPolicy::BOOTSTRAP`]) through majority quorums of
+//! larger pools ([`WitnessPolicy::TARGET`]: 3-of-5).
+//!
+//! Pools smaller than the policy's minimum fail with
+//! [`crate::SigsumError::WitnessPoolTooSmall`].
 
 use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -76,11 +83,104 @@ use url::Url;
 
 use crate::error::SigsumError;
 
-/// Minimum witness pool size per D0015 + D0023 §3.4.
+/// Legacy minimum witness pool size per the original D0023 §3.4.
+///
+/// Callers should use [`WitnessPolicy`] instead of bare constants.
+/// Retained for backward-compatible test references; new code should
+/// construct a policy via [`WitnessPolicy::legacy`].
 pub const MIN_WITNESS_COUNT: u8 = 3;
 
-/// Required cosignature count for acceptance per D0023 §3.4.
+/// Legacy required cosignature count per the original D0023 §3.4.
+///
+/// See [`MIN_WITNESS_COUNT`] note. New code should use
+/// [`WitnessPolicy`].
 pub const REQUIRED_COSIGNATURE_COUNT: u8 = 2;
+
+/// Witness acceptance policy per D0023 §3.4 (revised 2026-06-24).
+///
+/// Encapsulates the minimum pool size and the required cosignature
+/// threshold. The threshold expresses how many configured witnesses
+/// must produce a valid cosignature for a tree head to be accepted.
+///
+/// ## Rationale for flexibility
+///
+/// The original D0023 §3.4 hard-coded "exactly 3 witnesses, 2-of-3".
+/// Per guidance from Rasmus Dahlberg (Sigsum maintainer): one external
+/// witness is strictly better than none, and the independence of each
+/// witness (different org, country, sw/hw stack) matters more than
+/// count. The sweet spot is somewhere around 5/9 or 7/11, with
+/// diminishing returns past ~15.
+///
+/// A graduated policy lets Cairn ship with whatever witnesses are
+/// recruited — 1-of-1 during bootstrap, scaling toward a majority
+/// quorum as the pool grows — without code changes at each step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WitnessPolicy {
+    /// Minimum number of witnesses the pool must contain.
+    /// [`parse_witness_pool`] rejects pools smaller than this.
+    min_pool_size: u8,
+    /// Number of valid cosignatures required for acceptance. The
+    /// `verify_parsed_tree_head` path rejects a tree head when fewer
+    /// than this many witnesses verify.
+    required_cosignatures: u8,
+}
+
+impl WitnessPolicy {
+    /// Construct a policy, validating that `required <= min_pool_size`
+    /// and both are nonzero.
+    ///
+    /// Returns `None` if the invariant fails: a threshold larger than
+    /// the pool can never be satisfied, and a zero-witness pool or
+    /// zero-threshold acceptance is meaningless.
+    #[must_use]
+    pub const fn new(min_pool_size: u8, required_cosignatures: u8) -> Option<Self> {
+        if min_pool_size == 0 || required_cosignatures == 0 {
+            return None;
+        }
+        if required_cosignatures > min_pool_size {
+            return None;
+        }
+        Some(Self {
+            min_pool_size,
+            required_cosignatures,
+        })
+    }
+
+    /// The original D0023 §3.4 policy: 3 witnesses, 2-of-3 threshold.
+    /// Retained for backward compatibility and tests.
+    pub const LEGACY: Self = Self {
+        min_pool_size: 3,
+        required_cosignatures: 2,
+    };
+
+    /// Bootstrap policy: one external witness, one cosignature
+    /// required. Strictly better than the self-minted status quo;
+    /// appropriate during initial witness recruitment.
+    pub const BOOTSTRAP: Self = Self {
+        min_pool_size: 1,
+        required_cosignatures: 1,
+    };
+
+    /// Target policy: 5 witnesses, 3-of-5 majority required. Balances
+    /// independence against recruitment difficulty per Dahlberg's
+    /// guidance that the sweet spot is somewhere around 5/9 or 7/11.
+    pub const TARGET: Self = Self {
+        min_pool_size: 5,
+        required_cosignatures: 3,
+    };
+
+    /// Minimum pool size for this policy.
+    #[must_use]
+    pub const fn min_pool_size(&self) -> u8 {
+        self.min_pool_size
+    }
+
+    /// Required cosignature count for acceptance.
+    #[must_use]
+    pub const fn required_cosignatures(&self) -> u8 {
+        self.required_cosignatures
+    }
+}
 
 /// C2SP `tlog-cosignature/v1` header line — the domain-separation
 /// prefix of the message a witness signs (per
@@ -124,9 +224,8 @@ struct WitnessRaw {
 
 /// The configured witness pool. Constructed via [`parse_witness_pool`].
 ///
-/// Discipline: any pool with fewer than [`MIN_WITNESS_COUNT`] entries
-/// is rejected at parse time. A pool that successfully constructs is
-/// guaranteed to have at least 3 entries.
+/// Discipline: any pool with fewer entries than the
+/// [`WitnessPolicy`]'s minimum is rejected at parse time.
 #[derive(Debug, Clone)]
 pub struct WitnessPool {
     witnesses: Vec<Witness>,
@@ -145,7 +244,7 @@ impl WitnessPool {
         self.witnesses.get(index)
     }
 
-    /// Pool size. Guaranteed `>= MIN_WITNESS_COUNT` for any pool that
+    /// Pool size. Guaranteed `>= policy.min_pool_size()` for any pool
     /// constructed via the public API.
     #[must_use]
     pub fn len(&self) -> u8 {
@@ -163,19 +262,20 @@ impl WitnessPool {
     }
 }
 
-/// Parse a witness pool from a TOML config string.
+/// Parse a witness pool from a TOML config string, validated against
+/// the given [`WitnessPolicy`].
 ///
-/// Rejects pools with fewer than [`MIN_WITNESS_COUNT`] entries per
-/// D0023 §3.4. Each entry's pubkey hex must decode to exactly
-/// [`PUBLIC_KEY_LEN`] bytes and parse as a valid Ed25519 curve point.
+/// Rejects pools with fewer than `policy.min_pool_size()` entries.
+/// Each entry's pubkey hex must decode to exactly [`PUBLIC_KEY_LEN`]
+/// bytes and parse as a valid Ed25519 curve point.
 ///
 /// # Errors
 ///
 /// - [`SigsumError::WitnessConfigParse`] for any TOML parse failure,
 ///   missing field, malformed pubkey hex, or invalid URL
 /// - [`SigsumError::WitnessPoolTooSmall`] if the parsed pool has
-///   fewer than [`MIN_WITNESS_COUNT`] entries
-pub fn parse_witness_pool(toml_text: &str) -> Result<WitnessPool, SigsumError> {
+///   fewer than `policy.min_pool_size()` entries
+pub fn parse_witness_pool(toml_text: &str, policy: &WitnessPolicy) -> Result<WitnessPool, SigsumError> {
     #[derive(Deserialize, Default)]
     struct Wrapper {
         #[serde(default, rename = "witness")]
@@ -204,10 +304,10 @@ pub fn parse_witness_pool(toml_text: &str) -> Result<WitnessPool, SigsumError> {
     }
 
     let configured = u8::try_from(witnesses.len()).unwrap_or(u8::MAX);
-    if configured < MIN_WITNESS_COUNT {
+    if configured < policy.min_pool_size() {
         return Err(SigsumError::WitnessPoolTooSmall {
             configured,
-            minimum: MIN_WITNESS_COUNT,
+            minimum: policy.min_pool_size(),
         });
     }
 
@@ -405,16 +505,23 @@ mod tests {
     }
 
     #[test]
-    fn parse_witness_pool_with_three_entries_succeeds() {
+    fn parse_witness_pool_with_three_entries_succeeds_legacy_policy() {
         let toml_text = make_witness_toml(3);
-        let pool = parse_witness_pool(&toml_text).unwrap();
+        let pool = parse_witness_pool(&toml_text, &WitnessPolicy::LEGACY).unwrap();
         assert_eq!(pool.len(), 3);
     }
 
     #[test]
-    fn parse_witness_pool_with_two_entries_rejects() {
+    fn parse_witness_pool_with_one_entry_succeeds_bootstrap_policy() {
+        let toml_text = make_witness_toml(1);
+        let pool = parse_witness_pool(&toml_text, &WitnessPolicy::BOOTSTRAP).unwrap();
+        assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn parse_witness_pool_with_two_entries_rejects_legacy_policy() {
         let toml_text = make_witness_toml(2);
-        let result = parse_witness_pool(&toml_text);
+        let result = parse_witness_pool(&toml_text, &WitnessPolicy::LEGACY);
         assert!(matches!(
             result,
             Err(SigsumError::WitnessPoolTooSmall {
@@ -425,8 +532,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_witness_pool_with_empty_rejects() {
-        let result = parse_witness_pool("");
+    fn parse_witness_pool_with_empty_rejects_any_policy() {
+        let result = parse_witness_pool("", &WitnessPolicy::BOOTSTRAP);
         assert!(matches!(
             result,
             Err(SigsumError::WitnessPoolTooSmall { configured: 0, .. })
@@ -435,7 +542,7 @@ mod tests {
 
     #[test]
     fn parse_witness_pool_with_malformed_toml_rejects() {
-        let result = parse_witness_pool("not valid toml at all!!!");
+        let result = parse_witness_pool("not valid toml at all!!!", &WitnessPolicy::LEGACY);
         assert!(matches!(result, Err(SigsumError::WitnessConfigParse)));
     }
 
@@ -448,7 +555,7 @@ mod tests {
             url = "https://example.org"
         "#;
         assert!(matches!(
-            parse_witness_pool(toml),
+            parse_witness_pool(toml, &WitnessPolicy::BOOTSTRAP),
             Err(SigsumError::WitnessConfigParse)
         ));
     }
@@ -462,9 +569,40 @@ mod tests {
             url = "https://example.org"
         "#;
         assert!(matches!(
-            parse_witness_pool(toml),
+            parse_witness_pool(toml, &WitnessPolicy::BOOTSTRAP),
             Err(SigsumError::WitnessConfigParse)
         ));
+    }
+
+    #[test]
+    fn witness_policy_new_validates_invariants() {
+        // Both nonzero, required <= pool.
+        assert!(WitnessPolicy::new(3, 2).is_some());
+        assert!(WitnessPolicy::new(1, 1).is_some());
+        assert!(WitnessPolicy::new(5, 3).is_some());
+
+        // Zero pool or zero threshold.
+        assert!(WitnessPolicy::new(0, 0).is_none());
+        assert!(WitnessPolicy::new(3, 0).is_none());
+        assert!(WitnessPolicy::new(0, 1).is_none());
+
+        // Required > pool.
+        assert!(WitnessPolicy::new(2, 3).is_none());
+    }
+
+    #[test]
+    fn witness_policy_presets_satisfy_own_invariants() {
+        let legacy = WitnessPolicy::LEGACY;
+        assert_eq!(legacy.min_pool_size(), 3);
+        assert_eq!(legacy.required_cosignatures(), 2);
+
+        let bootstrap = WitnessPolicy::BOOTSTRAP;
+        assert_eq!(bootstrap.min_pool_size(), 1);
+        assert_eq!(bootstrap.required_cosignatures(), 1);
+
+        let target = WitnessPolicy::TARGET;
+        assert_eq!(target.min_pool_size(), 5);
+        assert_eq!(target.required_cosignatures(), 3);
     }
 
     #[test]

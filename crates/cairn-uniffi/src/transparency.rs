@@ -33,7 +33,8 @@ use std::sync::Arc;
 
 use cairn_crypto::ed25519::{PUBLIC_KEY_LEN, VerifyingKey};
 use cairn_sigsum_client::{
-    RetryBudget, SigsumClient, SigsumClientConfig, SigsumError, TreeLeafSigner, parse_witness_pool,
+    RetryBudget, SigsumClient, SigsumClientConfig, SigsumError, TreeLeafSigner, WitnessPolicy,
+    parse_witness_pool,
 };
 use cairn_trust_graph::SignedTrustGraphOp;
 use url::Url;
@@ -74,12 +75,13 @@ fn to_client_config(config: &SigsumLogConfig) -> Result<SigsumClientConfig, Cair
         .map_err(|_| CairnFfiError::MalformedData)?;
     let log_pubkey =
         VerifyingKey::from_bytes(&pubkey_bytes).map_err(|_| CairnFfiError::MalformedData)?;
-    let witness_pool =
-        parse_witness_pool(&config.witnesses_toml).map_err(|_| CairnFfiError::MalformedData)?;
+    let witness_pool = parse_witness_pool(&config.witnesses_toml, &WitnessPolicy::LEGACY)
+        .map_err(|_| CairnFfiError::MalformedData)?;
     Ok(SigsumClientConfig {
         log_url,
         log_pubkey,
         witness_pool,
+        witness_policy: WitnessPolicy::LEGACY,
         default_retry_budget: RetryBudget {
             max_retries: config.max_retries,
             ..RetryBudget::default()

@@ -55,7 +55,8 @@ use cairn_sigsum_client::witness::{
     build_cosignature_signed_message, build_tree_head_note, witness_key_hash,
 };
 use cairn_sigsum_client::{
-    RetryBudget, SigsumClient, SigsumClientConfig, SigsumError, WitnessPool, parse_witness_pool,
+    RetryBudget, SigsumClient, SigsumClientConfig, SigsumError, WitnessPolicy, WitnessPool,
+    parse_witness_pool,
 };
 use cairn_storage::Storage;
 use cairn_storage::key_provider::testing::InMemoryKeyProvider;
@@ -121,7 +122,7 @@ fn make_test_log() -> TestLog {
             lower_hex(&w.sk.verifying_key().to_bytes()),
         ));
     }
-    let pool = parse_witness_pool(&toml).unwrap();
+    let pool = parse_witness_pool(&toml, &WitnessPolicy::LEGACY).unwrap();
     TestLog {
         log_sk,
         witnesses,
@@ -219,6 +220,7 @@ fn make_client(server: &MockServer, log: &TestLog, budget: RetryBudget) -> Sigsu
         log_url,
         log_pubkey: log.log_sk.verifying_key(),
         witness_pool: log.pool.clone(),
+        witness_policy: WitnessPolicy::LEGACY,
         default_retry_budget: budget,
     };
     SigsumClient::new(config, storage).unwrap()

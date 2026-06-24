@@ -167,7 +167,7 @@ fn map_store_error(err: TrustGraphStoreError) -> SigsumError {
 mod tests {
     use super::*;
     use crate::client::{SigsumClient, SigsumClientConfig};
-    use crate::witness::parse_witness_pool;
+    use crate::witness::{WitnessPolicy, parse_witness_pool};
     use cairn_crypto::ed25519::SigningKey;
     use cairn_storage::key_provider::testing::InMemoryKeyProvider;
     use cairn_storage::{Storage, categories};
@@ -205,8 +205,9 @@ mod tests {
     }
 
     fn make_client(storage: Arc<Storage>) -> SigsumClient {
+        let policy = WitnessPolicy::LEGACY;
         let toml = make_witness_pool_toml(3);
-        let pool = parse_witness_pool(&toml).unwrap();
+        let pool = parse_witness_pool(&toml, &policy).unwrap();
         let log_pubkey = SigningKey::generate(&mut OsRng).verifying_key();
         let config = SigsumClientConfig {
             // 127.0.0.1:1 refuses connections immediately, so emit_leaf's
@@ -216,6 +217,7 @@ mod tests {
             log_url: Url::parse("http://127.0.0.1:1").unwrap(),
             log_pubkey,
             witness_pool: pool,
+            witness_policy: policy,
             default_retry_budget: crate::RetryBudget {
                 max_retries: 0,
                 initial_delay: std::time::Duration::from_millis(1),

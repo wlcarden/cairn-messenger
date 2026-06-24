@@ -9,10 +9,11 @@
 //! the real `GET /get-tree-head`, parses the Sigsum v1 ASCII response,
 //! verifies the log's tree-head signature against the pinned log key,
 //! verifies the embedded C2SP `tlog-cosignature/v1` cosignatures
-//! against the configured witness pool (2-of-3 threshold per
-//! D0023 §3.4), runs split-view detection against the cached head, and
-//! caches the accepted head. It is validated end-to-end by the
-//! hermetic wiremock harness in `tests/refresh_tree_head_wiremock.rs`.
+//! against the configured witness pool (threshold per the
+//! [`WitnessPolicy`]; D0023 §3.4 revised), runs split-view detection
+//! against the cached head, and caches the accepted head. It is
+//! validated end-to-end by the hermetic wiremock harness in
+//! `tests/refresh_tree_head_wiremock.rs`.
 //!
 //! [`SigsumClient::emit_leaf`] is **implemented**: it builds the Sigsum
 //! `tree_leaf` (D0023 §1 revised + Sigsum spec §2.2.4), POSTs it to
@@ -49,7 +50,7 @@ use crate::cache::{
 use crate::error::SigsumError;
 use crate::leaf::LeafHash;
 use crate::witness::{
-    REQUIRED_COSIGNATURE_COUNT, WitnessPool, build_cosignature_signed_message,
+    WitnessPolicy, WitnessPool, build_cosignature_signed_message,
     build_tree_head_note, witness_key_hash,
 };
 
@@ -95,6 +96,9 @@ pub struct SigsumClientConfig {
     pub log_pubkey: VerifyingKey,
     /// Witness pool parsed from the release's `witnesses.toml`.
     pub witness_pool: WitnessPool,
+    /// Witness acceptance policy per D0023 §3.4 (revised). Governs
+    /// the required cosignature threshold for tree-head acceptance.
+    pub witness_policy: WitnessPolicy,
     /// Default retry budget for network operations.
     pub default_retry_budget: RetryBudget,
 }
@@ -113,6 +117,8 @@ pub struct SigsumClient {
     storage: Arc<Storage>,
     /// Configured witness pool per D0023 §3.
     witness_pool: WitnessPool,
+    /// Witness acceptance policy per D0023 §3.4 (revised).
+    witness_policy: WitnessPolicy,
     /// HTTPS endpoint of the Sigsum log.
     log_url: Url,
     /// The log's pinned Ed25519 public key per D0023 §3.
@@ -143,6 +149,7 @@ impl SigsumClient {
             http,
             storage,
             witness_pool: config.witness_pool,
+            witness_policy: config.witness_policy,
             log_url: config.log_url,
             log_pubkey: config.log_pubkey,
             default_retry_budget: config.default_retry_budget,
@@ -470,7 +477,8 @@ impl SigsumClient {
         }
 
         // (2) Verify the cosigned accepted head offline (log signature +
-        // 2-of-3 cosignature threshold), exactly as the online path does.
+        // cosignature threshold per witness_policy), exactly as the
+        // online path does.
         let parsed = parse_get_tree_head(tree_head_body)?;
         let head = self.verify_parsed_tree_head(&parsed)?;
 
@@ -565,7 +573,7 @@ impl SigsumClient {
     /// 4. Verify each cosignature: match its 4-byte key id to a
     ///    configured witness, rebuild the C2SP signed message with the
     ///    cosignature's timestamp, Ed25519-verify. Require at least
-    ///    [`REQUIRED_COSIGNATURE_COUNT`] valid per D0023 §3.4.
+    ///    the [`WitnessPolicy`] threshold per D0023 §3.4 (revised).
     /// 5. Split-view check against the cached head (tree-size
     ///    regression / same-size-different-root → halt).
     /// 6. Cache the accepted head in
@@ -587,8 +595,8 @@ impl SigsumClient {
         let body = self.http_get_tree_head().await?;
         let parsed = parse_get_tree_head(&body)?;
 
-        // Verify the log tree-head signature + 2-of-3 cosignature
-        // threshold (shared with the offline bundled path).
+        // Verify the log tree-head signature + cosignature threshold
+        // per witness_policy (shared with the offline bundled path).
         let head = self.verify_parsed_tree_head(&parsed)?;
 
         // Split-view detection against any cached head.
@@ -618,10 +626,11 @@ impl SigsumClient {
     /// configured witness pool, and assemble the accepted [`TreeHead`].
     ///
     /// Performs the log tree-head signature verification (over the C2SP
-    /// checkpoint note) + the 2-of-3 witness-cosignature threshold per
-    /// D0023 §3.4. Does NOT touch the network, the cache, or split-view
-    /// state — those are [`Self::refresh_tree_head`]'s concern. Shared
-    /// by `refresh_tree_head` and the offline
+    /// checkpoint note) + the witness-cosignature threshold per the
+    /// configured [`WitnessPolicy`] (D0023 §3.4 revised). Does NOT
+    /// touch the network, the cache, or split-view state — those are
+    /// [`Self::refresh_tree_head`]'s concern. Shared by
+    /// `refresh_tree_head` and the offline
     /// [`Self::verify_bundled_inclusion`].
     fn verify_parsed_tree_head(&self, parsed: &ParsedTreeHead) -> Result<TreeHead, SigsumError> {
         let log_key_hash = sha256_of(&self.log_pubkey.to_bytes());
@@ -633,10 +642,11 @@ impl SigsumClient {
 
         let accepted = self.verify_cosignatures(&note, &parsed.cosignatures);
         let valid = u8::try_from(accepted.len()).unwrap_or(u8::MAX);
-        if valid < REQUIRED_COSIGNATURE_COUNT {
+        let required = self.witness_policy.required_cosignatures();
+        if valid < required {
             return Err(SigsumError::InsufficientWitnessCosignatures {
                 valid,
-                required: REQUIRED_COSIGNATURE_COUNT,
+                required,
                 pool_size: self.witness_pool.len(),
             });
         }
@@ -953,7 +963,7 @@ fn hash_children(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 #[allow(clippy::indexing_slicing, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::witness::parse_witness_pool;
+    use crate::witness::{WitnessPolicy, parse_witness_pool};
     use cairn_crypto::ed25519::SigningKey;
     use cairn_storage::key_provider::testing::InMemoryKeyProvider;
     use cairn_trust_graph::TrustGraphOp;
@@ -985,13 +995,15 @@ mod tests {
         let provider = InMemoryKeyProvider::new();
         let passphrase = Zeroizing::new(b"test passphrase".to_vec());
         let storage = Arc::new(Storage::open_in_memory(&provider, &passphrase).unwrap());
+        let policy = WitnessPolicy::LEGACY;
         let toml = make_witness_pool_toml(3);
-        let pool = parse_witness_pool(&toml).unwrap();
+        let pool = parse_witness_pool(&toml, &policy).unwrap();
         let log_pubkey = SigningKey::generate(&mut OsRng).verifying_key();
         let config = SigsumClientConfig {
             log_url: Url::parse("https://log.example.org").unwrap(),
             log_pubkey,
             witness_pool: pool,
+            witness_policy: policy,
             default_retry_budget: RetryBudget::default(),
         };
         SigsumClient::new(config, storage).unwrap()

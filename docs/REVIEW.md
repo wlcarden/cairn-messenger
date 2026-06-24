@@ -71,9 +71,11 @@ release log. The property under test: the soundness of that chain, and what an
 attacker who controls the build pipeline still gets past it. Code:
 `cairn-sigstore-verify`, `cairn-sigsum-client`. Spec: D0024, D0023, D0015.
 Status: the verifier is real and runs offline against real Sigstore staging and
-production anchors; the producer side is unrun, and the Sigsum half currently
-runs against self-minted roots because no witness pool is recruited yet. Read
-this target with that caveat in front of you.
+production anchors; the producer side is unrun. The Sigsum witness policy is now
+a configurable `WitnessPolicy` (D0023 §3.4 revised), supporting graduated
+deployment from 1-of-1 through 3-of-5; the current deployment runs against
+self-minted roots because no external witness is recruited yet. Read this target
+with that caveat in front of you.
 
 ## In scope vs. out of scope
 
